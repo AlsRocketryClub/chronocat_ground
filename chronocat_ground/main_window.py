@@ -30,6 +30,9 @@ from PySide6.QtWidgets import (
 from .command_client import CommandClient
 from .protocol import (
     COMMAND_PING,
+    COMMAND_GEIGER_CLEAR_HISTORY,
+    COMMAND_GEIGER_RESET_DOSE,
+    COMMAND_GEIGER_RESET_STATS,
     COMMAND_TELEMETRY_SET,
     COMMAND_TELEMETRY_STATUS,
     DEFAULT_COMMAND_PORT,
@@ -41,6 +44,7 @@ from .protocol import (
     CommandResponse,
     TelemetryPacket,
     command_name,
+    geiger_reset_actions_name,
     status_name,
     telemetry_health_name,
     telemetry_value_name,
@@ -480,6 +484,8 @@ class MainWindow(QMainWindow):
         cards.addWidget(self.radiation_errors_card, 1, 1)
         layout.addLayout(cards)
 
+        layout.addWidget(self.build_geiger_controls_panel())
+
         plot_panel = Panel()
         plot_header = QHBoxLayout()
         title = QLabel("GEIGER DOSE RATE TIME-SERIES")
@@ -516,6 +522,37 @@ class MainWindow(QMainWindow):
         layout.addWidget(table_panel)
         layout.addStretch(1)
         return page
+
+    def build_geiger_controls_panel(self) -> Panel:
+        controls_panel = Panel("GEIGER DETECTOR CONTROLS")
+        note = QLabel(
+            "These commands write detector flash and can take a few seconds before telemetry updates."
+        )
+        note.setObjectName("smallNote")
+        note.setWordWrap(True)
+        controls_panel.layout.addWidget(note)
+
+        self.geiger_reset_dose_button = QPushButton("Reset Total Dose")
+        self.geiger_clear_history_button = QPushButton("Clear History")
+        self.geiger_reset_stats_button = QPushButton("Reset Statistics")
+
+        self.geiger_reset_dose_button.clicked.connect(
+            lambda: self.send_geiger_command(COMMAND_GEIGER_RESET_DOSE, "reset total dose", timeout=7.0)
+        )
+        self.geiger_clear_history_button.clicked.connect(
+            lambda: self.send_geiger_command(COMMAND_GEIGER_CLEAR_HISTORY, "clear history", timeout=7.0)
+        )
+        self.geiger_reset_stats_button.clicked.connect(
+            lambda: self.send_geiger_command(COMMAND_GEIGER_RESET_STATS, "reset statistics", timeout=7.0)
+        )
+
+        button_grid = QGridLayout()
+        button_grid.setSpacing(8)
+        button_grid.addWidget(self.geiger_reset_dose_button, 0, 0)
+        button_grid.addWidget(self.geiger_clear_history_button, 0, 1)
+        button_grid.addWidget(self.geiger_reset_stats_button, 0, 2)
+        controls_panel.layout.addLayout(button_grid)
+        return controls_panel
 
     def build_samples_summary_panel(self) -> Panel:
         samples_panel = Panel()
@@ -604,7 +641,7 @@ class MainWindow(QMainWindow):
         command_frame.layout.addLayout(button_grid)
 
         note = QLabel(
-            "Uplink actions require a command server connection. Command acknowledgements are logged and displayed to the operator."
+            "Uplink actions require a command server connection. Geiger memory controls are on the Radiation page."
         )
         note.setObjectName("noteBox")
         note.setWordWrap(True)
@@ -958,12 +995,21 @@ class MainWindow(QMainWindow):
             self.status_button,
             self.telemetry_on_button,
             self.telemetry_off_button,
+            self.geiger_reset_dose_button,
+            self.geiger_clear_history_button,
+            self.geiger_reset_stats_button,
         ):
             button.setEnabled(connected)
 
-    def send_command(self, command: int, value: int) -> None:
+    def send_command(
+        self,
+        command: int,
+        value: int,
+        arg2: int = 0,
+        timeout: float | None = None,
+    ) -> None:
         try:
-            response = self.client.send_command(command, value)
+            response = self.client.send_command(command, value, arg2, timeout=timeout)
         except (OSError, ValueError, ConnectionError) as exc:
             self.log(f"Command failed: {exc}")
             self.client.disconnect()
@@ -972,12 +1018,28 @@ class MainWindow(QMainWindow):
 
         self.log_response(response)
 
+    def send_geiger_command(self, command: int, action: str, timeout: float | None = None) -> None:
+        self.log(f"Sending Geiger command: {action}")
+        self.send_command(command, 0, 0, timeout=timeout)
+
     def log_response(self, response: CommandResponse) -> None:
-        text = (
-            f"Response {status_name(response.status)} "
-            f"command={command_name(response.command)} "
-            f"arg1={telemetry_value_name(response.arg1)} arg2={response.arg2}"
-        )
+        if response.command in (
+            COMMAND_GEIGER_RESET_DOSE,
+            COMMAND_GEIGER_CLEAR_HISTORY,
+            COMMAND_GEIGER_RESET_STATS,
+        ):
+            text = (
+                f"Response {status_name(response.status)} "
+                f"command={command_name(response.command)} "
+                f"detector_errors=0x{response.arg1:04x} "
+                f"actions={geiger_reset_actions_name(response.arg2)}"
+            )
+        else:
+            text = (
+                f"Response {status_name(response.status)} "
+                f"command={command_name(response.command)} "
+                f"arg1={telemetry_value_name(response.arg1)} arg2={response.arg2}"
+            )
         self.log(text)
 
     def on_telemetry_packet(self, packet: TelemetryPacket, source: str) -> None:

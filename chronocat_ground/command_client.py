@@ -40,13 +40,27 @@ class CommandClient:
         finally:
             self._socket = None
 
-    def send_command(self, command: int, arg1: int = 0, arg2: int = 0) -> CommandResponse:
+    def send_command(
+        self,
+        command: int,
+        arg1: int = 0,
+        arg2: int = 0,
+        timeout: float | None = None,
+    ) -> CommandResponse:
         if self._socket is None:
             raise ConnectionError("not connected")
 
-        self._socket.sendall(build_command(command, arg1, arg2))
-        response = self._recv_exact(RESPONSE_PACKET_SIZE)
-        return parse_command_response(response)
+        old_timeout = self._socket.gettimeout()
+        if timeout is not None:
+            self._socket.settimeout(timeout)
+
+        try:
+            self._socket.sendall(build_command(command, arg1, arg2))
+            response = self._recv_exact(RESPONSE_PACKET_SIZE)
+            return parse_command_response(response)
+        finally:
+            if self._socket is not None and timeout is not None:
+                self._socket.settimeout(old_timeout)
 
     def _recv_exact(self, length: int) -> bytes:
         if self._socket is None:

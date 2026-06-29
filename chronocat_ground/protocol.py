@@ -38,6 +38,9 @@ RESPONSE_PACKET_SIZE = 6
 COMMAND_PING = 0x01
 COMMAND_TELEMETRY_SET = 0x02
 COMMAND_TELEMETRY_STATUS = 0x03
+COMMAND_GEIGER_RESET_DOSE = 0x47
+COMMAND_GEIGER_CLEAR_HISTORY = 0x4F
+COMMAND_GEIGER_RESET_STATS = 0x58
 
 VALUE_OFF = 0x00
 VALUE_ON = 0x01
@@ -47,12 +50,16 @@ STATUS_BAD_MAGIC = 0x01
 STATUS_BAD_COMMAND = 0x02
 STATUS_BAD_VALUE = 0x03
 STATUS_WRITE_FAILED = 0x04
+STATUS_GEIGER_FAILED = 0x05
 
 
 COMMAND_NAMES = {
     COMMAND_PING: "ping",
     COMMAND_TELEMETRY_SET: "telemetry set",
     COMMAND_TELEMETRY_STATUS: "telemetry status",
+    COMMAND_GEIGER_RESET_DOSE: "geiger reset dose",
+    COMMAND_GEIGER_CLEAR_HISTORY: "geiger clear history",
+    COMMAND_GEIGER_RESET_STATS: "geiger reset statistics",
 }
 
 STATUS_NAMES = {
@@ -61,6 +68,7 @@ STATUS_NAMES = {
     STATUS_BAD_COMMAND: "bad command",
     STATUS_BAD_VALUE: "bad value",
     STATUS_WRITE_FAILED: "write failed",
+    STATUS_GEIGER_FAILED: "geiger failed",
 }
 
 
@@ -260,6 +268,19 @@ def telemetry_value_name(value: int) -> str:
     if value == VALUE_OFF:
         return "off"
     return f"0x{value:02x}"
+
+
+def geiger_reset_actions_name(value: int) -> str:
+    actions = []
+    if value & 0x01:
+        actions.append("reset dose")
+    if value & 0x02:
+        actions.append("clear history")
+    if value & 0x04:
+        actions.append("reset statistics")
+    if actions:
+        return ", ".join(actions)
+    return "none"
 
 
 def tcp_status_name(status: int) -> str:

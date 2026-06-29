@@ -8,6 +8,7 @@ Minimal PySide6 desktop chronocat_ground app for Chronocat firmware.
 - Connects to the firmware TCP command server on `192.168.1.50:5006`.
 - Shows packet counter, firmware timestamp, flags, health, sensor masks, Geiger telemetry, source address, packet count, and packet age.
 - Sends binary command packets for ping, telemetry on, telemetry off, and telemetry status.
+- Provides Geiger detector memory controls on the Radiation page.
 
 ## Setup
 
@@ -138,6 +139,9 @@ Commands:
 0x01 ping
 0x02 telemetry set
 0x03 telemetry status
+0x47 geiger reset total dose
+0x4F geiger clear history
+0x58 geiger reset statistics
 ```
 
 Values:
@@ -146,4 +150,29 @@ Telemetry set uses `arg1`:
 ```text
 0x00 off
 0x01 on
+```
+
+Geiger memory commands map directly to detector UART commands:
+
+```text
+0x47 -> detector Command G, reset accumulated total dose
+0x4F -> detector Command O, clear history only
+0x58 -> detector Command X, reset accumulated statistics
+```
+
+All three TCP requests use zero arguments:
+
+```text
+arg1 = 0
+arg2 = 0
+```
+
+Geiger memory commands can take a few seconds while the detector writes flash.
+The TCP response uses `arg1` for detector error flags and
+`arg2` as an effective action mask:
+
+```text
+arg2 bit 0 total dose reset
+arg2 bit 1 history cleared
+arg2 bit 2 statistics reset
 ```
