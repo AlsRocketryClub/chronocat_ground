@@ -1,3 +1,5 @@
+*.csv
+*.xls
 # Python caches
 __pycache__/
 *.py[cod]

@@ -11,7 +11,7 @@ DEFAULT_TELEMETRY_PORT = 5005
 TELEMETRY_MAGIC = b"CCTM"
 TELEMETRY_VERSION = 1
 TELEMETRY_MESSAGE_TYPE = 1
-TELEMETRY_PACKET_SIZE = 101
+TELEMETRY_PACKET_SIZE = 131
 TELEMETRY_TEMP_COUNT = 13
 TELEMETRY_OS_ADC_COUNT = 12
 
@@ -21,6 +21,15 @@ TELEMETRY_FLAG_TCP_LISTENING = 1 << 1
 TELEMETRY_HEALTH_NAMES = {
     0: "ok",
     1: "tcp not listening",
+}
+
+GEIGER_ERROR_NAMES = {
+    0: "ok",
+    1: "HV error",
+    2: "overrange",
+    4: "GM tube error",
+    8: "overflow",
+    16: "timeout",
 }
 
 COMMAND_PACKET_SIZE = 5
@@ -68,7 +77,17 @@ class TelemetryPacket:
     temperatures: tuple[int, ...]
     os_adc_valid_mask: int
     os_adc_readings: tuple[int, ...]
-    cots_dosimeter: int
+    geiger_valid: int
+    geiger_error_flags: int
+    geiger_event_id: int
+    geiger_dose_cps: float
+    geiger_dose_rate_cps: float
+    geiger_total_dose_sv: float
+    geiger_dose_time_sec: int
+    geiger_stats_time_sec: int
+    geiger_hv_voltage: int
+    geiger_stat_error_percent: int
+    geiger_stat_cell_count: int
 
     @property
     def tcp_status(self) -> int:
@@ -143,8 +162,30 @@ def parse_telemetry_packet(data: bytes) -> TelemetryPacket:
     offset += 2
     os_adc_readings = struct.unpack_from(f">{TELEMETRY_OS_ADC_COUNT}I", data, offset)
     offset += TELEMETRY_OS_ADC_COUNT * 4
-    cots_dosimeter = struct.unpack_from(">I", data, offset)[0]
+    geiger_valid = data[offset]
+    offset += 1
+    reserved = data[offset]
+    offset += 1
+    geiger_error_flags = struct.unpack_from(">H", data, offset)[0]
+    offset += 2
+    geiger_event_id = struct.unpack_from(">I", data, offset)[0]
     offset += 4
+    geiger_dose_cps = struct.unpack_from(">d", data, offset)[0]
+    offset += 8
+    geiger_dose_rate_cps = struct.unpack_from(">f", data, offset)[0]
+    offset += 4
+    geiger_total_dose_sv = struct.unpack_from(">f", data, offset)[0]
+    offset += 4
+    geiger_dose_time_sec = struct.unpack_from(">I", data, offset)[0]
+    offset += 4
+    geiger_stats_time_sec = struct.unpack_from(">H", data, offset)[0]
+    offset += 2
+    geiger_hv_voltage = struct.unpack_from(">H", data, offset)[0]
+    offset += 2
+    geiger_stat_error_percent = data[offset]
+    offset += 1
+    geiger_stat_cell_count = data[offset]
+    offset += 1
 
     if offset != TELEMETRY_PACKET_SIZE:
         raise ValueError(f"internal parser size mismatch: consumed {offset} bytes")
@@ -167,7 +208,17 @@ def parse_telemetry_packet(data: bytes) -> TelemetryPacket:
         temperatures=temperatures,
         os_adc_valid_mask=os_adc_valid_mask,
         os_adc_readings=os_adc_readings,
-        cots_dosimeter=cots_dosimeter,
+        geiger_valid=geiger_valid,
+        geiger_error_flags=geiger_error_flags,
+        geiger_event_id=geiger_event_id,
+        geiger_dose_cps=geiger_dose_cps,
+        geiger_dose_rate_cps=geiger_dose_rate_cps,
+        geiger_total_dose_sv=geiger_total_dose_sv,
+        geiger_dose_time_sec=geiger_dose_time_sec,
+        geiger_stats_time_sec=geiger_stats_time_sec,
+        geiger_hv_voltage=geiger_hv_voltage,
+        geiger_stat_error_percent=geiger_stat_error_percent,
+        geiger_stat_cell_count=geiger_stat_cell_count,
     )
 
 
