@@ -6,7 +6,7 @@ Minimal PySide6 desktop chronocat_ground app for Chronocat firmware.
 
 - Receives UDP telemetry on port `5005`.
 - Connects to the firmware TCP command server on `192.168.1.50:5006`.
-- Shows packet counter, firmware timestamp, flags, health, sensor masks, Geiger telemetry, source address, packet count, and packet age.
+- Shows packet counter, firmware timestamp, flags, health, sensor masks, AD7177 raw ADC telemetry, Geiger telemetry, source address, packet count, and packet age.
 - Sends binary command packets for ping, telemetry on, telemetry off, and telemetry status.
 - Provides Geiger detector memory controls on the Radiation page.
 
@@ -15,7 +15,7 @@ Minimal PySide6 desktop chronocat_ground app for Chronocat firmware.
 ```bash
 uv venv --python 3.12 .venv
 source .venv/bin/activate
-uv pip install -e .
+uv pip install -e '.[gui]'
 ```
 
 Use Python 3.12 for now. Python 3.14 is too new for reliable PySide6 wheel support, and the local Homebrew Python install may fail while bootstrapping `pip`.
@@ -35,6 +35,35 @@ python -m chronocat_ground.main
 The GUI has a `Start CSV Log` / `Stop CSV Log` toggle in the top bar. When enabled, it
 creates a timestamped CSV file in the current directory and writes each received telemetry
 packet to it. The file is flushed after every packet.
+
+## Raspberry Pi CLI Logging
+
+For a Raspberry Pi or any headless machine, install the CLI without Qt/PySide6:
+
+For full Raspberry Pi SD-card, static IP, and boot autostart setup, see
+[`pi_rad_test/README.md`](pi_rad_test/README.md).
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+```
+
+Run the UDP recorder:
+
+```bash
+chronocat_telemetry --out flight.csv --quiet
+```
+
+Equivalent module form:
+
+```bash
+python -m chronocat_ground.telemetry_cli --out flight.csv --quiet
+```
+
+The recorder listens on UDP `0.0.0.0:5005` by default and flushes the CSV after every
+valid telemetry packet. Only one process can bind UDP port `5005` at a time.
 
 ## Record Telemetry to CSV
 
@@ -59,9 +88,8 @@ chronocat_telemetry --quiet
 chronocat_telemetry --strict
 ```
 
-The CSV includes receive time, source address, packet timestamp, counter, flags, health,
-13 temperature sensor values with validity flags, 12 ADC readings with validity flags,
-Geiger measurements, and TCP status.
+The CSV includes receive time, source address, packet timestamp in milliseconds, counter, flags, health,
+13 temperature sensor values with validity flags, 12 decoded AD7177 readings, Geiger measurements, and TCP status.
 
 The GUI and recorder both bind UDP port `5005`, so normally run only one of them at a time
 on the same machine.
@@ -77,13 +105,13 @@ version                       1
 message_type                  1
 flags                         2
 payload_length = 131          2
-packet_timestamp              4
+packet_timestamp_ms           4
 counter                       4
 health_code                   1
 temperature_valid_mask        2
 temperature_sensors_1_13     26  int16 centi-degrees C
 os_adc_valid_mask             2
-os_adc_readings_1_12         48  uint32 raw ADC counts
+os_adc_readings_1_12         48  uint32 AD7177 word: [31:8] raw24, [7:0] status
 geiger_valid                  1
 reserved                      1
 geiger_error_flags            2
@@ -112,9 +140,37 @@ Masks:
 ```text
 temperature_valid_mask bit 0 = temperature sensor 1 valid
 temperature_valid_mask bit 12 = temperature sensor 13 valid
-os_adc_valid_mask bit 0 = OS ADC channel 1 valid
-os_adc_valid_mask bit 11 = OS ADC channel 12 valid
+os_adc_valid_mask is retained in the packet layout but AD7177 slots are decoded from the 12 uint32 words.
 ```
+
+AD7177 slot order is fixed:
+
+```text
+slot 0  = ADC0 CH0
+slot 1  = ADC0 CH1
+slot 2  = ADC0 CH2
+slot 3  = ADC1 CH0
+slot 4  = ADC1 CH1
+slot 5  = ADC1 CH2
+slot 6  = ADC2 CH0
+slot 7  = ADC2 CH1
+slot 8  = ADC2 CH2
+slot 9  = ADC3 CH0
+slot 10 = ADC3 CH1
+slot 11 = ADC3 CH2
+```
+
+AD7177 status byte bits:
+
+```text
+bit 7    RDY
+bit 6    ADC_ERROR
+bit 5    CRC_ERROR
+bit 4    REG_ERROR
+bits 1:0 status channel number
+```
+
+Current firmware fills ADC0 CH0/CH1/CH2. The remaining AD7177 slots are reserved for the later 4 ADC x 3 channel hardware and may remain zero.
 
 TCP command request app payload, carried inside normal TCP/IP packets:
 

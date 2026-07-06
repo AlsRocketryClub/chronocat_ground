@@ -14,6 +14,14 @@ TELEMETRY_MESSAGE_TYPE = 1
 TELEMETRY_PACKET_SIZE = 131
 TELEMETRY_TEMP_COUNT = 13
 TELEMETRY_OS_ADC_COUNT = 12
+AD7177_DEVICE_COUNT = 4
+AD7177_CHANNEL_COUNT = 3
+
+AD7177_STATUS_RDY = 1 << 7
+AD7177_STATUS_ADC_ERROR = 1 << 6
+AD7177_STATUS_CRC_ERROR = 1 << 5
+AD7177_STATUS_REG_ERROR = 1 << 4
+AD7177_STATUS_CHANNEL_MASK = 0x03
 
 TELEMETRY_FLAG_ENABLED = 1 << 0
 TELEMETRY_FLAG_TCP_LISTENING = 1 << 1
@@ -73,6 +81,40 @@ STATUS_NAMES = {
 
 
 @dataclass(frozen=True)
+class Ad7177Reading:
+    slot: int
+    adc_index: int
+    channel_index: int
+    word: int
+    raw24: int
+    status: int
+
+    @property
+    def rdy(self) -> bool:
+        return (self.status & AD7177_STATUS_RDY) != 0
+
+    @property
+    def adc_error(self) -> bool:
+        return (self.status & AD7177_STATUS_ADC_ERROR) != 0
+
+    @property
+    def crc_error(self) -> bool:
+        return (self.status & AD7177_STATUS_CRC_ERROR) != 0
+
+    @property
+    def reg_error(self) -> bool:
+        return (self.status & AD7177_STATUS_REG_ERROR) != 0
+
+    @property
+    def status_channel(self) -> int:
+        return self.status & AD7177_STATUS_CHANNEL_MASK
+
+    @property
+    def has_error(self) -> bool:
+        return self.adc_error or self.crc_error or self.reg_error
+
+
+@dataclass(frozen=True)
 class TelemetryPacket:
     version: int
     message_type: int
@@ -108,6 +150,27 @@ class TelemetryPacket:
     @property
     def tick_10ms(self) -> int:
         return self.timestamp
+
+    @property
+    def tick_ms(self) -> int:
+        return self.timestamp
+
+    @property
+    def ad7177_readings(self) -> tuple[Ad7177Reading, ...]:
+        return tuple(
+            Ad7177Reading(
+                slot=index,
+                adc_index=index // AD7177_CHANNEL_COUNT,
+                channel_index=index % AD7177_CHANNEL_COUNT,
+                word=word,
+                raw24=(word >> 8) & 0x00FFFFFF,
+                status=word & 0xFF,
+            )
+            for index, word in enumerate(self.os_adc_readings)
+        )
+
+    def ad7177_reading(self, index: int) -> Ad7177Reading:
+        return self.ad7177_readings[index]
 
     def temperature_valid(self, index: int) -> bool:
         return (self.temperature_valid_mask & (1 << index)) != 0
@@ -289,3 +352,17 @@ def tcp_status_name(status: int) -> str:
 
 def telemetry_health_name(health_code: int) -> str:
     return TELEMETRY_HEALTH_NAMES.get(health_code, f"0x{health_code:02x}")
+
+
+def ad7177_status_names(status: int) -> str:
+    names = []
+    if status & AD7177_STATUS_RDY:
+        names.append("RDY")
+    if status & AD7177_STATUS_ADC_ERROR:
+        names.append("ADC_ERROR")
+    if status & AD7177_STATUS_CRC_ERROR:
+        names.append("CRC_ERROR")
+    if status & AD7177_STATUS_REG_ERROR:
+        names.append("REG_ERROR")
+    names.append(f"CH{status & AD7177_STATUS_CHANNEL_MASK}")
+    return ", ".join(names)

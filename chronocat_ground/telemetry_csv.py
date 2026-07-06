@@ -7,9 +7,11 @@ from typing import TextIO
 
 from .protocol import (
     GEIGER_ERROR_NAMES,
+    AD7177_CHANNEL_COUNT,
     TELEMETRY_OS_ADC_COUNT,
     TELEMETRY_TEMP_COUNT,
     TelemetryPacket,
+    ad7177_status_names,
     tcp_status_name,
     telemetry_health_name,
 )
@@ -29,7 +31,7 @@ def csv_fieldnames() -> list[str]:
         "message_type",
         "flags",
         "payload_length",
-        "packet_timestamp",
+        "packet_timestamp_ms",
         "counter",
         "health_code",
         "health",
@@ -43,8 +45,13 @@ def csv_fieldnames() -> list[str]:
     fields.append("os_adc_valid_mask")
 
     for index in range(1, TELEMETRY_OS_ADC_COUNT + 1):
-        fields.append(f"adc_{index}")
-        fields.append(f"adc_{index}_valid")
+        adc_index = (index - 1) // AD7177_CHANNEL_COUNT
+        channel_index = (index - 1) % AD7177_CHANNEL_COUNT
+        prefix = f"ad7177_adc_{adc_index}_ch_{channel_index}"
+        fields.append(f"{prefix}_word")
+        fields.append(f"{prefix}_raw24")
+        fields.append(f"{prefix}_status")
+        fields.append(f"{prefix}_status_names")
 
     fields.append("tcp_status")
     fields.extend(
@@ -76,7 +83,7 @@ def packet_to_row(packet: TelemetryPacket, received_at: datetime, source: tuple[
         "message_type": packet.message_type,
         "flags": f"0x{packet.flags:04x}",
         "payload_length": packet.payload_length,
-        "packet_timestamp": packet.timestamp,
+        "packet_timestamp_ms": packet.timestamp,
         "counter": packet.counter,
         "health_code": packet.health_code,
         "health": telemetry_health_name(packet.health_code),
@@ -90,10 +97,12 @@ def packet_to_row(packet: TelemetryPacket, received_at: datetime, source: tuple[
 
     row["os_adc_valid_mask"] = f"0x{packet.os_adc_valid_mask:04x}"
 
-    for index, value in enumerate(packet.os_adc_readings, start=1):
-        zero_based = index - 1
-        row[f"adc_{index}"] = value
-        row[f"adc_{index}_valid"] = int(packet.os_adc_valid(zero_based))
+    for reading in packet.ad7177_readings:
+        prefix = f"ad7177_adc_{reading.adc_index}_ch_{reading.channel_index}"
+        row[f"{prefix}_word"] = f"0x{reading.word:08x}"
+        row[f"{prefix}_raw24"] = reading.raw24
+        row[f"{prefix}_status"] = f"0x{reading.status:02x}"
+        row[f"{prefix}_status_names"] = ad7177_status_names(reading.status)
 
     row["tcp_status"] = tcp_status_name(packet.tcp_status)
     row["geiger_valid"] = packet.geiger_valid

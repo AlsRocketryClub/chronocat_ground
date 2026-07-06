@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import datetime
+import os
 import time
 
-from PySide6.QtCore import QPointF, QRectF, QTimer, Qt
-from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
+from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QComboBox,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -16,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QPlainTextEdit,
     QScrollArea,
@@ -29,6 +33,8 @@ from PySide6.QtWidgets import (
 
 from .command_client import CommandClient
 from .protocol import (
+    AD7177_CHANNEL_COUNT,
+    TELEMETRY_OS_ADC_COUNT,
     COMMAND_PING,
     COMMAND_GEIGER_CLEAR_HISTORY,
     COMMAND_GEIGER_RESET_DOSE,
@@ -43,6 +49,7 @@ from .protocol import (
     VALUE_ON,
     CommandResponse,
     TelemetryPacket,
+    ad7177_status_names,
     command_name,
     geiger_reset_actions_name,
     status_name,
@@ -51,6 +58,7 @@ from .protocol import (
     tcp_status_name,
 )
 from .telemetry_csv import TelemetryCsvLogger
+from .telemetry_db import TelemetryDb
 from .telemetry_receiver import TelemetryReceiver
 
 
@@ -59,7 +67,7 @@ VIEW_RADIATION = "RADIATION"
 VIEW_SAMPLES = "SAMPLES"
 VIEW_TEMPERATURE = "TEMPERATURE MEASUREMENTS"
 VIEW_HEALTH = "SUBSYSTEM HEALTH"
-VIEW_HISTORY = "HISTORIC FLIGHT DATA"
+VIEW_SETTINGS = "SETTINGS"
 
 
 class Panel(QFrame):
@@ -95,8 +103,8 @@ class StatCard(QFrame):
         self.subtitle_label.setWordWrap(True)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(2)
         layout.addWidget(self.title_label)
         layout.addWidget(self.value_label)
         layout.addWidget(self.subtitle_label)
@@ -141,16 +149,31 @@ class ValueTable(QTableWidget):
 
 
 class LinePlotWidget(QWidget):
-    def __init__(self, y_label: str) -> None:
+    def __init__(self, y_label: str, empty_text: str = "Waiting for telemetry", on_click=None) -> None:
         super().__init__()
         self.setObjectName("linePlot")
         self.setMinimumHeight(180)
         self.points: list[tuple[float, float]] = []
         self.y_label = y_label
+        self.empty_text = empty_text
+        self.on_click = on_click
+        if on_click is not None:
+            self.setCursor(Qt.PointingHandCursor)
 
     def set_points(self, points: list[tuple[float, float]]) -> None:
-        self.points = points
+        if not points:
+            self.points = []
+            self.update()
+            return
+        max_x = max(x for x, _y in points)
+        self.points = [((x - max_x) / 1000.0, y) for x, y in points]
         self.update()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if self.on_click is not None and event.button() == Qt.LeftButton:
+            self.on_click()
+            return
+        super().mousePressEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
@@ -174,10 +197,10 @@ class LinePlotWidget(QWidget):
 
         painter.setPen(QPen(QColor("#111111"), 1))
         painter.drawText(8, 16, self.y_label)
-        painter.drawText(int(plot.right()) - 26, bounds.height() - 8, "time")
+        painter.drawText(QRectF(8, bounds.height() - 26, bounds.width() - 16, 22), Qt.AlignRight | Qt.AlignVCenter, "seconds ago")
 
         if len(self.points) < 2:
-            painter.drawText(plot, Qt.AlignCenter, "Waiting for Geiger telemetry")
+            painter.drawText(plot, Qt.AlignCenter, self.empty_text)
             return
 
         x_values = [point[0] for point in self.points]
@@ -196,8 +219,28 @@ class LinePlotWidget(QWidget):
         painter.drawText(8, int(plot.top()) + 8, f"{max_y:.3g}")
         painter.drawText(8, int(plot.bottom()), f"{min_y:.3g}")
 
+        painter.save()
+        font = painter.font()
+        if font.pointSize() > 1:
+            font.setPointSize(font.pointSize() - 1)
+        painter.setFont(font)
+        for index in range(1, 5):
+            fx = plot.left() + plot.width() * index / 5
+            value = min_x + (max_x - min_x) * index / 5
+            label = "now" if abs(value) < 0.01 else f"{value:.0f}s" if abs(value) >= 10 else f"{value:.1f}s"
+            text_rect = QRectF(fx - 20, plot.bottom() + 2, 40, 20)
+            painter.drawText(text_rect, Qt.AlignCenter, label)
+        painter.restore()
+
         polyline = QPolygonF()
+        vp = event.rect()
+        vis_left = min_x + ((vp.left() - plot.left()) / plot.width()) * (max_x - min_x)
+        vis_right = min_x + ((vp.right() - plot.left()) / plot.width()) * (max_x - min_x)
         for x_value, y_value in self.points:
+            if x_value < vis_left:
+                continue
+            if x_value > vis_right:
+                break
             x = plot.left() + ((x_value - min_x) / (max_x - min_x)) * plot.width()
             y = plot.bottom() - ((y_value - min_y) / (max_y - min_y)) * plot.height()
             polyline.append(QPointF(x, y))
@@ -207,34 +250,28 @@ class LinePlotWidget(QWidget):
 
 
 class SampleCard(QFrame):
-    def __init__(self, circuit: int, pair: int, sample_name: str) -> None:
+    graph_requested = Signal(int)
+
+    def __init__(self, device_name: str, slot: int) -> None:
         super().__init__()
         self.setObjectName("sampleCard")
-        self.details_visible = False
+        self.slot = slot
+        adc_index = slot // AD7177_CHANNEL_COUNT
+        channel_index = slot % AD7177_CHANNEL_COUNT
 
-        self.toggle_button = QPushButton(sample_name)
+        self.toggle_button = QPushButton(device_name)
         self.toggle_button.setObjectName("sampleToggle")
-        self.toggle_button.clicked.connect(self.toggle_details)
+        self.toggle_button.clicked.connect(lambda: self.graph_requested.emit(self.slot))
 
         self.reading_label = QLabel("Newest reading: X")
         self.reading_label.setObjectName("sampleMetric")
-        self.temperature_label = QLabel("Temperature: X °C")
+        self.temperature_label = QLabel("Status: X")
         self.temperature_label.setObjectName("sampleMetric")
-        self.meta_label = QLabel(f"Measurement circuit {circuit} / Pair {pair}")
+        self.meta_label = QLabel(f"ADC{adc_index} CH{channel_index}")
         self.meta_label.setObjectName("smallNote")
 
-        self.detail_panel = QFrame()
-        self.detail_panel.setObjectName("chartBox")
-        detail_layout = QVBoxLayout(self.detail_panel)
-        detail_layout.setContentsMargins(8, 8, 8, 8)
-        chart_title = QLabel("TIME-SERIES DATA")
-        chart_title.setObjectName("panelTitle")
-        chart = QLabel("X\n\n  /--\\____/---\\____/--\\\n\nTIME")
-        chart.setObjectName("sampleChart")
-        chart.setAlignment(Qt.AlignCenter)
-        detail_layout.addWidget(chart_title)
-        detail_layout.addWidget(chart)
-        self.detail_panel.hide()
+        self.plot = LinePlotWidget("raw24", "Waiting for ADC telemetry", on_click=lambda: self.graph_requested.emit(self.slot))
+        self.plot.setMinimumHeight(140)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -243,11 +280,14 @@ class SampleCard(QFrame):
         layout.addWidget(self.reading_label)
         layout.addWidget(self.temperature_label)
         layout.addWidget(self.meta_label)
-        layout.addWidget(self.detail_panel)
+        layout.addWidget(self.plot)
 
-    def toggle_details(self) -> None:
-        self.details_visible = not self.details_visible
-        self.detail_panel.setVisible(self.details_visible)
+    def set_reading(self, reading: str, status: str) -> None:
+        self.reading_label.setText(f"Newest reading: {reading}")
+        self.temperature_label.setText(f"Status: {status}")
+
+    def set_points(self, points: list[tuple[float, float]]) -> None:
+        self.plot.set_points(points)
 
 
 class MainWindow(QMainWindow):
@@ -262,6 +302,16 @@ class MainWindow(QMainWindow):
         self.last_telemetry_time: float | None = None
         self.view_buttons: dict[str, QPushButton] = {}
         self.geiger_dose_rate_history: deque[tuple[float, float]] = deque(maxlen=300)
+        self.adc_raw24_histories: list[deque[tuple[float, float]]] = [
+            deque(maxlen=300) for _ in range(TELEMETRY_OS_ADC_COUNT)
+        ]
+        self.adc_db = TelemetryDb("chronocat_adc.db")
+        self.sample_cards: list[SampleCard] = []
+        self.adc_dialog: QDialog | None = None
+        self.adc_dialog_slot: int | None = None
+        self.adc_dialog_plot: LinePlotWidget | None = None
+        self.adc_dialog_latest: QLabel | None = None
+        self.adc_dialog_scroll: QScrollArea | None = None
         self.csv_logger: TelemetryCsvLogger | None = None
 
         self.telemetry_receiver = TelemetryReceiver(DEFAULT_TELEMETRY_PORT)
@@ -301,7 +351,7 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.scroll_page(self.build_samples_page()))
         self.pages.addWidget(self.scroll_page(self.build_temperature_page()))
         self.pages.addWidget(self.scroll_page(self.build_health_page()))
-        self.pages.addWidget(self.scroll_page(self.build_history_page()))
+        self.pages.addWidget(self.scroll_page(self.build_settings_page()))
         body.addWidget(self.pages, 1)
 
         return root
@@ -312,6 +362,16 @@ class MainWindow(QMainWindow):
         topbar_layout = QHBoxLayout(topbar)
         topbar_layout.setContentsMargins(12, 12, 12, 12)
         topbar_layout.setSpacing(16)
+
+        script_dir = os.path.dirname(__file__)
+        logo_path = os.path.join(script_dir, "CHRONO-CAT_logo.png")
+        logo_pixmap = QPixmap(logo_path)
+        if not logo_pixmap.isNull():
+            logo_pixmap = logo_pixmap.scaledToHeight(40, Qt.SmoothTransformation)
+            logo_label = QLabel()
+            logo_label.setPixmap(logo_pixmap)
+            logo_label.setFixedSize(logo_pixmap.size())
+            topbar_layout.addWidget(logo_label)
 
         title_box = QVBoxLayout()
         title_box.setSpacing(4)
@@ -378,7 +438,7 @@ class MainWindow(QMainWindow):
         sidebar.layout.addSpacing(8)
         sidebar.layout.addWidget(views_title)
 
-        for view in (VIEW_MONITORING, VIEW_RADIATION, VIEW_SAMPLES, VIEW_TEMPERATURE, VIEW_HEALTH, VIEW_HISTORY):
+        for view in (VIEW_MONITORING, VIEW_RADIATION, VIEW_SAMPLES, VIEW_TEMPERATURE, VIEW_HEALTH, VIEW_SETTINGS):
             button = QPushButton(view)
             button.setObjectName("navButton")
             button.clicked.connect(lambda _checked=False, selected=view: self.switch_view(selected))
@@ -407,7 +467,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.telemetry_state)
 
         self.seq_card = StatCard("PACKET COUNTER", "received sequence number")
-        self.tick_card = StatCard("PACKET TIMESTAMP", "firmware tick count, 10 ms units")
+        self.tick_card = StatCard("PACKET TIMESTAMP", "firmware tick count, ms")
         self.tcp_card = StatCard("HEALTH CODE", "TCP server state")
         self.count_card = StatCard("TELEMETRY STORAGE", "packets received this session")
         self.geiger_dose_rate_card = StatCard("GEIGER DOSE RATE", "dose rate, CPS")
@@ -416,15 +476,15 @@ class MainWindow(QMainWindow):
         self.geiger_errors_card = StatCard("GEIGER ERRORS", "error flags")
 
         cards = QGridLayout()
-        cards.setSpacing(12)
+        cards.setSpacing(8)
         cards.addWidget(self.seq_card, 0, 0)
         cards.addWidget(self.tick_card, 0, 1)
-        cards.addWidget(self.tcp_card, 1, 0)
-        cards.addWidget(self.count_card, 1, 1)
-        cards.addWidget(self.geiger_dose_rate_card, 2, 0)
-        cards.addWidget(self.geiger_total_dose_card, 2, 1)
-        cards.addWidget(self.geiger_hv_card, 3, 0)
-        cards.addWidget(self.geiger_errors_card, 3, 1)
+        cards.addWidget(self.tcp_card, 0, 2)
+        cards.addWidget(self.count_card, 0, 3)
+        cards.addWidget(self.geiger_dose_rate_card, 1, 0)
+        cards.addWidget(self.geiger_total_dose_card, 1, 1)
+        cards.addWidget(self.geiger_hv_card, 1, 2)
+        cards.addWidget(self.geiger_errors_card, 1, 3)
         layout.addLayout(cards)
 
         layout.addWidget(self.build_chart_panel())
@@ -462,7 +522,7 @@ class MainWindow(QMainWindow):
         chart_header.addStretch(1)
         chart_header.addWidget(self.timestamp_label)
         chart_panel.layout.addLayout(chart_header)
-        self.monitoring_geiger_plot = LinePlotWidget("dose rate CPS")
+        self.monitoring_geiger_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger telemetry")
         chart_panel.layout.addWidget(self.monitoring_geiger_plot)
         return chart_panel
 
@@ -473,15 +533,15 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
 
         cards = QGridLayout()
-        cards.setSpacing(12)
+        cards.setSpacing(8)
         self.radiation_dose_rate_card = StatCard("GEIGER DOSE RATE", "dose rate, CPS")
         self.radiation_total_dose_card = StatCard("GEIGER TOTAL DOSE", "accumulated dose, Sv")
         self.radiation_hv_card = StatCard("GEIGER HV", "HV voltage")
         self.radiation_errors_card = StatCard("GEIGER ERRORS", "error flags")
         cards.addWidget(self.radiation_dose_rate_card, 0, 0)
         cards.addWidget(self.radiation_total_dose_card, 0, 1)
-        cards.addWidget(self.radiation_hv_card, 1, 0)
-        cards.addWidget(self.radiation_errors_card, 1, 1)
+        cards.addWidget(self.radiation_hv_card, 0, 2)
+        cards.addWidget(self.radiation_errors_card, 0, 3)
         layout.addLayout(cards)
 
         layout.addWidget(self.build_geiger_controls_panel())
@@ -496,7 +556,7 @@ class MainWindow(QMainWindow):
         plot_header.addStretch(1)
         plot_header.addWidget(self.radiation_plot_status)
         plot_panel.layout.addLayout(plot_header)
-        self.radiation_geiger_plot = LinePlotWidget("dose rate CPS")
+        self.radiation_geiger_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger telemetry")
         self.radiation_geiger_plot.setMinimumHeight(320)
         plot_panel.layout.addWidget(self.radiation_geiger_plot)
         layout.addWidget(plot_panel)
@@ -559,19 +619,25 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         title = QLabel("SAMPLES")
         title.setObjectName("panelTitle")
-        note = QLabel("12 samples across two measurement circuits")
+        note = QLabel("12 ADC telemetry slots")
         note.setObjectName("smallNote")
         header.addWidget(title)
         header.addStretch(1)
         header.addWidget(note)
         samples_panel.layout.addLayout(header)
-        samples_panel.layout.addWidget(
-            ValueTable(
-                [(f"Material #{index}", "X / X °C") for index in range(1, 7)]
-                + [(f"Material #{index} shielded", "X / X °C") for index in range(1, 7)],
-                ("Sample", "Reading / Temperature"),
-            )
-        )
+
+        materials = ["TIPs-pentacene", "diF-TES-ADT", "Rubrene"]
+        device_types = ["Device 1a", "Device 2a", "Device 1b", "Device 2b"]
+        rows = []
+        for slot in range(12):
+            ch = slot % 3
+            dev_off = slot // 3
+            mat_name = materials[ch]
+            dev_name = device_types[dev_off]
+            rows.append((f"{mat_name} {dev_name}", "—"))
+
+        self.samples_summary_table = ValueTable(rows, ("Sample", "Raw Value"))
+        samples_panel.layout.addWidget(self.samples_summary_table)
         return samples_panel
 
     def build_telemetry_panel(self) -> Panel:
@@ -587,7 +653,7 @@ class MainWindow(QMainWindow):
         telemetry_panel.layout.addLayout(header)
         self.telemetry_table = ValueTable(
             [
-                ("Organic Semiconductor ADC Readings", "X"),
+                ("AD7177 Readings", "X"),
                 ("Temperature Measurements", "X"),
                 ("Subsystem Health Indicators", "X"),
                 ("Geiger Valid", "X"),
@@ -595,12 +661,12 @@ class MainWindow(QMainWindow):
                 ("Geiger Total Dose (Sv)", "X"),
                 ("Geiger HV Voltage", "X"),
                 ("Geiger Error Flags", "X"),
-                ("Packet Timestamp", "X"),
+                ("Packet Timestamp (ms)", "X"),
                 ("Health Code", "X"),
                 ("Counter", "X"),
                 ("Flags", "X"),
                 ("Temperature Valid Mask", "X"),
-                ("OS ADC Valid Mask", "X"),
+                ("ADC Legacy Valid Mask", "X"),
                 ("Source", "X"),
                 ("Last Seen", "X"),
             ],
@@ -656,13 +722,13 @@ class MainWindow(QMainWindow):
                 ("Message Type", "X"),
                 ("Flags", "X"),
                 ("Payload Length", "X"),
-                ("Packet Timestamp", "X"),
+                ("Packet Timestamp (ms)", "X"),
                 ("Counter", "X"),
                 ("Health Code", "X"),
                 ("Temperature Valid Mask", "X"),
                 ("Temperature Sensors", "X"),
-                ("OS ADC Valid Mask", "X"),
-                ("Organic Semiconductor ADC Readings", "X"),
+                ("ADC Legacy Valid Mask", "X"),
+                ("AD7177 Readings", "X"),
                 ("Geiger Valid", "X"),
                 ("Geiger Error Flags", "X"),
                 ("Geiger Event ID", "X"),
@@ -687,30 +753,143 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        intro = Panel("SAMPLES")
-        text = QLabel(
-            "Newest placeholder readings for 12 samples. Each measurement circuit contains three material pairs; each pair has a sample and shielded sample. Click a sample to expand its time-series diagram."
-        )
-        text.setWordWrap(True)
-        intro.layout.addWidget(text)
-        layout.addWidget(intro)
+        materials = [
+            ("TIPs-pentacene", 0),
+            ("diF-TES-ADT", 1),
+            ("Rubrene", 2),
+        ]
+        device_types = ["Device 1a", "Device 2a", "Device 1b", "Device 2b"]
 
-        sample_index = 1
-        for circuit in (1, 2):
-            circuit_panel = Panel(f"MEASUREMENT CIRCUIT {circuit}")
+        for slot in range(12):
+            ch = slot % 3
+            dev_off = slot // 3
+            mat_name = materials[ch][0]
+            name = f"{mat_name} {device_types[dev_off]}"
+            card = SampleCard(name, slot)
+            card.graph_requested.connect(self.show_adc_graph_dialog)
+            self.sample_cards.append(card)
+
+        for mat_name, ch in materials:
+            mat_panel = Panel(mat_name.upper())
             grid = QGridLayout()
             grid.setSpacing(8)
-            for pair in range(1, 4):
-                sample = SampleCard(circuit, pair, f"Material #{sample_index}")
-                shielded = SampleCard(circuit, pair, f"Material #{sample_index} shielded")
-                grid.addWidget(sample, pair - 1, 0)
-                grid.addWidget(shielded, pair - 1, 1)
-                sample_index += 1
-            circuit_panel.layout.addLayout(grid)
-            layout.addWidget(circuit_panel)
+
+            for slot, row, col in [
+                (ch, 0, 0),
+                (3 + ch, 0, 1),
+                (6 + ch, 1, 0),
+                (9 + ch, 1, 1),
+            ]:
+                card = self.sample_cards[slot]
+                grid.addWidget(card, row, col)
+
+            mat_panel.layout.addLayout(grid)
+            layout.addWidget(mat_panel)
 
         layout.addStretch(1)
         return page
+
+    def show_adc_graph_dialog(self, slot: int) -> None:
+        try:
+            if not 0 <= slot < len(self.sample_cards):
+                return
+
+            if self.adc_dialog is not None:
+                self.adc_dialog.close()
+
+            card = self.sample_cards[slot]
+            adc_index = slot // AD7177_CHANNEL_COUNT
+            channel_index = slot % AD7177_CHANNEL_COUNT
+            title = f"{card.toggle_button.text()} / ADC{adc_index} CH{channel_index}"
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle(title)
+            dialog.resize(900, 520)
+
+            frame = QFrame()
+            frame.setObjectName("panel")
+            frame_layout = QVBoxLayout(frame)
+            frame_layout.setContentsMargins(12, 12, 12, 12)
+            frame_layout.setSpacing(8)
+
+            layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(frame)
+
+            top_row = QHBoxLayout()
+            title_label = QLabel(title)
+            title_label.setObjectName("panelTitle")
+            top_row.addWidget(title_label, 1)
+
+            latest_label = QLabel(f"{card.reading_label.text()} / {card.temperature_label.text()}")
+            latest_label.setObjectName("smallNote")
+            latest_label.setWordWrap(True)
+
+            plot = LinePlotWidget("raw24", "Waiting for ADC telemetry")
+            plot.setMinimumHeight(400)
+
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(False)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setWidget(plot)
+
+            frame_layout.addLayout(top_row)
+            frame_layout.addWidget(latest_label)
+            frame_layout.addWidget(scroll, 1)
+
+            self.adc_dialog = dialog
+            self.adc_dialog_slot = slot
+            self.adc_dialog_scroll = scroll
+            self.adc_dialog_plot = plot
+            self.adc_dialog_latest = latest_label
+
+            dialog.finished.connect(lambda _result, opened=dialog: self.clear_adc_graph_dialog(opened))
+
+            points = self._load_dialog_data(slot)
+            plot.set_points(points)
+            if points:
+                plot.setFixedWidth(max(len(points), 876))
+            dialog.show()
+        except Exception as exc:
+            self.log(f"Failed to open ADC graph: {exc}")
+
+    def _load_dialog_data(self, slot: int) -> list[tuple[float, float]]:
+        rows = self.adc_db.query(slot, 0)
+        if rows:
+            return [(float(ts), float(v)) for ts, v in rows]
+        if self.adc_raw24_histories[slot]:
+            return list(self.adc_raw24_histories[slot])
+        return []
+
+    def clear_adc_graph_dialog(self, dialog: QDialog) -> None:
+        if self.adc_dialog is not dialog:
+            return
+        self.adc_dialog = None
+        self.adc_dialog_slot = None
+        self.adc_dialog_scroll = None
+        self.adc_dialog_plot = None
+        self.adc_dialog_latest = None
+
+    def update_adc_graph_dialog(self) -> None:
+        slot = self.adc_dialog_slot
+        if slot is None or self.adc_dialog_plot is None or self.adc_dialog_latest is None or self.adc_dialog_scroll is None:
+            return
+        if not 0 <= slot < len(self.sample_cards):
+            return
+        card = self.sample_cards[slot]
+        self.adc_dialog_latest.setText(f"{card.reading_label.text()} / {card.temperature_label.text()}")
+        points = self._load_dialog_data(slot)
+        self.adc_dialog_plot.set_points(points)
+        sb = self.adc_dialog_scroll.horizontalScrollBar()
+        was_at_end = sb.value() == sb.maximum()
+        if points:
+            vp_w = self.adc_dialog_scroll.viewport().width()
+            w = max(len(points), vp_w)
+            if self.adc_dialog_plot.width() != w:
+                self.adc_dialog_plot.setFixedWidth(w)
+        if was_at_end:
+            sb.setValue(sb.maximum())
 
     def build_temperature_page(self) -> QWidget:
         page = QWidget()
@@ -750,25 +929,53 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return page
 
-    def build_history_page(self) -> QWidget:
+    def build_settings_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        panel = Panel("HISTORIC FLIGHT DATA")
-        meta = QLabel("Browse and analyse stored telemetry without onboard storage access. File loading is not implemented yet.")
-        meta.setObjectName("smallNote")
-        meta.setWordWrap(True)
-        button = QPushButton("OPEN HISTORIC DATA")
-        button.setEnabled(False)
-        panel.layout.addWidget(meta)
-        panel.layout.addWidget(button)
+
+        panel = Panel("SETTINGS")
         layout.addWidget(panel)
+
+        db_panel = Panel("ADC DATABASE")
+        db_path = "chronocat_adc.db"
+        db_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+        db_count = 0
+        try:
+            if self.adc_db.conn:
+                cur = self.adc_db.conn.execute("SELECT COUNT(*) FROM adc")
+                db_count = cur.fetchone()[0]
+        except Exception:
+            pass
+        size_str = f"{db_size:,} bytes" if db_size > 0 else "N/A"
+        info = QLabel(
+            f"File: {db_path}\nRecords: {db_count:,}\nSize: {size_str}"
+        )
+        info.setObjectName("smallNote")
+        info.setWordWrap(True)
+        db_panel.layout.addWidget(info)
+
+        clear_btn = QPushButton("CLEAR DATABASE")
+        clear_btn.clicked.connect(self._on_clear_db)
+        db_panel.layout.addWidget(clear_btn)
+
+        layout.addWidget(db_panel)
         layout.addStretch(1)
         return page
 
+    def _on_clear_db(self) -> None:
+        ret = QMessageBox.question(
+            self, "Clear Database",
+            "Delete all stored ADC records? In-memory graphs keep current session data.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if ret == QMessageBox.Yes:
+            self.adc_db.clear()
+            self.log("ADC database cleared")
+
     def switch_view(self, view: str) -> None:
-        order = [VIEW_MONITORING, VIEW_RADIATION, VIEW_SAMPLES, VIEW_TEMPERATURE, VIEW_HEALTH, VIEW_HISTORY]
+        order = [VIEW_MONITORING, VIEW_RADIATION, VIEW_SAMPLES, VIEW_TEMPERATURE, VIEW_HEALTH, VIEW_SETTINGS]
         self.pages.setCurrentIndex(order.index(view))
         for name, button in self.view_buttons.items():
             button.setObjectName("navButtonActive" if name == view else "navButton")
@@ -809,12 +1016,12 @@ class MainWindow(QMainWindow):
                 letter-spacing: 1px;
             }
             #panelTitle, #kpiLabel, #formLabel {
-                font-size: 12px;
+                font-size: 11px;
                 font-weight: 700;
                 letter-spacing: 1px;
             }
             #kpiValue {
-                font-size: 24px;
+                font-size: 18px;
                 font-weight: 700;
             }
             #subtitle, #kpiSub, #smallNote, #sampleMetric {
@@ -828,6 +1035,27 @@ class MainWindow(QMainWindow):
                 padding: 6px 8px;
                 selection-background-color: #d9d9d9;
                 selection-color: #111111;
+            }
+            QComboBox {
+                background: #ffffff;
+                border: 1px solid #777777;
+                border-radius: 0px;
+                padding: 6px 8px;
+                min-width: 80px;
+            }
+            QComboBox:hover {
+                border-color: #555555;
+            }
+            QComboBox QAbstractItemView {
+                background: #ffffff;
+                border: 1px solid #777777;
+                selection-background-color: #d9d9d9;
+                selection-color: #111111;
+                outline: none;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 24px;
             }
             QPushButton {
                 background: #ececec;
@@ -1082,7 +1310,29 @@ class MainWindow(QMainWindow):
             self.radiation_geiger_plot.set_points(points)
             self.radiation_plot_status.setText(f"{len(points)}/300 points")
 
-        self.telemetry_table.set_value("Organic Semiconductor ADC Readings", adc_summary)
+        materials = ["TIPs-pentacene", "diF-TES-ADT", "Rubrene"]
+        device_types = ["Device 1a", "Device 2a", "Device 1b", "Device 2b"]
+        readings_pairs: list[tuple[int, int]] = []
+        for reading in packet.ad7177_readings:
+            readings_pairs.append((reading.slot, reading.raw24))
+            self.adc_raw24_histories[reading.slot].append((float(packet.timestamp), float(reading.raw24)))
+            if reading.slot < len(self.sample_cards):
+                points = list(self.adc_raw24_histories[reading.slot])
+                self.sample_cards[reading.slot].set_points(points)
+                self.sample_cards[reading.slot].set_reading(
+                    f"0x{reading.raw24:06x} ({reading.raw24})",
+                    f"0x{reading.status:02x} ({ad7177_status_names(reading.status)})",
+                )
+            ch = reading.slot % 3
+            dev_off = reading.slot // 3
+            self.samples_summary_table.set_value(
+                f"{materials[ch]} {device_types[dev_off]}",
+                f"0x{reading.raw24:06x} ({reading.raw24})",
+            )
+        self.adc_db.insert_many(packet.timestamp, readings_pairs)
+        self.update_adc_graph_dialog()
+
+        self.telemetry_table.set_value("AD7177 Readings", adc_summary)
         self.telemetry_table.set_value("Temperature Measurements", temp_summary)
         self.telemetry_table.set_value("Subsystem Health Indicators", health)
         self.telemetry_table.set_value("Geiger Valid", str(packet.geiger_valid))
@@ -1090,12 +1340,12 @@ class MainWindow(QMainWindow):
         self.telemetry_table.set_value("Geiger Total Dose (Sv)", f"{packet.geiger_total_dose_sv:.9g}")
         self.telemetry_table.set_value("Geiger HV Voltage", str(packet.geiger_hv_voltage))
         self.telemetry_table.set_value("Geiger Error Flags", f"0x{packet.geiger_error_flags:04x} ({geiger_error_str})")
-        self.telemetry_table.set_value("Packet Timestamp", str(packet.timestamp))
+        self.telemetry_table.set_value("Packet Timestamp (ms)", str(packet.timestamp))
         self.telemetry_table.set_value("Health Code", health)
         self.telemetry_table.set_value("Counter", str(packet.counter))
         self.telemetry_table.set_value("Flags", flags)
         self.telemetry_table.set_value("Temperature Valid Mask", f"0x{packet.temperature_valid_mask:04x}")
-        self.telemetry_table.set_value("OS ADC Valid Mask", f"0x{packet.os_adc_valid_mask:04x}")
+        self.telemetry_table.set_value("ADC Legacy Valid Mask", f"0x{packet.os_adc_valid_mask:04x}")
         self.telemetry_table.set_value("Source", source)
         self.telemetry_table.set_value("Last Seen", "now")
 
@@ -1103,13 +1353,13 @@ class MainWindow(QMainWindow):
         self.packet_table.set_value("Message Type", str(packet.message_type))
         self.packet_table.set_value("Flags", flags)
         self.packet_table.set_value("Payload Length", str(packet.payload_length))
-        self.packet_table.set_value("Packet Timestamp", str(packet.timestamp))
+        self.packet_table.set_value("Packet Timestamp (ms)", str(packet.timestamp))
         self.packet_table.set_value("Counter", str(packet.counter))
         self.packet_table.set_value("Health Code", health)
         self.packet_table.set_value("Temperature Valid Mask", f"0x{packet.temperature_valid_mask:04x}")
         self.packet_table.set_value("Temperature Sensors", temp_summary)
-        self.packet_table.set_value("OS ADC Valid Mask", f"0x{packet.os_adc_valid_mask:04x}")
-        self.packet_table.set_value("Organic Semiconductor ADC Readings", adc_summary)
+        self.packet_table.set_value("ADC Legacy Valid Mask", f"0x{packet.os_adc_valid_mask:04x}")
+        self.packet_table.set_value("AD7177 Readings", adc_summary)
         self.packet_table.set_value("Geiger Valid", str(packet.geiger_valid))
         self.packet_table.set_value("Geiger Error Flags", f"0x{packet.geiger_error_flags:04x}")
         self.packet_table.set_value("Geiger Event ID", str(packet.geiger_event_id))
@@ -1163,8 +1413,12 @@ class MainWindow(QMainWindow):
         return f"{valid_count}/{len(packet.temperatures)} valid"
 
     def format_adc_summary(self, packet: TelemetryPacket) -> str:
-        valid_count = sum(1 for index in range(len(packet.os_adc_readings)) if packet.os_adc_valid(index))
-        return f"{valid_count}/{len(packet.os_adc_readings)} valid"
+        active_count = sum(1 for reading in packet.ad7177_readings if reading.word != 0)
+        first = packet.ad7177_reading(0)
+        return (
+            f"{active_count}/{len(packet.os_adc_readings)} nonzero; "
+            f"ADC0 CH0 raw24=0x{first.raw24:06x} status=0x{first.status:02x}"
+        )
 
     def update_telemetry_age(self) -> None:
         if self.last_telemetry_time is None:
@@ -1186,6 +1440,9 @@ class MainWindow(QMainWindow):
         self.log_view.appendPlainText(f"[{timestamp}] {message}")
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self.adc_dialog is not None:
+            self.adc_dialog.close()
+        self.adc_db.close()
         if self.csv_logger is not None:
             self.csv_logger.stop()
         self.client.disconnect()

@@ -81,7 +81,7 @@ def record(args: argparse.Namespace) -> int:
                     health = telemetry_health_name(packet.health_code)
                     print(
                         f"packet {packets_written}: counter={packet.counter} "
-                        f"timestamp={packet.timestamp} health={health} source={address[0]}:{address[1]}"
+                        f"timestamp_ms={packet.timestamp} health={health} source={address[0]}:{address[1]}"
                     )
 
                 if args.max_packets is not None and packets_written >= args.max_packets:

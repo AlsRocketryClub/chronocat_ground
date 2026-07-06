@@ -33,6 +33,7 @@ ui_*.py
 
 # Logs and runtime data
 *.log
+*.db
 *.sqlite
 *.sqlite3
 
