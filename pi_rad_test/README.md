@@ -105,7 +105,9 @@ The logger writes timestamped CSV files like:
 telemetry_YYYYMMDD_HHMMSS.csv
 ```
 
-The file is flushed after every valid packet.
+The file is flushed after every valid packet. The installed service uses `--geiger-only`,
+so each CSV row contains one valid detector response without ADC, temperature, or
+placeholder columns.
 
 ## Useful Commands
 
@@ -131,7 +133,7 @@ Run manually for a quick test:
 
 ```bash
 cd /home/pi/chronocat_logs
-/home/pi/chronocat_ground/.venv-pi/bin/chronocat_telemetry --quiet
+/home/pi/chronocat_ground/.venv-pi/bin/chronocat_telemetry --quiet --geiger-only
 ```
 
 Check Pi IP address:
@@ -151,4 +153,5 @@ sudo ss -lunp | grep 5005
 - Only one process can bind UDP port `5005` at a time.
 - The logger does not send TCP commands.
 - The logger only receives UDP telemetry and writes CSV.
-- The current telemetry parser expects 131-byte packets.
+- The telemetry parser accepts version 1 (`131` bytes, one Geiger) and version 2
+  (`165` bytes, two Geigers) packets.
