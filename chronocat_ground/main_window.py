@@ -3,9 +3,10 @@ from __future__ import annotations
 from collections import deque
 from datetime import datetime
 import os
+import threading
 import time
 
-from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QPointF, QRectF, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,27 +38,28 @@ from .protocol import (
     TELEMETRY_OS_ADC_COUNT,
     COMMAND_PING,
     COMMAND_GEIGER_CLEAR_HISTORY,
-    COMMAND_GEIGER_RESET_DOSE,
+    COMMAND_GEIGER_RESET_ACCUMULATED_DOSE,
     COMMAND_GEIGER_RESET_STATS,
     COMMAND_TELEMETRY_SET,
     COMMAND_TELEMETRY_STATUS,
     DEFAULT_COMMAND_PORT,
     DEFAULT_DEVICE_HOST,
     DEFAULT_TELEMETRY_PORT,
-    GEIGER_ERROR_NAMES,
     VALUE_OFF,
     VALUE_ON,
     CommandResponse,
+    GeigerReading,
     TelemetryPacket,
     ad7177_status_names,
     command_name,
     geiger_reset_actions_name,
+    geiger_error_names,
     status_name,
     telemetry_health_name,
     telemetry_value_name,
     tcp_status_name,
 )
-from .telemetry_csv import TelemetryCsvLogger
+from .telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY, TelemetryCsvLogger
 from .telemetry_db import TelemetryDb
 from .telemetry_receiver import TelemetryReceiver
 
@@ -290,6 +292,11 @@ class SampleCard(QFrame):
         self.plot.set_points(points)
 
 
+class CommandSignals(QObject):
+    completed = Signal(object)
+    failed = Signal(str)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -298,10 +305,16 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(760, 520)
 
         self.client = CommandClient()
+        self.command_in_progress = False
+        self.command_signals = CommandSignals(self)
+        self.command_signals.completed.connect(self.command_completed)
+        self.command_signals.failed.connect(self.command_failed)
         self.telemetry_count = 0
         self.last_telemetry_time: float | None = None
         self.view_buttons: dict[str, QPushButton] = {}
-        self.geiger_dose_rate_history: deque[tuple[float, float]] = deque(maxlen=300)
+        self.geiger_dose_rate_histories: list[deque[tuple[float, float]]] = [
+            deque(maxlen=300), deque(maxlen=300)
+        ]
         self.adc_raw24_histories: list[deque[tuple[float, float]]] = [
             deque(maxlen=300) for _ in range(TELEMETRY_OS_ADC_COUNT)
         ]
@@ -403,6 +416,9 @@ class MainWindow(QMainWindow):
 
         self.csv_log_button = QPushButton("Start CSV Log")
         self.csv_log_button.clicked.connect(self.toggle_csv_logging)
+        self.csv_mode_combo = QComboBox()
+        self.csv_mode_combo.addItem("Full telemetry", CSV_MODE_FULL)
+        self.csv_mode_combo.addItem("Geiger only", CSV_MODE_GEIGER_ONLY)
         self.csv_log_status = QLabel("CSV logging off")
         self.csv_log_status.setObjectName("smallNote")
 
@@ -414,6 +430,7 @@ class MainWindow(QMainWindow):
         connection_bar.addWidget(self.port_input)
         connection_bar.addWidget(self.connection_label)
         connection_bar.addWidget(self.connect_button)
+        connection_bar.addWidget(self.csv_mode_combo)
         connection_bar.addWidget(self.csv_log_button)
         connection_bar.addWidget(self.csv_log_status)
         topbar_layout.addLayout(connection_bar)
@@ -470,10 +487,14 @@ class MainWindow(QMainWindow):
         self.tick_card = StatCard("PACKET TIMESTAMP", "firmware tick count, ms")
         self.tcp_card = StatCard("HEALTH CODE", "TCP server state")
         self.count_card = StatCard("TELEMETRY STORAGE", "packets received this session")
-        self.geiger_dose_rate_card = StatCard("GEIGER DOSE RATE", "dose rate, CPS")
-        self.geiger_total_dose_card = StatCard("GEIGER TOTAL DOSE", "accumulated dose, Sv")
-        self.geiger_hv_card = StatCard("GEIGER HV", "HV voltage")
-        self.geiger_errors_card = StatCard("GEIGER ERRORS", "error flags")
+        self.geiger_dose_rate_card = StatCard("GEIGER 1 DOSE RATE", "dose rate, CPS")
+        self.geiger_total_dose_card = StatCard("GEIGER 1 TOTAL DOSE", "accumulated dose, Sv")
+        self.geiger_hv_card = StatCard("GEIGER 1 HV", "HV voltage")
+        self.geiger_errors_card = StatCard("GEIGER 1 ERRORS", "error flags")
+        self.geiger_2_dose_rate_card = StatCard("GEIGER 2 DOSE RATE", "dose rate, CPS")
+        self.geiger_2_total_dose_card = StatCard("GEIGER 2 TOTAL DOSE", "accumulated dose, Sv")
+        self.geiger_2_hv_card = StatCard("GEIGER 2 HV", "HV voltage")
+        self.geiger_2_errors_card = StatCard("GEIGER 2 ERRORS", "error flags")
 
         cards = QGridLayout()
         cards.setSpacing(8)
@@ -485,6 +506,10 @@ class MainWindow(QMainWindow):
         cards.addWidget(self.geiger_total_dose_card, 1, 1)
         cards.addWidget(self.geiger_hv_card, 1, 2)
         cards.addWidget(self.geiger_errors_card, 1, 3)
+        cards.addWidget(self.geiger_2_dose_rate_card, 2, 0)
+        cards.addWidget(self.geiger_2_total_dose_card, 2, 1)
+        cards.addWidget(self.geiger_2_hv_card, 2, 2)
+        cards.addWidget(self.geiger_2_errors_card, 2, 3)
         layout.addLayout(cards)
 
         layout.addWidget(self.build_chart_panel())
@@ -514,7 +539,7 @@ class MainWindow(QMainWindow):
     def build_chart_panel(self) -> Panel:
         chart_panel = Panel()
         chart_header = QHBoxLayout()
-        chart_title = QLabel("GEIGER DOSE RATE TIME-SERIES")
+        chart_title = QLabel("GEIGER 1 DOSE RATE TIME-SERIES")
         chart_title.setObjectName("panelTitle")
         self.timestamp_label = QLabel("RECEPTION TIMESTAMP: X")
         self.timestamp_label.setObjectName("smallNote")
@@ -524,6 +549,11 @@ class MainWindow(QMainWindow):
         chart_panel.layout.addLayout(chart_header)
         self.monitoring_geiger_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger telemetry")
         chart_panel.layout.addWidget(self.monitoring_geiger_plot)
+        geiger_2_title = QLabel("GEIGER 2 DOSE RATE TIME-SERIES")
+        geiger_2_title.setObjectName("panelTitle")
+        chart_panel.layout.addWidget(geiger_2_title)
+        self.monitoring_geiger_2_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger 2 telemetry")
+        chart_panel.layout.addWidget(self.monitoring_geiger_2_plot)
         return chart_panel
 
     def build_radiation_page(self) -> QWidget:
@@ -534,21 +564,29 @@ class MainWindow(QMainWindow):
 
         cards = QGridLayout()
         cards.setSpacing(8)
-        self.radiation_dose_rate_card = StatCard("GEIGER DOSE RATE", "dose rate, CPS")
-        self.radiation_total_dose_card = StatCard("GEIGER TOTAL DOSE", "accumulated dose, Sv")
-        self.radiation_hv_card = StatCard("GEIGER HV", "HV voltage")
-        self.radiation_errors_card = StatCard("GEIGER ERRORS", "error flags")
+        self.radiation_dose_rate_card = StatCard("GEIGER 1 DOSE RATE", "dose rate, CPS")
+        self.radiation_total_dose_card = StatCard("GEIGER 1 TOTAL DOSE", "accumulated dose, Sv")
+        self.radiation_hv_card = StatCard("GEIGER 1 HV", "HV voltage")
+        self.radiation_errors_card = StatCard("GEIGER 1 ERRORS", "error flags")
+        self.radiation_2_dose_rate_card = StatCard("GEIGER 2 DOSE RATE", "dose rate, CPS")
+        self.radiation_2_total_dose_card = StatCard("GEIGER 2 TOTAL DOSE", "accumulated dose, Sv")
+        self.radiation_2_hv_card = StatCard("GEIGER 2 HV", "HV voltage")
+        self.radiation_2_errors_card = StatCard("GEIGER 2 ERRORS", "error flags")
         cards.addWidget(self.radiation_dose_rate_card, 0, 0)
         cards.addWidget(self.radiation_total_dose_card, 0, 1)
         cards.addWidget(self.radiation_hv_card, 0, 2)
         cards.addWidget(self.radiation_errors_card, 0, 3)
+        cards.addWidget(self.radiation_2_dose_rate_card, 1, 0)
+        cards.addWidget(self.radiation_2_total_dose_card, 1, 1)
+        cards.addWidget(self.radiation_2_hv_card, 1, 2)
+        cards.addWidget(self.radiation_2_errors_card, 1, 3)
         layout.addLayout(cards)
 
         layout.addWidget(self.build_geiger_controls_panel())
 
         plot_panel = Panel()
         plot_header = QHBoxLayout()
-        title = QLabel("GEIGER DOSE RATE TIME-SERIES")
+        title = QLabel("GEIGER 1 DOSE RATE TIME-SERIES")
         title.setObjectName("panelTitle")
         self.radiation_plot_status = QLabel("300 point rolling window")
         self.radiation_plot_status.setObjectName("smallNote")
@@ -559,32 +597,46 @@ class MainWindow(QMainWindow):
         self.radiation_geiger_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger telemetry")
         self.radiation_geiger_plot.setMinimumHeight(320)
         plot_panel.layout.addWidget(self.radiation_geiger_plot)
+        geiger_2_header = QHBoxLayout()
+        geiger_2_title = QLabel("GEIGER 2 DOSE RATE TIME-SERIES")
+        geiger_2_title.setObjectName("panelTitle")
+        self.radiation_2_plot_status = QLabel("300 point rolling window")
+        self.radiation_2_plot_status.setObjectName("smallNote")
+        geiger_2_header.addWidget(geiger_2_title)
+        geiger_2_header.addStretch(1)
+        geiger_2_header.addWidget(self.radiation_2_plot_status)
+        plot_panel.layout.addLayout(geiger_2_header)
+        self.radiation_geiger_2_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger 2 telemetry")
+        self.radiation_geiger_2_plot.setMinimumHeight(320)
+        plot_panel.layout.addWidget(self.radiation_geiger_2_plot)
         layout.addWidget(plot_panel)
 
-        self.radiation_table = ValueTable(
-            [
-                ("Geiger Valid", "X"),
-                ("Geiger Event ID", "X"),
-                ("Geiger Dose CPS", "X"),
-                ("Geiger Dose Rate CPS", "X"),
-                ("Geiger Total Dose Sv", "X"),
-                ("Geiger Dose Time Sec", "X"),
-                ("Geiger Stats Time Sec", "X"),
-                ("Geiger HV Voltage", "X"),
-                ("Geiger Stat Error %", "X"),
-                ("Geiger Stat Cell Count", "X"),
-                ("Geiger Error Flags", "X"),
-            ],
-            ("Metric", "Value"),
-        )
-        table_panel = Panel("GEIGER PACKET DETAILS")
+        geiger_detail_rows = [
+            ("Geiger Valid", "X"),
+            ("Geiger Event ID", "X"),
+            ("Geiger Dose CPS", "X"),
+            ("Geiger Dose Rate CPS", "X"),
+            ("Geiger Total Dose Sv", "X"),
+            ("Geiger Dose Time Sec", "X"),
+            ("Geiger Stats Time Sec", "X"),
+            ("Geiger HV Voltage", "X"),
+            ("Geiger Stat Error %", "X"),
+            ("Geiger Stat Cell Count", "X"),
+            ("Geiger Error Flags", "X"),
+        ]
+        self.radiation_table = ValueTable(geiger_detail_rows, ("Metric", "Value"))
+        table_panel = Panel("GEIGER 1 PACKET DETAILS")
         table_panel.layout.addWidget(self.radiation_table)
         layout.addWidget(table_panel)
+        self.radiation_2_table = ValueTable(geiger_detail_rows, ("Metric", "Value"))
+        table_2_panel = Panel("GEIGER 2 PACKET DETAILS")
+        table_2_panel.layout.addWidget(self.radiation_2_table)
+        layout.addWidget(table_2_panel)
         layout.addStretch(1)
         return page
 
     def build_geiger_controls_panel(self) -> Panel:
-        controls_panel = Panel("GEIGER DETECTOR CONTROLS")
+        controls_panel = Panel("GEIGER 1 DETECTOR CONTROLS")
         note = QLabel(
             "These commands write detector flash and can take a few seconds before telemetry updates."
         )
@@ -592,12 +644,16 @@ class MainWindow(QMainWindow):
         note.setWordWrap(True)
         controls_panel.layout.addWidget(note)
 
-        self.geiger_reset_dose_button = QPushButton("Reset Total Dose")
+        self.geiger_reset_dose_button = QPushButton("Reset Accumulated Dose")
         self.geiger_clear_history_button = QPushButton("Clear History")
         self.geiger_reset_stats_button = QPushButton("Reset Statistics")
 
         self.geiger_reset_dose_button.clicked.connect(
-            lambda: self.send_geiger_command(COMMAND_GEIGER_RESET_DOSE, "reset total dose", timeout=7.0)
+            lambda: self.send_geiger_command(
+                COMMAND_GEIGER_RESET_ACCUMULATED_DOSE,
+                "reset accumulated dose",
+                timeout=7.0,
+            )
         )
         self.geiger_clear_history_button.clicked.connect(
             lambda: self.send_geiger_command(COMMAND_GEIGER_CLEAR_HISTORY, "clear history", timeout=7.0)
@@ -656,11 +712,16 @@ class MainWindow(QMainWindow):
                 ("AD7177 Readings", "X"),
                 ("Temperature Measurements", "X"),
                 ("Subsystem Health Indicators", "X"),
-                ("Geiger Valid", "X"),
-                ("Geiger Dose Rate (CPS)", "X"),
-                ("Geiger Total Dose (Sv)", "X"),
-                ("Geiger HV Voltage", "X"),
-                ("Geiger Error Flags", "X"),
+                ("Geiger 1 Valid", "X"),
+                ("Geiger 1 Dose Rate (CPS)", "X"),
+                ("Geiger 1 Total Dose (Sv)", "X"),
+                ("Geiger 1 HV Voltage", "X"),
+                ("Geiger 1 Error Flags", "X"),
+                ("Geiger 2 Valid", "X"),
+                ("Geiger 2 Dose Rate (CPS)", "X"),
+                ("Geiger 2 Total Dose (Sv)", "X"),
+                ("Geiger 2 HV Voltage", "X"),
+                ("Geiger 2 Error Flags", "X"),
                 ("Packet Timestamp (ms)", "X"),
                 ("Health Code", "X"),
                 ("Counter", "X"),
@@ -729,17 +790,28 @@ class MainWindow(QMainWindow):
                 ("Temperature Sensors", "X"),
                 ("ADC Legacy Valid Mask", "X"),
                 ("AD7177 Readings", "X"),
-                ("Geiger Valid", "X"),
-                ("Geiger Error Flags", "X"),
-                ("Geiger Event ID", "X"),
-                ("Geiger Dose CPS", "X"),
-                ("Geiger Dose Rate CPS", "X"),
-                ("Geiger Total Dose Sv", "X"),
-                ("Geiger Dose Time Sec", "X"),
-                ("Geiger Stats Time Sec", "X"),
-                ("Geiger HV Voltage", "X"),
-                ("Geiger Stat Error %", "X"),
-                ("Geiger Stat Cell Count", "X"),
+                ("Geiger 1 Valid", "X"),
+                ("Geiger 1 Error Flags", "X"),
+                ("Geiger 1 Event ID", "X"),
+                ("Geiger 1 Dose CPS", "X"),
+                ("Geiger 1 Dose Rate CPS", "X"),
+                ("Geiger 1 Total Dose Sv", "X"),
+                ("Geiger 1 Dose Time Sec", "X"),
+                ("Geiger 1 Stats Time Sec", "X"),
+                ("Geiger 1 HV Voltage", "X"),
+                ("Geiger 1 Stat Error %", "X"),
+                ("Geiger 1 Stat Cell Count", "X"),
+                ("Geiger 2 Valid", "X"),
+                ("Geiger 2 Error Flags", "X"),
+                ("Geiger 2 Event ID", "X"),
+                ("Geiger 2 Dose CPS", "X"),
+                ("Geiger 2 Dose Rate CPS", "X"),
+                ("Geiger 2 Total Dose Sv", "X"),
+                ("Geiger 2 Dose Time Sec", "X"),
+                ("Geiger 2 Stats Time Sec", "X"),
+                ("Geiger 2 HV Voltage", "X"),
+                ("Geiger 2 Stat Error %", "X"),
+                ("Geiger 2 Stat Cell Count", "X"),
                 ("TCP Server", "X"),
             ]
         )
@@ -1184,7 +1256,8 @@ class MainWindow(QMainWindow):
             self.stop_csv_logging()
             return
 
-        self.csv_logger = TelemetryCsvLogger()
+        csv_mode = self.csv_mode_combo.currentData()
+        self.csv_logger = TelemetryCsvLogger(mode=csv_mode)
         try:
             self.csv_logger.start()
         except OSError as exc:
@@ -1194,8 +1267,14 @@ class MainWindow(QMainWindow):
             return
 
         self.csv_log_button.setText("Stop CSV Log")
-        self.csv_log_status.setText(f"CSV: {self.csv_logger.path.name} (0)")
-        self.log(f"CSV logging started: {self.csv_logger.path}")
+        self.csv_mode_combo.setEnabled(False)
+        self.csv_log_status.setText(
+            f"CSV ({self.csv_mode_combo.currentText()}): {self.csv_logger.path.name} (0)"
+        )
+        self.log(
+            f"CSV logging started ({self.csv_mode_combo.currentText()}): "
+            f"{self.csv_logger.path}"
+        )
 
     def stop_csv_logging(self) -> None:
         if self.csv_logger is None:
@@ -1204,6 +1283,7 @@ class MainWindow(QMainWindow):
         packet_count = self.csv_logger.packet_count
         self.csv_logger.stop()
         self.csv_logger = None
+        self.csv_mode_combo.setEnabled(True)
         self.csv_log_button.setText("Start CSV Log")
         self.csv_log_status.setText(f"CSV logging stopped ({packet_count})")
         self.log(f"CSV logging stopped: {path} ({packet_count} packet(s))")
@@ -1215,6 +1295,9 @@ class MainWindow(QMainWindow):
         self.connection_label.style().unpolish(self.connection_label)
         self.connection_label.style().polish(self.connection_label)
         self.connect_button.setText("Disconnect" if connected else "Connect")
+        self.connect_button.setEnabled(not self.command_in_progress)
+        self.host_input.setEnabled(not self.command_in_progress)
+        self.port_input.setEnabled(not self.command_in_progress)
 
         self.health_table.set_value("Command Connection", "Connected" if connected else "Disconnected")
 
@@ -1227,7 +1310,7 @@ class MainWindow(QMainWindow):
             self.geiger_clear_history_button,
             self.geiger_reset_stats_button,
         ):
-            button.setEnabled(connected)
+            button.setEnabled(connected and not self.command_in_progress)
 
     def send_command(
         self,
@@ -1236,15 +1319,33 @@ class MainWindow(QMainWindow):
         arg2: int = 0,
         timeout: float | None = None,
     ) -> None:
-        try:
-            response = self.client.send_command(command, value, arg2, timeout=timeout)
-        except (OSError, ValueError, ConnectionError) as exc:
-            self.log(f"Command failed: {exc}")
-            self.client.disconnect()
-            self.update_connection_state()
+        if self.command_in_progress:
+            self.log("Command already in progress")
             return
 
+        self.command_in_progress = True
+        self.update_connection_state()
+
+        def request() -> None:
+            try:
+                response = self.client.send_command(command, value, arg2, timeout=timeout)
+            except (OSError, ValueError, ConnectionError) as exc:
+                self.command_signals.failed.emit(str(exc))
+            else:
+                self.command_signals.completed.emit(response)
+
+        threading.Thread(target=request, daemon=True).start()
+
+    def command_completed(self, response: CommandResponse) -> None:
+        self.command_in_progress = False
         self.log_response(response)
+        self.update_connection_state()
+
+    def command_failed(self, message: str) -> None:
+        self.command_in_progress = False
+        self.log(f"Command failed: {message}")
+        self.client.disconnect()
+        self.update_connection_state()
 
     def send_geiger_command(self, command: int, action: str, timeout: float | None = None) -> None:
         self.log(f"Sending Geiger command: {action}")
@@ -1252,7 +1353,7 @@ class MainWindow(QMainWindow):
 
     def log_response(self, response: CommandResponse) -> None:
         if response.command in (
-            COMMAND_GEIGER_RESET_DOSE,
+            COMMAND_GEIGER_RESET_ACCUMULATED_DOSE,
             COMMAND_GEIGER_CLEAR_HISTORY,
             COMMAND_GEIGER_RESET_STATS,
         ):
@@ -1269,6 +1370,107 @@ class MainWindow(QMainWindow):
                 f"arg1={telemetry_value_name(response.arg1)} arg2={response.arg2}"
             )
         self.log(text)
+
+    @staticmethod
+    def geiger_error_text(reading: GeigerReading | None) -> str:
+        if reading is None:
+            return "unavailable"
+        if not reading.valid:
+            return "invalid"
+        if not reading.error_flags:
+            return "ok"
+        return geiger_error_names(reading.error_flags)
+
+    def update_geiger_cards(
+        self,
+        reading: GeigerReading | None,
+        dose_rate_card: StatCard,
+        total_dose_card: StatCard,
+        hv_card: StatCard,
+        errors_card: StatCard,
+    ) -> None:
+        if reading is None or not reading.valid:
+            state = "unavailable" if reading is None else "invalid"
+            dose_rate_card.set_value(state)
+            total_dose_card.set_value(state)
+            hv_card.set_value(state)
+            errors_card.set_value(state)
+            return
+
+        dose_rate_card.set_value(f"{reading.dose_rate_cps:.9g}")
+        total_dose_card.set_value(f"{reading.total_dose_sv:.9g}")
+        hv_card.set_value(str(reading.hv_voltage))
+        errors_card.set_value(self.geiger_error_text(reading))
+
+    def update_geiger_detail_table(
+        self, table: ValueTable, reading: GeigerReading | None
+    ) -> None:
+        if reading is None or not reading.valid:
+            state = "unavailable" if reading is None else "invalid"
+            table.set_value("Geiger Valid", state)
+            for name in (
+                "Geiger Event ID",
+                "Geiger Dose CPS",
+                "Geiger Dose Rate CPS",
+                "Geiger Total Dose Sv",
+                "Geiger Dose Time Sec",
+                "Geiger Stats Time Sec",
+                "Geiger HV Voltage",
+                "Geiger Stat Error %",
+                "Geiger Stat Cell Count",
+                "Geiger Error Flags",
+            ):
+                table.set_value(name, "—")
+            return
+
+        table.set_value("Geiger Valid", str(reading.valid))
+        table.set_value("Geiger Event ID", str(reading.event_id))
+        table.set_value("Geiger Dose CPS", f"{reading.dose_cps:.17g}")
+        table.set_value("Geiger Dose Rate CPS", f"{reading.dose_rate_cps:.9g}")
+        table.set_value("Geiger Total Dose Sv", f"{reading.total_dose_sv:.9g}")
+        table.set_value("Geiger Dose Time Sec", str(reading.dose_time_sec))
+        table.set_value("Geiger Stats Time Sec", str(reading.stats_time_sec))
+        table.set_value("Geiger HV Voltage", str(reading.hv_voltage))
+        table.set_value("Geiger Stat Error %", str(reading.stat_error_percent))
+        table.set_value("Geiger Stat Cell Count", str(reading.stat_cell_count))
+        table.set_value(
+            "Geiger Error Flags",
+            f"0x{reading.error_flags:04x} ({self.geiger_error_text(reading)})",
+        )
+
+    def update_packet_geiger_fields(
+        self, number: int, reading: GeigerReading | None
+    ) -> None:
+        prefix = f"Geiger {number}"
+        if reading is None or not reading.valid:
+            state = "unavailable" if reading is None else "invalid"
+            self.packet_table.set_value(f"{prefix} Valid", state)
+            for suffix in (
+                "Error Flags",
+                "Event ID",
+                "Dose CPS",
+                "Dose Rate CPS",
+                "Total Dose Sv",
+                "Dose Time Sec",
+                "Stats Time Sec",
+                "HV Voltage",
+                "Stat Error %",
+                "Stat Cell Count",
+            ):
+                self.packet_table.set_value(f"{prefix} {suffix}", "—")
+            return
+
+        self.packet_table.set_value(f"{prefix} Valid", str(reading.valid))
+        self.packet_table.set_value(f"{prefix} Error Flags", f"0x{reading.error_flags:04x}")
+        self.packet_table.set_value(f"{prefix} Event ID", str(reading.event_id))
+        self.packet_table.set_value(f"{prefix} Dose CPS", f"{reading.dose_cps:.17g}")
+        self.packet_table.set_value(f"{prefix} Dose Rate CPS", f"{reading.dose_rate_cps:.9g}")
+        self.packet_table.set_value(f"{prefix} Total Dose Sv", f"{reading.total_dose_sv:.9g}")
+        self.packet_table.set_value(f"{prefix} Dose Time Sec", str(reading.dose_time_sec))
+        self.packet_table.set_value(f"{prefix} Stats Time Sec", str(reading.stats_time_sec))
+        self.packet_table.set_value(f"{prefix} HV Voltage", str(reading.hv_voltage))
+        self.packet_table.set_value(f"{prefix} Stat Error %", str(reading.stat_error_percent))
+        self.packet_table.set_value(f"{prefix} Stat Cell Count", str(reading.stat_cell_count))
 
     def on_telemetry_packet(self, packet: TelemetryPacket, source: str) -> None:
         self.telemetry_count += 1
@@ -1289,26 +1491,53 @@ class MainWindow(QMainWindow):
         self.tick_card.set_value(str(packet.timestamp))
         self.tcp_card.set_value(health)
         self.count_card.set_value(str(self.telemetry_count))
-        self.geiger_dose_rate_card.set_value(f"{packet.geiger_dose_rate_cps:.9g}")
-        self.geiger_total_dose_card.set_value(f"{packet.geiger_total_dose_sv:.9g}")
-        self.geiger_hv_card.set_value(str(packet.geiger_hv_voltage))
-        geiger_error_str = ", ".join(
-            name for mask, name in GEIGER_ERROR_NAMES.items()
-            if mask and (packet.geiger_error_flags & mask)
-        ) if packet.geiger_error_flags else "ok"
-        self.geiger_errors_card.set_value(geiger_error_str)
-        self.radiation_dose_rate_card.set_value(f"{packet.geiger_dose_rate_cps:.9g}")
-        self.radiation_total_dose_card.set_value(f"{packet.geiger_total_dose_sv:.9g}")
-        self.radiation_hv_card.set_value(str(packet.geiger_hv_voltage))
-        self.radiation_errors_card.set_value(geiger_error_str)
+        geiger_1 = packet.geiger_reading(0)
+        geiger_2 = packet.geiger_reading(1)
+        self.update_geiger_cards(
+            geiger_1,
+            self.geiger_dose_rate_card,
+            self.geiger_total_dose_card,
+            self.geiger_hv_card,
+            self.geiger_errors_card,
+        )
+        self.update_geiger_cards(
+            geiger_2,
+            self.geiger_2_dose_rate_card,
+            self.geiger_2_total_dose_card,
+            self.geiger_2_hv_card,
+            self.geiger_2_errors_card,
+        )
+        self.update_geiger_cards(
+            geiger_1,
+            self.radiation_dose_rate_card,
+            self.radiation_total_dose_card,
+            self.radiation_hv_card,
+            self.radiation_errors_card,
+        )
+        self.update_geiger_cards(
+            geiger_2,
+            self.radiation_2_dose_rate_card,
+            self.radiation_2_total_dose_card,
+            self.radiation_2_hv_card,
+            self.radiation_2_errors_card,
+        )
         self.timestamp_label.setText(f"RECEPTION TIMESTAMP: {datetime.now().strftime('%H:%M:%S')}")
 
-        if packet.geiger_valid:
-            self.geiger_dose_rate_history.append((float(packet.timestamp), packet.geiger_dose_rate_cps))
-            points = list(self.geiger_dose_rate_history)
-            self.monitoring_geiger_plot.set_points(points)
-            self.radiation_geiger_plot.set_points(points)
-            self.radiation_plot_status.setText(f"{len(points)}/300 points")
+        for counter_id, reading in enumerate((geiger_1, geiger_2)):
+            if reading is None or not reading.valid:
+                continue
+            self.geiger_dose_rate_histories[counter_id].append(
+                (float(packet.timestamp), reading.dose_rate_cps)
+            )
+            points = list(self.geiger_dose_rate_histories[counter_id])
+            if counter_id == 0:
+                self.monitoring_geiger_plot.set_points(points)
+                self.radiation_geiger_plot.set_points(points)
+                self.radiation_plot_status.setText(f"{len(points)}/300 points")
+            else:
+                self.monitoring_geiger_2_plot.set_points(points)
+                self.radiation_geiger_2_plot.set_points(points)
+                self.radiation_2_plot_status.setText(f"{len(points)}/300 points")
 
         materials = ["TIPs-pentacene", "diF-TES-ADT", "Rubrene"]
         device_types = ["Device 1a", "Device 2a", "Device 1b", "Device 2b"]
@@ -1335,11 +1564,28 @@ class MainWindow(QMainWindow):
         self.telemetry_table.set_value("AD7177 Readings", adc_summary)
         self.telemetry_table.set_value("Temperature Measurements", temp_summary)
         self.telemetry_table.set_value("Subsystem Health Indicators", health)
-        self.telemetry_table.set_value("Geiger Valid", str(packet.geiger_valid))
-        self.telemetry_table.set_value("Geiger Dose Rate (CPS)", f"{packet.geiger_dose_rate_cps:.9g}")
-        self.telemetry_table.set_value("Geiger Total Dose (Sv)", f"{packet.geiger_total_dose_sv:.9g}")
-        self.telemetry_table.set_value("Geiger HV Voltage", str(packet.geiger_hv_voltage))
-        self.telemetry_table.set_value("Geiger Error Flags", f"0x{packet.geiger_error_flags:04x} ({geiger_error_str})")
+        for number, reading in ((1, geiger_1), (2, geiger_2)):
+            prefix = f"Geiger {number}"
+            if reading is None or not reading.valid:
+                state = "unavailable" if reading is None else "invalid"
+                self.telemetry_table.set_value(f"{prefix} Valid", state)
+                self.telemetry_table.set_value(f"{prefix} Dose Rate (CPS)", "—")
+                self.telemetry_table.set_value(f"{prefix} Total Dose (Sv)", "—")
+                self.telemetry_table.set_value(f"{prefix} HV Voltage", "—")
+                self.telemetry_table.set_value(f"{prefix} Error Flags", "—")
+            else:
+                self.telemetry_table.set_value(f"{prefix} Valid", str(reading.valid))
+                self.telemetry_table.set_value(
+                    f"{prefix} Dose Rate (CPS)", f"{reading.dose_rate_cps:.9g}"
+                )
+                self.telemetry_table.set_value(
+                    f"{prefix} Total Dose (Sv)", f"{reading.total_dose_sv:.9g}"
+                )
+                self.telemetry_table.set_value(f"{prefix} HV Voltage", str(reading.hv_voltage))
+                self.telemetry_table.set_value(
+                    f"{prefix} Error Flags",
+                    f"0x{reading.error_flags:04x} ({self.geiger_error_text(reading)})",
+                )
         self.telemetry_table.set_value("Packet Timestamp (ms)", str(packet.timestamp))
         self.telemetry_table.set_value("Health Code", health)
         self.telemetry_table.set_value("Counter", str(packet.counter))
@@ -1360,30 +1606,12 @@ class MainWindow(QMainWindow):
         self.packet_table.set_value("Temperature Sensors", temp_summary)
         self.packet_table.set_value("ADC Legacy Valid Mask", f"0x{packet.os_adc_valid_mask:04x}")
         self.packet_table.set_value("AD7177 Readings", adc_summary)
-        self.packet_table.set_value("Geiger Valid", str(packet.geiger_valid))
-        self.packet_table.set_value("Geiger Error Flags", f"0x{packet.geiger_error_flags:04x}")
-        self.packet_table.set_value("Geiger Event ID", str(packet.geiger_event_id))
-        self.packet_table.set_value("Geiger Dose CPS", f"{packet.geiger_dose_cps:.17g}")
-        self.packet_table.set_value("Geiger Dose Rate CPS", f"{packet.geiger_dose_rate_cps:.9g}")
-        self.packet_table.set_value("Geiger Total Dose Sv", f"{packet.geiger_total_dose_sv:.9g}")
-        self.packet_table.set_value("Geiger Dose Time Sec", str(packet.geiger_dose_time_sec))
-        self.packet_table.set_value("Geiger Stats Time Sec", str(packet.geiger_stats_time_sec))
-        self.packet_table.set_value("Geiger HV Voltage", str(packet.geiger_hv_voltage))
-        self.packet_table.set_value("Geiger Stat Error %", str(packet.geiger_stat_error_percent))
-        self.packet_table.set_value("Geiger Stat Cell Count", str(packet.geiger_stat_cell_count))
+        self.update_packet_geiger_fields(1, geiger_1)
+        self.update_packet_geiger_fields(2, geiger_2)
         self.packet_table.set_value("TCP Server", tcp_state)
 
-        self.radiation_table.set_value("Geiger Valid", str(packet.geiger_valid))
-        self.radiation_table.set_value("Geiger Event ID", str(packet.geiger_event_id))
-        self.radiation_table.set_value("Geiger Dose CPS", f"{packet.geiger_dose_cps:.17g}")
-        self.radiation_table.set_value("Geiger Dose Rate CPS", f"{packet.geiger_dose_rate_cps:.9g}")
-        self.radiation_table.set_value("Geiger Total Dose Sv", f"{packet.geiger_total_dose_sv:.9g}")
-        self.radiation_table.set_value("Geiger Dose Time Sec", str(packet.geiger_dose_time_sec))
-        self.radiation_table.set_value("Geiger Stats Time Sec", str(packet.geiger_stats_time_sec))
-        self.radiation_table.set_value("Geiger HV Voltage", str(packet.geiger_hv_voltage))
-        self.radiation_table.set_value("Geiger Stat Error %", str(packet.geiger_stat_error_percent))
-        self.radiation_table.set_value("Geiger Stat Cell Count", str(packet.geiger_stat_cell_count))
-        self.radiation_table.set_value("Geiger Error Flags", f"0x{packet.geiger_error_flags:04x} ({geiger_error_str})")
+        self.update_geiger_detail_table(self.radiation_table, geiger_1)
+        self.update_geiger_detail_table(self.radiation_2_table, geiger_2)
 
         for index, value in enumerate(packet.temperatures):
             validity = "valid" if packet.temperature_valid(index) else "invalid"
@@ -1405,7 +1633,8 @@ class MainWindow(QMainWindow):
                 self.stop_csv_logging()
             else:
                 self.csv_log_status.setText(
-                    f"CSV: {self.csv_logger.path.name} ({self.csv_logger.packet_count})"
+                    f"CSV ({self.csv_mode_combo.currentText()}): "
+                    f"{self.csv_logger.path.name} ({self.csv_logger.packet_count})"
                 )
 
     def format_temperature_summary(self, packet: TelemetryPacket) -> str:
