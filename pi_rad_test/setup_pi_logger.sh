@@ -136,7 +136,7 @@ After=network-online.target
 Type=simple
 User=${TARGET_USER}
 WorkingDirectory=${LOG_DIR}
-ExecStart=${VENV_DIR}/bin/chronocat_telemetry --bind 0.0.0.0 --port ${PORT} --quiet
+ExecStart=${VENV_DIR}/bin/chronocat_telemetry --bind 0.0.0.0 --port ${PORT} --quiet --geiger-only
 Restart=always
 RestartSec=3
 
