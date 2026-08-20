@@ -9,13 +9,20 @@ DEFAULT_COMMAND_PORT = 5006
 DEFAULT_TELEMETRY_PORT = 5005
 
 TELEMETRY_MAGIC = b"CCTM"
-TELEMETRY_VERSION = 1
+TELEMETRY_VERSION_V1 = 1
+TELEMETRY_VERSION_V2 = 2
+TELEMETRY_VERSION = TELEMETRY_VERSION_V2
 TELEMETRY_MESSAGE_TYPE = 1
-TELEMETRY_PACKET_SIZE = 131
+TELEMETRY_PACKET_SIZE_V1 = 131
+TELEMETRY_PACKET_SIZE_V2 = 165
+TELEMETRY_PACKET_SIZE = TELEMETRY_PACKET_SIZE_V2
 TELEMETRY_TEMP_COUNT = 13
 TELEMETRY_OS_ADC_COUNT = 12
+TELEMETRY_GEIGER_COUNT_V2 = 2
 AD7177_DEVICE_COUNT = 4
 AD7177_CHANNEL_COUNT = 3
+
+GEIGER_RECORD_STRUCT = struct.Struct(">BBHIdffIHHBB")
 
 AD7177_STATUS_RDY = 1 << 7
 AD7177_STATUS_ADC_ERROR = 1 << 6
@@ -34,10 +41,13 @@ TELEMETRY_HEALTH_NAMES = {
 GEIGER_ERROR_NAMES = {
     0: "ok",
     1: "HV error",
-    2: "overrange",
-    4: "GM tube error",
-    8: "overflow",
-    16: "timeout",
+    2: "GM counter error",
+    4: "technological parameters range error",
+    8: "technological parameters initialization error",
+    16: "INFO-flash writing error",
+    32: "history writing error",
+    64: "calibration: no statistics reset",
+    128: "calibration: no background deduction",
 }
 
 COMMAND_PACKET_SIZE = 5
@@ -46,7 +56,7 @@ RESPONSE_PACKET_SIZE = 6
 COMMAND_PING = 0x01
 COMMAND_TELEMETRY_SET = 0x02
 COMMAND_TELEMETRY_STATUS = 0x03
-COMMAND_GEIGER_RESET_DOSE = 0x47
+COMMAND_GEIGER_RESET_ACCUMULATED_DOSE = 0x47
 COMMAND_GEIGER_CLEAR_HISTORY = 0x4F
 COMMAND_GEIGER_RESET_STATS = 0x58
 
@@ -65,7 +75,7 @@ COMMAND_NAMES = {
     COMMAND_PING: "ping",
     COMMAND_TELEMETRY_SET: "telemetry set",
     COMMAND_TELEMETRY_STATUS: "telemetry status",
-    COMMAND_GEIGER_RESET_DOSE: "geiger reset dose",
+    COMMAND_GEIGER_RESET_ACCUMULATED_DOSE: "geiger reset accumulated dose",
     COMMAND_GEIGER_CLEAR_HISTORY: "geiger clear history",
     COMMAND_GEIGER_RESET_STATS: "geiger reset statistics",
 }
@@ -115,6 +125,26 @@ class Ad7177Reading:
 
 
 @dataclass(frozen=True)
+class GeigerReading:
+    valid: int
+    counter_id: int
+    error_flags: int
+    event_id: int
+    dose_cps: float
+    dose_rate_cps: float
+    total_dose_sv: float
+    dose_time_sec: int
+    stats_time_sec: int
+    hv_voltage: int
+    stat_error_percent: int
+    stat_cell_count: int
+
+    @classmethod
+    def unavailable(cls, counter_id: int) -> GeigerReading:
+        return cls(0, counter_id, 0, 0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0)
+
+
+@dataclass(frozen=True)
 class TelemetryPacket:
     version: int
     message_type: int
@@ -127,17 +157,61 @@ class TelemetryPacket:
     temperatures: tuple[int, ...]
     os_adc_valid_mask: int
     os_adc_readings: tuple[int, ...]
-    geiger_valid: int
-    geiger_error_flags: int
-    geiger_event_id: int
-    geiger_dose_cps: float
-    geiger_dose_rate_cps: float
-    geiger_total_dose_sv: float
-    geiger_dose_time_sec: int
-    geiger_stats_time_sec: int
-    geiger_hv_voltage: int
-    geiger_stat_error_percent: int
-    geiger_stat_cell_count: int
+    geiger_readings: tuple[GeigerReading, ...]
+
+    def geiger_reading(self, counter_id: int) -> GeigerReading | None:
+        return next(
+            (reading for reading in self.geiger_readings if reading.counter_id == counter_id),
+            None,
+        )
+
+    @property
+    def primary_geiger(self) -> GeigerReading:
+        return self.geiger_reading(0) or GeigerReading.unavailable(0)
+
+    @property
+    def geiger_valid(self) -> int:
+        return self.primary_geiger.valid
+
+    @property
+    def geiger_error_flags(self) -> int:
+        return self.primary_geiger.error_flags
+
+    @property
+    def geiger_event_id(self) -> int:
+        return self.primary_geiger.event_id
+
+    @property
+    def geiger_dose_cps(self) -> float:
+        return self.primary_geiger.dose_cps
+
+    @property
+    def geiger_dose_rate_cps(self) -> float:
+        return self.primary_geiger.dose_rate_cps
+
+    @property
+    def geiger_total_dose_sv(self) -> float:
+        return self.primary_geiger.total_dose_sv
+
+    @property
+    def geiger_dose_time_sec(self) -> int:
+        return self.primary_geiger.dose_time_sec
+
+    @property
+    def geiger_stats_time_sec(self) -> int:
+        return self.primary_geiger.stats_time_sec
+
+    @property
+    def geiger_hv_voltage(self) -> int:
+        return self.primary_geiger.hv_voltage
+
+    @property
+    def geiger_stat_error_percent(self) -> int:
+        return self.primary_geiger.stat_error_percent
+
+    @property
+    def geiger_stat_cell_count(self) -> int:
+        return self.primary_geiger.stat_cell_count
 
     @property
     def tcp_status(self) -> int:
@@ -200,23 +274,60 @@ class CommandResponse:
         return self.status == STATUS_OK
 
 
-def parse_telemetry_packet(data: bytes) -> TelemetryPacket:
-    if len(data) != TELEMETRY_PACKET_SIZE:
-        raise ValueError(f"expected {TELEMETRY_PACKET_SIZE} telemetry bytes, got {len(data)}")
+def _parse_geiger_reading(
+    data: bytes, offset: int, counter_id_override: int | None = None
+) -> tuple[GeigerReading, int]:
+    values = GEIGER_RECORD_STRUCT.unpack_from(data, offset)
+    reading = GeigerReading(
+        valid=values[0],
+        counter_id=values[1] if counter_id_override is None else counter_id_override,
+        error_flags=values[2],
+        event_id=values[3],
+        dose_cps=values[4],
+        dose_rate_cps=values[5],
+        total_dose_sv=values[6],
+        dose_time_sec=values[7],
+        stats_time_sec=values[8],
+        hv_voltage=values[9],
+        stat_error_percent=values[10],
+        stat_cell_count=values[11],
+    )
+    return reading, offset + GEIGER_RECORD_STRUCT.size
 
-    offset = 0
-    magic = data[offset : offset + 4]
-    offset += 4
+
+def parse_telemetry_packet(data: bytes) -> TelemetryPacket:
+    if len(data) < 10:
+        raise ValueError(f"telemetry packet too short: {len(data)} bytes")
+
+    magic = data[:4]
     if magic != TELEMETRY_MAGIC:
         raise ValueError(f"bad telemetry magic {magic!r}")
 
-    version = data[offset]
+    version = data[4]
+    expected_sizes = {
+        TELEMETRY_VERSION_V1: TELEMETRY_PACKET_SIZE_V1,
+        TELEMETRY_VERSION_V2: TELEMETRY_PACKET_SIZE_V2,
+    }
+    expected_size = expected_sizes.get(version)
+    if expected_size is None:
+        raise ValueError(f"unsupported telemetry version {version}")
+    if len(data) != expected_size:
+        raise ValueError(f"expected {expected_size} telemetry bytes for version {version}, got {len(data)}")
+
+    message_type = data[5]
+    if message_type != TELEMETRY_MESSAGE_TYPE:
+        raise ValueError(f"unsupported telemetry message type {message_type}")
+
+    payload_length = struct.unpack_from(">H", data, 8)[0]
+    if payload_length != expected_size:
+        raise ValueError(f"bad telemetry payload length {payload_length}")
+
+    offset = 0
+    offset += 4
     offset += 1
-    message_type = data[offset]
     offset += 1
     flags = struct.unpack_from(">H", data, offset)[0]
     offset += 2
-    payload_length = struct.unpack_from(">H", data, offset)[0]
     offset += 2
     timestamp = struct.unpack_from(">I", data, offset)[0]
     offset += 4
@@ -233,39 +344,24 @@ def parse_telemetry_packet(data: bytes) -> TelemetryPacket:
     offset += 2
     os_adc_readings = struct.unpack_from(f">{TELEMETRY_OS_ADC_COUNT}I", data, offset)
     offset += TELEMETRY_OS_ADC_COUNT * 4
-    geiger_valid = data[offset]
-    offset += 1
-    reserved = data[offset]
-    offset += 1
-    geiger_error_flags = struct.unpack_from(">H", data, offset)[0]
-    offset += 2
-    geiger_event_id = struct.unpack_from(">I", data, offset)[0]
-    offset += 4
-    geiger_dose_cps = struct.unpack_from(">d", data, offset)[0]
-    offset += 8
-    geiger_dose_rate_cps = struct.unpack_from(">f", data, offset)[0]
-    offset += 4
-    geiger_total_dose_sv = struct.unpack_from(">f", data, offset)[0]
-    offset += 4
-    geiger_dose_time_sec = struct.unpack_from(">I", data, offset)[0]
-    offset += 4
-    geiger_stats_time_sec = struct.unpack_from(">H", data, offset)[0]
-    offset += 2
-    geiger_hv_voltage = struct.unpack_from(">H", data, offset)[0]
-    offset += 2
-    geiger_stat_error_percent = data[offset]
-    offset += 1
-    geiger_stat_cell_count = data[offset]
-    offset += 1
 
-    if offset != TELEMETRY_PACKET_SIZE:
+    geiger_readings: list[GeigerReading] = []
+    if version == TELEMETRY_VERSION_V1:
+        reading, offset = _parse_geiger_reading(data, offset, counter_id_override=0)
+        geiger_readings.append(reading)
+    else:
+        for _ in range(TELEMETRY_GEIGER_COUNT_V2):
+            reading, offset = _parse_geiger_reading(data, offset)
+            geiger_readings.append(reading)
+
+        counter_ids = [reading.counter_id for reading in geiger_readings]
+        if any(counter_id not in (0, 1) for counter_id in counter_ids):
+            raise ValueError(f"invalid Geiger counter IDs {counter_ids}")
+        if len(set(counter_ids)) != len(counter_ids):
+            raise ValueError(f"duplicate Geiger counter IDs {counter_ids}")
+
+    if offset != expected_size:
         raise ValueError(f"internal parser size mismatch: consumed {offset} bytes")
-    if version != TELEMETRY_VERSION:
-        raise ValueError(f"unsupported telemetry version {version}")
-    if message_type != TELEMETRY_MESSAGE_TYPE:
-        raise ValueError(f"unsupported telemetry message type {message_type}")
-    if payload_length != TELEMETRY_PACKET_SIZE:
-        raise ValueError(f"bad telemetry payload length {payload_length}")
 
     return TelemetryPacket(
         version=version,
@@ -279,17 +375,7 @@ def parse_telemetry_packet(data: bytes) -> TelemetryPacket:
         temperatures=temperatures,
         os_adc_valid_mask=os_adc_valid_mask,
         os_adc_readings=os_adc_readings,
-        geiger_valid=geiger_valid,
-        geiger_error_flags=geiger_error_flags,
-        geiger_event_id=geiger_event_id,
-        geiger_dose_cps=geiger_dose_cps,
-        geiger_dose_rate_cps=geiger_dose_rate_cps,
-        geiger_total_dose_sv=geiger_total_dose_sv,
-        geiger_dose_time_sec=geiger_dose_time_sec,
-        geiger_stats_time_sec=geiger_stats_time_sec,
-        geiger_hv_voltage=geiger_hv_voltage,
-        geiger_stat_error_percent=geiger_stat_error_percent,
-        geiger_stat_cell_count=geiger_stat_cell_count,
+        geiger_readings=tuple(geiger_readings),
     )
 
 
@@ -336,7 +422,7 @@ def telemetry_value_name(value: int) -> str:
 def geiger_reset_actions_name(value: int) -> str:
     actions = []
     if value & 0x01:
-        actions.append("reset dose")
+        actions.append("reset accumulated dose")
     if value & 0x02:
         actions.append("clear history")
     if value & 0x04:
@@ -344,6 +430,22 @@ def geiger_reset_actions_name(value: int) -> str:
     if actions:
         return ", ".join(actions)
     return "none"
+
+
+def geiger_error_names(error_flags: int) -> str:
+    if not error_flags:
+        return "ok"
+
+    names = [
+        name
+        for mask, name in GEIGER_ERROR_NAMES.items()
+        if mask and (error_flags & mask)
+    ]
+    known_mask = sum(mask for mask in GEIGER_ERROR_NAMES if mask)
+    unknown = error_flags & ~known_mask
+    if unknown:
+        names.append(f"unknown bits 0x{unknown:04x}")
+    return ", ".join(names)
 
 
 def tcp_status_name(status: int) -> str:

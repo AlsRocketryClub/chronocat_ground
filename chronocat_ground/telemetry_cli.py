@@ -7,7 +7,7 @@ import socket
 import sys
 
 from .protocol import DEFAULT_TELEMETRY_PORT, parse_telemetry_packets, telemetry_health_name
-from .telemetry_csv import TelemetryCsvLogger, default_output_path
+from .telemetry_csv import CSV_MODE_GEIGER_ONLY, TelemetryCsvLogger, default_output_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-packets", type=int, default=None, help="stop after this many valid packets")
     parser.add_argument("--quiet", action="store_true", help="do not print packet summaries")
     parser.add_argument("--strict", action="store_true", help="stop on the first invalid packet")
+    parser.add_argument(
+        "--geiger-only",
+        action="store_true",
+        help="write one row per valid Geiger reading without other telemetry fields",
+    )
     return parser
 
 
@@ -53,7 +58,8 @@ def record(args: argparse.Namespace) -> int:
     print(f"Listening for UDP telemetry on {args.bind}:{args.port}")
     print(f"Writing CSV to {output_path}")
 
-    logger = TelemetryCsvLogger(output_path)
+    mode = CSV_MODE_GEIGER_ONLY if args.geiger_only else "full"
+    logger = TelemetryCsvLogger(output_path, mode=mode)
     try:
         logger.start()
         while True:
