@@ -129,16 +129,20 @@ echo "Installing systemd service: ${UNIT_PATH}"
 cat > "${UNIT_PATH}" <<EOF
 [Unit]
 Description=Chronocat UDP telemetry CSV logger
-Wants=network-online.target
-After=network-online.target
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target
 
 [Service]
 Type=simple
 User=${TARGET_USER}
 WorkingDirectory=${LOG_DIR}
+Environment=PYTHONUNBUFFERED=1
 ExecStart=${VENV_DIR}/bin/chronocat_telemetry --bind 0.0.0.0 --port ${PORT} --quiet --geiger-only
 Restart=always
 RestartSec=3
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
