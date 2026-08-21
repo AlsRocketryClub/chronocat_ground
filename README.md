@@ -64,7 +64,8 @@ python -m chronocat_ground.telemetry_cli --out flight.csv --quiet
 ```
 
 The recorder listens on UDP `0.0.0.0:5005` by default and flushes the CSV after every
-valid telemetry packet. Only one process can bind UDP port `5005` at a time.
+valid telemetry packet. Each write is also synchronized to disk so completed rows survive
+an unexpected power loss. Only one process can bind UDP port `5005` at a time.
 
 ## Record Telemetry to CSV
 
@@ -75,13 +76,18 @@ chronocat_telemetry
 ```
 
 By default it listens on UDP `0.0.0.0:5005` and writes a timestamped CSV file such as
-`telemetry_20260628_143012.csv` in the current directory. The file is flushed after every
-valid packet so data is preserved if recording is interrupted.
+`telemetry_20260628_143012_a1b2c3d4_e5f6a7b8.csv` in the current directory. The final two
+components are the Linux boot ID and a random logger session ID. They prevent repeated
+boots with a stale Raspberry Pi clock from selecting the same filename.
+
+New logs are created exclusively and never overwrite an existing file. An explicit
+`--out` path also refuses to replace an existing file unless `--overwrite` is supplied.
 
 Useful options:
 
 ```bash
 chronocat_telemetry --out flight.csv
+chronocat_telemetry --out flight.csv --overwrite
 chronocat_telemetry --port 5005
 chronocat_telemetry --bind 0.0.0.0
 chronocat_telemetry --max-packets 100
@@ -89,6 +95,9 @@ chronocat_telemetry --quiet
 chronocat_telemetry --strict
 chronocat_telemetry --geiger-only
 ```
+
+Use `--overwrite` only when intentionally discarding the existing output file. Automatic
+filenames never overwrite, even when the Pi clock is wrong.
 
 `--geiger-only` writes one row per valid detector response. It keeps only the receive
 timestamp, detector ID, and fields supplied by detector command D; it omits all other

@@ -102,12 +102,14 @@ ls -lh /home/pi/chronocat_logs
 The logger writes timestamped CSV files like:
 
 ```text
-telemetry_YYYYMMDD_HHMMSS.csv
+telemetry_YYYYMMDD_HHMMSS_BOOTID_SESSIONID.csv
 ```
 
-The file is flushed after every valid packet. The installed service uses `--geiger-only`,
-so each CSV row contains one valid detector response without ADC, temperature, or
-placeholder columns.
+The boot and session IDs make every service invocation unique even if the Pi starts with
+the same stale clock after losing power. Existing files are never overwritten. The file
+is flushed and synchronized to the SD card after every valid packet. The installed service
+uses `--geiger-only`, so each CSV row contains one valid detector response without ADC,
+temperature, or placeholder columns.
 
 ## Useful Commands
 
@@ -115,6 +117,13 @@ Restart logger:
 
 ```bash
 sudo systemctl restart chronocat-telemetry
+```
+
+Restart immediately before each test to create a separate session file. Confirm the exact
+new path in the journal:
+
+```bash
+sudo journalctl -u chronocat-telemetry -n 10 --no-pager
 ```
 
 Stop logger:
