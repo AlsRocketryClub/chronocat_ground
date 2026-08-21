@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 import csv
+import errno
 from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from chronocat_ground.protocol import (
     GEIGER_RECORD_STRUCT,
@@ -20,6 +22,7 @@ from chronocat_ground.telemetry_csv import (
     GEIGER_ONLY_CSV_FIELDS,
     TelemetryCsvLogger,
     csv_fieldnames,
+    default_output_path,
     packet_to_geiger_rows,
     packet_to_row,
 )
@@ -210,7 +213,7 @@ class TelemetryProtocolTests(unittest.TestCase):
 
         self.assertEqual([float(row["dose_rate_cps"]) for row in rows], [10.5, 11.5])
 
-    def test_geiger_only_logger_restart_resets_deduplication(self) -> None:
+    def test_logger_restart_refuses_to_truncate_existing_file(self) -> None:
         packet = parse_telemetry_packet(
             telemetry_packet(1, [geiger_record(0, 800, 12.5)])
         )
@@ -220,14 +223,108 @@ class TelemetryProtocolTests(unittest.TestCase):
             logger.start()
             logger.write_packet(packet, ("127.0.0.1", 5005))
             logger.stop()
+            original = path.read_bytes()
+
+            with self.assertRaises(FileExistsError):
+                logger.start()
+
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_logger_requires_explicit_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "existing.csv"
+            path.write_text("valuable measurements\n", encoding="utf-8")
+
+            with self.assertRaises(FileExistsError):
+                TelemetryCsvLogger(path, durable=False).start()
+            self.assertEqual(
+                path.read_text(encoding="utf-8"), "valuable measurements\n"
+            )
+
+            logger = TelemetryCsvLogger(path, overwrite=True, durable=False)
             logger.start()
-            logger.write_packet(packet, ("127.0.0.1", 5005))
+            logger.stop()
+            self.assertNotIn("valuable measurements", path.read_text(encoding="utf-8"))
+
+    def test_automatic_names_include_boot_and_unique_session_ids(self) -> None:
+        class FakeUuid:
+            def __init__(self, value: str) -> None:
+                self.hex = value
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            with patch(
+                "chronocat_ground.telemetry_csv.datetime"
+            ) as mocked_datetime, patch(
+                "chronocat_ground.telemetry_csv.uuid4",
+                side_effect=[FakeUuid("11111111"), FakeUuid("22222222")],
+            ):
+                mocked_datetime.now.return_value = datetime(2026, 8, 20, 17, 45, 9)
+                first = default_output_path(output_dir, boot_id="deadbeef")
+                second = default_output_path(output_dir, boot_id="deadbeef")
+
+        self.assertEqual(first.name, "telemetry_20260820_174509_deadbeef_11111111.csv")
+        self.assertEqual(second.name, "telemetry_20260820_174509_deadbeef_22222222.csv")
+        self.assertNotEqual(first, second)
+
+    def test_automatic_collision_selects_another_file(self) -> None:
+        class FakeUuid:
+            hex = "newsession"
+
+        with tempfile.TemporaryDirectory() as directory:
+            collision = Path(directory) / "telemetry_collision.csv"
+            collision.write_text("do not replace\n", encoding="utf-8")
+            logger = TelemetryCsvLogger(durable=False)
+            logger.path = collision
+
+            with patch(
+                "chronocat_ground.telemetry_csv.uuid4", return_value=FakeUuid()
+            ):
+                logger.start()
             logger.stop()
 
-            with path.open(newline="", encoding="utf-8") as handle:
-                rows = list(csv.DictReader(handle))
+            self.assertEqual(collision.read_text(encoding="utf-8"), "do not replace\n")
+            self.assertNotEqual(logger.path, collision)
+            self.assertTrue(logger.path.exists())
 
-        self.assertEqual(len(rows), 1)
+    def test_durable_logger_syncs_header_packet_and_close(self) -> None:
+        packet = parse_telemetry_packet(
+            telemetry_packet(1, [geiger_record(0, 900, 13.5)])
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "durable.csv"
+            logger = TelemetryCsvLogger(path, mode=CSV_MODE_GEIGER_ONLY)
+            with patch("chronocat_ground.telemetry_csv.os.fsync") as fsync:
+                logger.start()
+                logger.write_packet(packet, ("127.0.0.1", 5005))
+                logger.stop()
+
+        self.assertGreaterEqual(fsync.call_count, 4)
+
+    def test_durable_logger_syncs_new_parent_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "new" / "nested" / "durable.csv"
+            logger = TelemetryCsvLogger(path)
+            with patch("chronocat_ground.telemetry_csv.os.fsync") as fsync:
+                logger.start()
+                logger.stop()
+
+        self.assertGreaterEqual(fsync.call_count, 7)
+
+    def test_durable_logger_propagates_storage_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "durable.csv"
+            logger = TelemetryCsvLogger(path)
+            error = OSError(errno.EIO, "simulated storage failure")
+            with patch(
+                "chronocat_ground.telemetry_csv.os.fsync",
+                side_effect=[None, error],
+            ):
+                with self.assertRaises(OSError) as raised:
+                    logger.start()
+
+            self.assertEqual(raised.exception.errno, errno.EIO)
+            self.assertFalse(logger.active)
 
     def test_geiger_error_names_match_detector_documentation(self) -> None:
         self.assertEqual(geiger_error_names(0x0002), "GM counter error")
@@ -236,8 +333,9 @@ class TelemetryProtocolTests(unittest.TestCase):
         self.assertIn("unknown bits 0x0100", geiger_error_names(0x0100))
 
     def test_cli_accepts_geiger_only(self) -> None:
-        args = build_parser().parse_args(["--geiger-only"])
+        args = build_parser().parse_args(["--geiger-only", "--overwrite", "--out", "test.csv"])
         self.assertTrue(args.geiger_only)
+        self.assertTrue(args.overwrite)
 
 
 if __name__ == "__main__":

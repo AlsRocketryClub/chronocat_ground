@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 from pathlib import Path
+import signal
 import socket
 import sys
 
 from .protocol import DEFAULT_TELEMETRY_PORT, parse_telemetry_packets, telemetry_health_name
-from .telemetry_csv import CSV_MODE_GEIGER_ONLY, TelemetryCsvLogger, default_output_path
+from .telemetry_csv import CSV_MODE_GEIGER_ONLY, TelemetryCsvLogger
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,7 +26,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         type=Path,
         default=None,
-        help="CSV output path, default: telemetry_YYYYMMDD_HHMMSS.csv",
+        help=(
+            "CSV output path, default: "
+            "telemetry_YYYYMMDD_HHMMSS_BOOTID_SESSIONID.csv"
+        ),
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace an existing --out file; never applies to automatic filenames",
     )
     parser.add_argument("--max-packets", type=int, default=None, help="stop after this many valid packets")
     parser.add_argument("--quiet", action="store_true", help="do not print packet summaries")
@@ -42,9 +51,9 @@ def record(args: argparse.Namespace) -> int:
     if not 1 <= args.port <= 65535:
         print("error: --port must be from 1 to 65535", file=sys.stderr)
         return 2
-
-    output_path = args.out or default_output_path()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if args.overwrite and args.out is None:
+        print("error: --overwrite requires --out", file=sys.stderr)
+        return 2
 
     packets_written = 0
 
@@ -55,15 +64,51 @@ def record(args: argparse.Namespace) -> int:
         print(f"error: could not bind UDP {args.bind}:{args.port}: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Listening for UDP telemetry on {args.bind}:{args.port}")
-    print(f"Writing CSV to {output_path}")
-
     mode = CSV_MODE_GEIGER_ONLY if args.geiger_only else "full"
-    logger = TelemetryCsvLogger(output_path, mode=mode)
+    logger = TelemetryCsvLogger(args.out, mode=mode, overwrite=args.overwrite)
     try:
         logger.start()
+    except FileExistsError:
+        print(
+            f"error: output file already exists: {logger.path}; "
+            "choose another path or pass --overwrite",
+            file=sys.stderr,
+            flush=True,
+        )
+        sock.close()
+        return 1
+    except OSError as exc:
+        print(
+            f"error: could not create CSV {logger.path}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        sock.close()
+        return 1
+
+    stop_requested = False
+
+    def request_stop(_signum: int, _frame: object) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+        sock.close()
+
+    previous_sigterm = signal.signal(signal.SIGTERM, request_stop)
+    print(f"Listening for UDP telemetry on {args.bind}:{args.port}", flush=True)
+    print(f"Writing CSV to {logger.path.resolve()}", flush=True)
+    print(
+        f"Logger session: boot_id={logger.boot_id} session_id={logger.session_id} "
+        f"started_at={datetime.now().isoformat(timespec='seconds')}",
+        flush=True,
+    )
+    try:
         while True:
-            data, address = sock.recvfrom(2048)
+            try:
+                data, address = sock.recvfrom(2048)
+            except OSError:
+                if stop_requested:
+                    return 0
+                raise
             received_at = datetime.now()
 
             try:
@@ -96,6 +141,7 @@ def record(args: argparse.Namespace) -> int:
         print(f"\nStopped after writing {packets_written} packet(s).")
         return 0
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
         logger.stop()
         sock.close()
 

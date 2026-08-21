@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import csv
 from datetime import datetime
+import errno
+import os
 from pathlib import Path
 from typing import TextIO
+from uuid import uuid4
 
 from .protocol import (
     AD7177_CHANNEL_COUNT,
@@ -52,9 +55,28 @@ GEIGER_ONLY_CSV_FIELDS = [
 ]
 
 
-def default_output_path() -> Path:
+def system_boot_id() -> str:
+    try:
+        value = Path("/proc/sys/kernel/random/boot_id").read_text(
+            encoding="ascii"
+        ).strip()
+    except OSError:
+        return "unknown"
+    return value.replace("-", "")[:8] or "unknown"
+
+
+def default_output_path(
+    directory: Path | None = None,
+    *,
+    boot_id: str | None = None,
+    session_id: str | None = None,
+) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path(f"telemetry_{timestamp}.csv")
+    boot = boot_id or system_boot_id()
+    session = session_id or uuid4().hex[:8]
+    return (directory or Path()).joinpath(
+        f"telemetry_{timestamp}_{boot}_{session}.csv"
+    )
 
 
 def csv_fieldnames() -> list[str]:
@@ -224,11 +246,27 @@ def normalize_source(source: tuple[str, int] | str) -> tuple[str, int | str]:
 
 
 class TelemetryCsvLogger:
-    def __init__(self, path: Path | None = None, mode: str = CSV_MODE_FULL) -> None:
+    def __init__(
+        self,
+        path: Path | None = None,
+        mode: str = CSV_MODE_FULL,
+        *,
+        overwrite: bool = False,
+        durable: bool = True,
+    ) -> None:
         if mode not in (CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY):
             raise ValueError(f"unsupported CSV mode {mode!r}")
-        self.path = path or default_output_path()
+        if overwrite and path is None:
+            raise ValueError("overwrite requires an explicit output path")
+        self.automatic_path = path is None
+        self.boot_id = system_boot_id()
+        self.session_id = uuid4().hex[:8]
+        self.path = path or default_output_path(
+            boot_id=self.boot_id, session_id=self.session_id
+        )
         self.mode = mode
+        self.overwrite = overwrite
+        self.durable = durable
         self.file: TextIO | None = None
         self.writer: csv.DictWriter | None = None
         self.packet_count = 0
@@ -242,16 +280,39 @@ class TelemetryCsvLogger:
         if self.file is not None:
             return
         self.last_geiger_samples.clear()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.file = self.path.open("w", newline="", encoding="utf-8")
+        self._create_parent_directory()
+        while True:
+            try:
+                self.file = self.path.open(
+                    "w" if self.overwrite else "x",
+                    newline="",
+                    encoding="utf-8",
+                )
+                break
+            except FileExistsError:
+                if not self.automatic_path:
+                    raise
+                self.session_id = uuid4().hex[:8]
+                self.path = default_output_path(
+                    self.path.parent,
+                    boot_id=self.boot_id,
+                    session_id=self.session_id,
+                )
         fieldnames = (
             GEIGER_ONLY_CSV_FIELDS
             if self.mode == CSV_MODE_GEIGER_ONLY
             else csv_fieldnames()
         )
-        self.writer = csv.DictWriter(self.file, fieldnames=fieldnames)
-        self.writer.writeheader()
-        self.file.flush()
+        try:
+            self.writer = csv.DictWriter(self.file, fieldnames=fieldnames)
+            self.writer.writeheader()
+            self._sync_file()
+            self._sync_directory(self.path.parent)
+        except Exception:
+            self.file.close()
+            self.file = None
+            self.writer = None
+            raise
 
     def write_packet(
         self,
@@ -279,12 +340,47 @@ class TelemetryCsvLogger:
                 )
         else:
             self.writer.writerow(packet_to_row(packet, timestamp, source))
-        self.file.flush()
+        self._sync_file()
         self.packet_count += 1
+
+    def _sync_file(self) -> None:
+        if self.file is None:
+            return
+        self.file.flush()
+        if self.durable:
+            os.fsync(self.file.fileno())
+
+    def _create_parent_directory(self) -> None:
+        missing: list[Path] = []
+        directory = self.path.parent
+        while not directory.exists():
+            missing.append(directory)
+            directory = directory.parent
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        for created in reversed(missing):
+            self._sync_directory(created)
+            self._sync_directory(created.parent)
+
+    def _sync_directory(self, directory: Path) -> None:
+        if not self.durable:
+            return
+        directory_fd = os.open(directory, os.O_RDONLY)
+        try:
+            try:
+                os.fsync(directory_fd)
+            except OSError as exc:
+                unsupported = {errno.EINVAL, errno.ENOTSUP}
+                if hasattr(errno, "EOPNOTSUPP"):
+                    unsupported.add(errno.EOPNOTSUPP)
+                if exc.errno not in unsupported:
+                    raise
+        finally:
+            os.close(directory_fd)
 
     def stop(self) -> None:
         if self.file is None:
             return
+        self._sync_file()
         self.file.close()
         self.file = None
         self.writer = None
