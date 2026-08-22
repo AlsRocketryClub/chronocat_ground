@@ -99,6 +99,7 @@ def csv_fieldnames() -> list[str]:
         fields.append(f"temp_{index}_c")
         fields.append(f"temp_{index}_valid")
 
+    fields.append("heater_duty_permille")
     fields.append("os_adc_valid_mask")
 
     for index in range(1, TELEMETRY_OS_ADC_COUNT + 1):
@@ -154,6 +155,7 @@ def packet_to_row(packet: TelemetryPacket, received_at: datetime, source: tuple[
         row[f"temp_{index}_c"] = f"{value / 100:.2f}"
         row[f"temp_{index}_valid"] = int(packet.temperature_valid(zero_based))
 
+    row["heater_duty_permille"] = packet.heater_duty_permille
     row["os_adc_valid_mask"] = f"0x{packet.os_adc_valid_mask:04x}"
 
     for reading in packet.ad7177_readings:

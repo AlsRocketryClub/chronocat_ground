@@ -6,13 +6,15 @@ import os
 import threading
 import time
 
-from PySide6.QtCore import QObject, QPointF, QRectF, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QPointF, QRectF, QSettings, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -28,6 +30,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -40,6 +43,14 @@ from .protocol import (
     COMMAND_GEIGER_CLEAR_HISTORY,
     COMMAND_GEIGER_RESET_ACCUMULATED_DOSE,
     COMMAND_GEIGER_RESET_STATS,
+    COMMAND_HEATER_GET_KP,
+    COMMAND_HEATER_GET_KD,
+    COMMAND_HEATER_GET_KI,
+    COMMAND_HEATER_GET_TARGET,
+    COMMAND_HEATER_SET_KP,
+    COMMAND_HEATER_SET_KD,
+    COMMAND_HEATER_SET_KI,
+    COMMAND_HEATER_SET_TARGET,
     COMMAND_TELEMETRY_SET,
     COMMAND_TELEMETRY_STATUS,
     DEFAULT_COMMAND_PORT,
@@ -52,6 +63,10 @@ from .protocol import (
     TelemetryPacket,
     ad7177_status_names,
     command_name,
+    decode_heater_gain,
+    decode_heater_target_c,
+    encode_heater_gain,
+    encode_heater_target_c,
     geiger_reset_actions_name,
     geiger_error_names,
     status_name,
@@ -116,8 +131,9 @@ class StatCard(QFrame):
 
 
 class ValueTable(QTableWidget):
-    def __init__(self, rows: list[tuple[str, str]], headers: tuple[str, str] | None = None) -> None:
-        super().__init__(len(rows), 2)
+    def __init__(self, rows: list[tuple[str, ...]], headers: tuple[str, ...] | None = None) -> None:
+        num_cols = len(rows[0]) if rows else 2
+        super().__init__(len(rows), num_cols)
         self.setObjectName("dataTable")
         self.setShowGrid(True)
         self.setAlternatingRowColors(False)
@@ -125,8 +141,8 @@ class ValueTable(QTableWidget):
         self.setSelectionMode(QAbstractItemView.NoSelection)
         self.verticalHeader().setVisible(False)
         self.horizontalHeader().setStretchLastSection(True)
-        self.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        for col in range(num_cols):
+            self.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         if headers is None:
@@ -134,48 +150,123 @@ class ValueTable(QTableWidget):
         else:
             self.setHorizontalHeaderLabels(headers)
 
-        for row_index, (name, value) in enumerate(rows):
-            self.setItem(row_index, 0, QTableWidgetItem(name))
-            self.setItem(row_index, 1, QTableWidgetItem(value))
+        for row_index, row_data in enumerate(rows):
+            for col, value in enumerate(row_data):
+                self.setItem(row_index, col, QTableWidgetItem(value))
 
         self.resizeRowsToContents()
 
-    def set_value(self, name: str, value: str) -> None:
+    def set_value(self, name: str, value: str, col: int = 1) -> None:
         for row in range(self.rowCount()):
             item = self.item(row, 0)
             if item is not None and item.text() == name:
-                value_item = self.item(row, 1)
-                if value_item is not None:
-                    value_item.setText(value)
+                target = self.item(row, col)
+                if target is not None:
+                    target.setText(value)
                 return
 
 
 class LinePlotWidget(QWidget):
-    def __init__(self, y_label: str, empty_text: str = "Waiting for telemetry", on_click=None) -> None:
+    def __init__(self, y_label: str, empty_text: str = "Waiting for telemetry", on_click=None, absolute_time: bool = False) -> None:
         super().__init__()
         self.setObjectName("linePlot")
         self.setMinimumHeight(180)
-        self.points: list[tuple[float, float]] = []
+        self.points: list[tuple[float, float, float]] = []
         self.y_label = y_label
         self.empty_text = empty_text
         self.on_click = on_click
+        self.absolute_time = absolute_time
+        self.on_double_click = None
+        self.setMouseTracking(True)
         if on_click is not None:
             self.setCursor(Qt.PointingHandCursor)
 
-    def set_points(self, points: list[tuple[float, float]]) -> None:
+    def set_points(self, points: list[tuple]) -> None:
         if not points:
             self.points = []
             self.update()
             return
-        max_x = max(x for x, _y in points)
-        self.points = [((x - max_x) / 1000.0, y) for x, y in points]
+        if len(points[0]) == 3:
+            raw = [(mono, wall, val) for mono, wall, val in points]
+        else:
+            now = time.time()
+            raw = [(x, now, y) for x, y in points]
+        if self.absolute_time:
+            self.points = raw
+        else:
+            max_mono = max(mono for mono, _wall, _val in raw)
+            self.points = [((mono - max_mono), wall, val) for mono, wall, val in raw]
         self.update()
+
+    def _plot_bounds(self) -> QRectF:
+        bounds = self.rect()
+        return QRectF(54, 18, max(10, bounds.width() - 72), max(10, bounds.height() - 48))
+
+    def _compute_axes(self):
+        if len(self.points) < 2:
+            return None
+        x_values = [p[0] for p in self.points]
+        y_values = [p[2] for p in self.points]
+        min_x, max_x = min(x_values), max(x_values)
+        min_y, max_y = min(y_values), max(y_values)
+        if max_x == min_x:
+            max_x = min_x + 1
+        if max_y == min_y:
+            max_y = min_y + 1
+        return min_x, max_x, min_y, max_y
+
+    def _format_x_label(self, value: float, wall_at_value: float = 0.0) -> str:
+        if self.absolute_time:
+            return datetime.fromtimestamp(wall_at_value).strftime("%H:%M:%S")
+        return "now" if abs(value) < 0.01 else f"{value:.0f}s" if abs(value) >= 10 else f"{value:.1f}s"
+
+    def _format_tooltip(self, mono: float, wall: float, val: float) -> str:
+        if self.absolute_time:
+            ts = datetime.fromtimestamp(wall).strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            max_mono = max(p[0] for p in self.points) if self.points else 0
+            elapsed = mono - max_mono
+            ts = "now" if abs(elapsed) < 0.01 else f"{elapsed:.1f}s ago"
+        return f"{ts}\n{self.y_label}: {val:.6g}"
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if self.on_click is not None and event.button() == Qt.LeftButton:
             self.on_click()
             return
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        if self.on_double_click is not None and event.button() == Qt.LeftButton:
+            self.on_double_click()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if not self.points or len(self.points) < 2:
+            super().mouseMoveEvent(event)
+            return
+        axes = self._compute_axes()
+        if axes is None:
+            super().mouseMoveEvent(event)
+            return
+        min_x, max_x, min_y, max_y = axes
+        plot = self._plot_bounds()
+        mx = event.position().x()
+        if mx < plot.left() or mx > plot.right():
+            QToolTip.hideText()
+            super().mouseMoveEvent(event)
+            return
+        x_val = min_x + ((mx - plot.left()) / plot.width()) * (max_x - min_x)
+        best_idx = 0
+        best_dist = float("inf")
+        for i, (px, _wall, _py) in enumerate(self.points):
+            d = abs(px - x_val)
+            if d < best_dist:
+                best_dist = d
+                best_idx = i
+        mono, wall, val = self.points[best_idx]
+        QToolTip.showText(event.globalPosition().toPoint(), self._format_tooltip(mono, wall, val), self)
+        super().mouseMoveEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
@@ -188,7 +279,7 @@ class LinePlotWidget(QWidget):
         painter.setPen(QPen(QColor("#b0b0b0"), 1))
         painter.drawRect(bounds.adjusted(0, 0, -1, -1))
 
-        plot = QRectF(54, 18, max(10, bounds.width() - 72), max(10, bounds.height() - 48))
+        plot = self._plot_bounds()
         painter.setPen(QPen(QColor("#d0d0d0"), 1))
         for index in range(1, 4):
             y = plot.top() + plot.height() * index / 4
@@ -199,23 +290,19 @@ class LinePlotWidget(QWidget):
 
         painter.setPen(QPen(QColor("#111111"), 1))
         painter.drawText(8, 16, self.y_label)
-        painter.drawText(QRectF(8, bounds.height() - 26, bounds.width() - 16, 22), Qt.AlignRight | Qt.AlignVCenter, "seconds ago")
+        if self.absolute_time:
+            painter.drawText(QRectF(8, bounds.height() - 26, bounds.width() - 16, 22), Qt.AlignRight | Qt.AlignVCenter, "wall-clock time")
+        else:
+            painter.drawText(QRectF(8, bounds.height() - 26, bounds.width() - 16, 22), Qt.AlignRight | Qt.AlignVCenter, "seconds ago")
 
         if len(self.points) < 2:
             painter.drawText(plot, Qt.AlignCenter, self.empty_text)
             return
 
-        x_values = [point[0] for point in self.points]
-        y_values = [point[1] for point in self.points]
-        min_x = min(x_values)
-        max_x = max(x_values)
-        min_y = min(y_values)
-        max_y = max(y_values)
-
-        if max_x == min_x:
-            max_x = min_x + 1
-        if max_y == min_y:
-            max_y = min_y + 1
+        axes = self._compute_axes()
+        if axes is None:
+            return
+        min_x, max_x, min_y, max_y = axes
 
         painter.setPen(QPen(QColor("#444444"), 1))
         painter.drawText(8, int(plot.top()) + 8, f"{max_y:.3g}")
@@ -228,9 +315,16 @@ class LinePlotWidget(QWidget):
         painter.setFont(font)
         for index in range(1, 5):
             fx = plot.left() + plot.width() * index / 5
-            value = min_x + (max_x - min_x) * index / 5
-            label = "now" if abs(value) < 0.01 else f"{value:.0f}s" if abs(value) >= 10 else f"{value:.1f}s"
-            text_rect = QRectF(fx - 20, plot.bottom() + 2, 40, 20)
+            x_val = min_x + (max_x - min_x) * index / 5
+            frac = (x_val - min_x) / (max_x - min_x) if max_x != min_x else 0
+            wall_at = 0.0
+            for p_mono, p_wall, _p_val in self.points:
+                p_frac = (p_mono - min_x) / (max_x - min_x) if max_x != min_x else 0
+                if abs(p_frac - frac) < 0.02:
+                    wall_at = p_wall
+                    break
+            label = self._format_x_label(x_val, wall_at)
+            text_rect = QRectF(fx - 40, plot.bottom() + 2, 80, 20)
             painter.drawText(text_rect, Qt.AlignCenter, label)
         painter.restore()
 
@@ -238,7 +332,7 @@ class LinePlotWidget(QWidget):
         vp = event.rect()
         vis_left = min_x + ((vp.left() - plot.left()) / plot.width()) * (max_x - min_x)
         vis_right = min_x + ((vp.right() - plot.left()) / plot.width()) * (max_x - min_x)
-        for x_value, y_value in self.points:
+        for x_value, _wall, y_value in self.points:
             if x_value < vis_left:
                 continue
             if x_value > vis_right:
@@ -249,6 +343,7 @@ class LinePlotWidget(QWidget):
 
         painter.setPen(QPen(QColor("#111111"), 2))
         painter.drawPolyline(polyline)
+
 
 
 class SampleCard(QFrame):
@@ -273,6 +368,7 @@ class SampleCard(QFrame):
         self.meta_label.setObjectName("smallNote")
 
         self.plot = LinePlotWidget("raw24", "Waiting for ADC telemetry", on_click=lambda: self.graph_requested.emit(self.slot))
+        self.plot.on_double_click = lambda: self.graph_requested.emit(self.slot)
         self.plot.setMinimumHeight(140)
 
         layout = QVBoxLayout(self)
@@ -320,12 +416,17 @@ class MainWindow(QMainWindow):
         ]
         self.adc_db = TelemetryDb("chronocat_adc.db")
         self.sample_cards: list[SampleCard] = []
-        self.adc_dialog: QDialog | None = None
-        self.adc_dialog_slot: int | None = None
-        self.adc_dialog_plot: LinePlotWidget | None = None
-        self.adc_dialog_latest: QLabel | None = None
-        self.adc_dialog_scroll: QScrollArea | None = None
+        self.plot_dialogs: dict[str, QDialog] = {}
+        self.plot_dialog_refs: dict[str, dict[str, object]] = {}
         self.csv_logger: TelemetryCsvLogger | None = None
+        self.temperature_0_history: deque[tuple[float, float]] = deque(maxlen=300)
+        self.pending_heater_command: dict[str, object] | None = None
+        self.geiger_2_widgets: list[QWidget] = []
+        self.heater_controls_panel: QWidget | None = None
+
+        self._settings = QSettings("chronocat", "chronocat_ground")
+        self.geiger_test_mode = self._settings.value("geiger_test_mode", False, type=bool)
+        self.heater_test_mode = self._settings.value("heater_test_mode", False, type=bool)
 
         self.telemetry_receiver = TelemetryReceiver(DEFAULT_TELEMETRY_PORT)
         self.telemetry_receiver.packet_received.connect(self.on_telemetry_packet)
@@ -337,6 +438,29 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(self.build_ui())
         self.apply_style()
+
+        self.geiger_2_widgets = [
+            self.geiger_2_dose_rate_card,
+            self.geiger_2_total_dose_card,
+            self.geiger_2_hv_card,
+            self.geiger_2_errors_card,
+            self.monitoring_geiger_2_title,
+            self.monitoring_geiger_2_plot,
+            self.radiation_2_dose_rate_card,
+            self.radiation_2_total_dose_card,
+            self.radiation_2_hv_card,
+            self.radiation_2_errors_card,
+            self.radiation_geiger_2_title,
+            self.radiation_2_plot_status,
+            self.radiation_geiger_2_plot,
+            self.radiation_2_table_panel,
+        ]
+
+        if self.geiger_test_mode:
+            self._apply_geiger_test_mode(True)
+        if self.heater_test_mode:
+            self._apply_heater_test_mode(True)
+
         self.switch_view(VIEW_MONITORING)
         self.update_connection_state()
         self.telemetry_receiver.start()
@@ -548,11 +672,14 @@ class MainWindow(QMainWindow):
         chart_header.addWidget(self.timestamp_label)
         chart_panel.layout.addLayout(chart_header)
         self.monitoring_geiger_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger telemetry")
+        self.monitoring_geiger_plot.on_double_click = lambda: self.show_geiger_dialog(0)
         chart_panel.layout.addWidget(self.monitoring_geiger_plot)
         geiger_2_title = QLabel("GEIGER 2 DOSE RATE TIME-SERIES")
         geiger_2_title.setObjectName("panelTitle")
+        self.monitoring_geiger_2_title = geiger_2_title
         chart_panel.layout.addWidget(geiger_2_title)
         self.monitoring_geiger_2_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger 2 telemetry")
+        self.monitoring_geiger_2_plot.on_double_click = lambda: self.show_geiger_dialog(1)
         chart_panel.layout.addWidget(self.monitoring_geiger_2_plot)
         return chart_panel
 
@@ -595,11 +722,13 @@ class MainWindow(QMainWindow):
         plot_header.addWidget(self.radiation_plot_status)
         plot_panel.layout.addLayout(plot_header)
         self.radiation_geiger_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger telemetry")
+        self.radiation_geiger_plot.on_double_click = lambda: self.show_geiger_dialog(0)
         self.radiation_geiger_plot.setMinimumHeight(320)
         plot_panel.layout.addWidget(self.radiation_geiger_plot)
         geiger_2_header = QHBoxLayout()
         geiger_2_title = QLabel("GEIGER 2 DOSE RATE TIME-SERIES")
         geiger_2_title.setObjectName("panelTitle")
+        self.radiation_geiger_2_title = geiger_2_title
         self.radiation_2_plot_status = QLabel("300 point rolling window")
         self.radiation_2_plot_status.setObjectName("smallNote")
         geiger_2_header.addWidget(geiger_2_title)
@@ -607,6 +736,7 @@ class MainWindow(QMainWindow):
         geiger_2_header.addWidget(self.radiation_2_plot_status)
         plot_panel.layout.addLayout(geiger_2_header)
         self.radiation_geiger_2_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger 2 telemetry")
+        self.radiation_geiger_2_plot.on_double_click = lambda: self.show_geiger_dialog(1)
         self.radiation_geiger_2_plot.setMinimumHeight(320)
         plot_panel.layout.addWidget(self.radiation_geiger_2_plot)
         layout.addWidget(plot_panel)
@@ -629,9 +759,9 @@ class MainWindow(QMainWindow):
         table_panel.layout.addWidget(self.radiation_table)
         layout.addWidget(table_panel)
         self.radiation_2_table = ValueTable(geiger_detail_rows, ("Metric", "Value"))
-        table_2_panel = Panel("GEIGER 2 PACKET DETAILS")
-        table_2_panel.layout.addWidget(self.radiation_2_table)
-        layout.addWidget(table_2_panel)
+        self.radiation_2_table_panel = Panel("GEIGER 2 PACKET DETAILS")
+        self.radiation_2_table_panel.layout.addWidget(self.radiation_2_table)
+        layout.addWidget(self.radiation_2_table_panel)
         layout.addStretch(1)
         return page
 
@@ -711,6 +841,7 @@ class MainWindow(QMainWindow):
             [
                 ("AD7177 Readings", "X"),
                 ("Temperature Measurements", "X"),
+                ("Heater Duty (permille)", "X"),
                 ("Subsystem Health Indicators", "X"),
                 ("Geiger 1 Valid", "X"),
                 ("Geiger 1 Dose Rate (CPS)", "X"),
@@ -865,118 +996,290 @@ class MainWindow(QMainWindow):
         try:
             if not 0 <= slot < len(self.sample_cards):
                 return
-
-            if self.adc_dialog is not None:
-                self.adc_dialog.close()
-
             card = self.sample_cards[slot]
             adc_index = slot // AD7177_CHANNEL_COUNT
             channel_index = slot % AD7177_CHANNEL_COUNT
             title = f"{card.toggle_button.text()} / ADC{adc_index} CH{channel_index}"
-
-            dialog = QDialog(self)
-            dialog.setWindowTitle(title)
-            dialog.resize(900, 520)
-
-            frame = QFrame()
-            frame.setObjectName("panel")
-            frame_layout = QVBoxLayout(frame)
-            frame_layout.setContentsMargins(12, 12, 12, 12)
-            frame_layout.setSpacing(8)
-
-            layout = QVBoxLayout(dialog)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.addWidget(frame)
-
-            top_row = QHBoxLayout()
-            title_label = QLabel(title)
-            title_label.setObjectName("panelTitle")
-            top_row.addWidget(title_label, 1)
-
-            latest_label = QLabel(f"{card.reading_label.text()} / {card.temperature_label.text()}")
-            latest_label.setObjectName("smallNote")
-            latest_label.setWordWrap(True)
-
-            plot = LinePlotWidget("raw24", "Waiting for ADC telemetry")
-            plot.setMinimumHeight(400)
-
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(False)
-            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
-            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            scroll.setWidget(plot)
-
-            frame_layout.addLayout(top_row)
-            frame_layout.addWidget(latest_label)
-            frame_layout.addWidget(scroll, 1)
-
-            self.adc_dialog = dialog
-            self.adc_dialog_slot = slot
-            self.adc_dialog_scroll = scroll
-            self.adc_dialog_plot = plot
-            self.adc_dialog_latest = latest_label
-
-            dialog.finished.connect(lambda _result, opened=dialog: self.clear_adc_graph_dialog(opened))
-
-            points = self._load_dialog_data(slot)
-            plot.set_points(points)
-            if points:
-                plot.setFixedWidth(max(len(points), 876))
-            dialog.show()
+            self.show_plot_dialog(
+                plot_id=f"adc_{slot}",
+                title=title,
+                y_label="raw24",
+                points_fn=lambda s=slot: list(self.adc_raw24_histories[s]),
+                latest_fn=lambda s=slot: f"{self.sample_cards[s].reading_label.text()} / {self.sample_cards[s].temperature_label.text()}",
+            )
         except Exception as exc:
             self.log(f"Failed to open ADC graph: {exc}")
 
-    def _load_dialog_data(self, slot: int) -> list[tuple[float, float]]:
-        rows = self.adc_db.query(slot, 0)
-        if rows:
-            return [(float(ts), float(v)) for ts, v in rows]
-        if self.adc_raw24_histories[slot]:
-            return list(self.adc_raw24_histories[slot])
-        return []
+    def show_temperature_dialog(self) -> None:
+        try:
+            self.show_plot_dialog(
+                plot_id="temperature_0",
+                title="HEATER 0 TEMPERATURE",
+                y_label="temperature (C)",
+                points_fn=lambda: list(self.temperature_0_history),
+                latest_fn=lambda: self.temperature_0_card.value_label.text(),
+            )
+        except Exception as exc:
+            self.log(f"Failed to open temperature graph: {exc}")
 
-    def clear_adc_graph_dialog(self, dialog: QDialog) -> None:
-        if self.adc_dialog is not dialog:
-            return
-        self.adc_dialog = None
-        self.adc_dialog_slot = None
-        self.adc_dialog_scroll = None
-        self.adc_dialog_plot = None
-        self.adc_dialog_latest = None
+    def show_geiger_dialog(self, counter_id: int) -> None:
+        try:
+            name = "Geiger 1" if counter_id == 0 else "Geiger 2"
+            self.show_plot_dialog(
+                plot_id=f"geiger_{counter_id}",
+                title=f"{name} DOSE RATE",
+                y_label="dose rate CPS",
+                points_fn=lambda cid=counter_id: list(self.geiger_dose_rate_histories[cid]),
+                latest_fn=lambda: "",
+            )
+        except Exception as exc:
+            self.log(f"Failed to open geiger graph: {exc}")
 
-    def update_adc_graph_dialog(self) -> None:
-        slot = self.adc_dialog_slot
-        if slot is None or self.adc_dialog_plot is None or self.adc_dialog_latest is None or self.adc_dialog_scroll is None:
+    def show_plot_dialog(
+        self,
+        plot_id: str,
+        title: str,
+        y_label: str,
+        points_fn,
+        latest_fn=None,
+    ) -> None:
+        if plot_id in self.plot_dialogs:
+            self.plot_dialogs[plot_id].raise_()
+            self.plot_dialogs[plot_id].activateWindow()
             return
-        if not 0 <= slot < len(self.sample_cards):
-            return
-        card = self.sample_cards[slot]
-        self.adc_dialog_latest.setText(f"{card.reading_label.text()} / {card.temperature_label.text()}")
-        points = self._load_dialog_data(slot)
-        self.adc_dialog_plot.set_points(points)
-        sb = self.adc_dialog_scroll.horizontalScrollBar()
-        was_at_end = sb.value() == sb.maximum()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(900, 520)
+
+        frame = QFrame()
+        frame.setObjectName("panel")
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(12, 12, 12, 12)
+        frame_layout.setSpacing(8)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(frame)
+
+        top_row = QHBoxLayout()
+        title_label = QLabel(title)
+        title_label.setObjectName("panelTitle")
+        top_row.addWidget(title_label, 1)
+
+        latest_label = QLabel(latest_fn() if latest_fn else "")
+        latest_label.setObjectName("smallNote")
+        latest_label.setWordWrap(True)
+
+        plot = LinePlotWidget(y_label, "Waiting for telemetry", absolute_time=True)
+        plot.setMinimumHeight(400)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(False)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(plot)
+
+        frame_layout.addLayout(top_row)
+        if latest_fn:
+            frame_layout.addWidget(latest_label)
+        frame_layout.addWidget(scroll, 1)
+
+        self.plot_dialogs[plot_id] = dialog
+        self.plot_dialog_refs[plot_id] = {
+            "plot": plot,
+            "scroll": scroll,
+            "latest": latest_label,
+            "points_fn": points_fn,
+            "latest_fn": latest_fn,
+        }
+
+        dialog.finished.connect(lambda _result, pid=plot_id: self.clear_plot_dialog(pid))
+
+        points = points_fn()
+        plot.set_points(points)
         if points:
-            vp_w = self.adc_dialog_scroll.viewport().width()
-            w = max(len(points), vp_w)
-            if self.adc_dialog_plot.width() != w:
-                self.adc_dialog_plot.setFixedWidth(w)
-        if was_at_end:
-            sb.setValue(sb.maximum())
+            plot.setFixedWidth(max(len(points), 876))
+        dialog.show()
+
+    def clear_plot_dialog(self, plot_id: str) -> None:
+        self.plot_dialogs.pop(plot_id, None)
+        self.plot_dialog_refs.pop(plot_id, None)
+
+    def update_plot_dialogs(self) -> None:
+        for plot_id, refs in list(self.plot_dialog_refs.items()):
+            plot: LinePlotWidget = refs["plot"]
+            scroll: QScrollArea = refs["scroll"]
+            latest: QLabel = refs["latest"]
+            points_fn = refs["points_fn"]
+            latest_fn = refs["latest_fn"]
+
+            if latest_fn:
+                latest.setText(latest_fn())
+
+            points = points_fn()
+            plot.set_points(points)
+            sb = scroll.horizontalScrollBar()
+            was_at_end = sb.value() == sb.maximum()
+            if points:
+                vp_w = scroll.viewport().width()
+                w = max(len(points), vp_w)
+                if plot.width() != w:
+                    plot.setFixedWidth(w)
+            if was_at_end:
+                sb.setValue(sb.maximum())
 
     def build_temperature_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        panel = Panel("TEMPERATURE MEASUREMENTS")
-        self.temperature_table = ValueTable(
-            [(f"Temperature sensor {index}", "X") for index in range(1, 14)],
-            ("Sensor", "Newest Temperature"),
+
+        self.temperature_0_card = StatCard(
+            "HEATER 0 TEMPERATURE",
+            "TMP117 / telemetry slot 0",
+            "waiting",
         )
-        panel.layout.addWidget(self.temperature_table)
-        layout.addWidget(panel)
+        layout.addWidget(self.temperature_0_card)
+
+        self.heater_duty_card = StatCard(
+            "HEATER 0 DUTY CYCLE",
+            "permille (0-250)",
+            "waiting",
+        )
+        layout.addWidget(self.heater_duty_card)
+
+        chart_panel = Panel("HEATER 0 TEMPERATURE TIME-SERIES")
+        self.temperature_0_plot = LinePlotWidget(
+            "temperature (C)", "Waiting for valid temperature telemetry"
+        )
+        self.temperature_0_plot.on_double_click = lambda: self.show_temperature_dialog()
+        chart_panel.layout.addWidget(self.temperature_0_plot)
+        self.temperature_plot_status = QLabel("0/300 valid points")
+        self.temperature_plot_status.setObjectName("smallNote")
+        chart_panel.layout.addWidget(self.temperature_plot_status)
+        layout.addWidget(chart_panel)
+
+        self.heater_controls_panel = self.build_heater_controls_panel()
+        layout.addWidget(self.heater_controls_panel)
+
+        detail_panel = Panel("ALL TEMPERATURE SENSORS")
+        self.temperature_table = ValueTable(
+            [(f"Temperature sensor {index}", "X", "") for index in range(1, 14)],
+            ("Sensor", "Temperature", "Duty (‰)"),
+        )
+        detail_panel.layout.addWidget(self.temperature_table)
+        layout.addWidget(detail_panel)
         layout.addStretch(1)
         return page
+
+    def build_heater_controls_panel(self) -> Panel:
+        panel = Panel("HEATER 0 PID CONTROLS")
+
+        self.heater_target_spin = QDoubleSpinBox()
+        self.heater_target_spin.setRange(0.0, 64.999)
+        self.heater_target_spin.setDecimals(3)
+        self.heater_target_spin.setSingleStep(0.1)
+        self.heater_target_spin.setValue(60.0)
+        self.heater_target_spin.setSuffix(" C")
+
+        self.heater_kp_spin = QDoubleSpinBox()
+        self.heater_kp_spin.setRange(0.0, 65.535)
+        self.heater_kp_spin.setDecimals(3)
+        self.heater_kp_spin.setSingleStep(0.1)
+        self.heater_kp_spin.setValue(10.0)
+
+        self.heater_ki_spin = QDoubleSpinBox()
+        self.heater_ki_spin.setRange(0.0, 65.535)
+        self.heater_ki_spin.setDecimals(3)
+        self.heater_ki_spin.setSingleStep(0.01)
+        self.heater_ki_spin.setValue(0.1)
+
+        self.heater_kd_spin = QDoubleSpinBox()
+        self.heater_kd_spin.setRange(0.0, 65.535)
+        self.heater_kd_spin.setDecimals(3)
+        self.heater_kd_spin.setSingleStep(0.01)
+        self.heater_kd_spin.setValue(0.0)
+
+        self.heater_target_status = QLabel("not confirmed")
+        self.heater_target_status.setObjectName("smallNote")
+        self.heater_kp_status = QLabel("not confirmed")
+        self.heater_kp_status.setObjectName("smallNote")
+        self.heater_ki_status = QLabel("not confirmed")
+        self.heater_ki_status.setObjectName("smallNote")
+        self.heater_kd_status = QLabel("not confirmed")
+        self.heater_kd_status.setObjectName("smallNote")
+
+        self.heater_target_btn = QPushButton("Apply Target")
+        self.heater_kp_btn = QPushButton("Apply Kp")
+        self.heater_ki_btn = QPushButton("Apply Ki")
+        self.heater_kd_btn = QPushButton("Apply Kd")
+
+        self.heater_target_btn.clicked.connect(
+            lambda: self.send_heater_parameter(
+                COMMAND_HEATER_SET_TARGET, "target",
+                encode_heater_target_c(self.heater_target_spin.value()),
+                self.heater_target_status,
+            )
+        )
+        self.heater_kp_btn.clicked.connect(
+            lambda: self.send_heater_parameter(
+                COMMAND_HEATER_SET_KP, "Kp",
+                encode_heater_gain(self.heater_kp_spin.value()),
+                self.heater_kp_status,
+            )
+        )
+        self.heater_ki_btn.clicked.connect(
+            lambda: self.send_heater_parameter(
+                COMMAND_HEATER_SET_KI, "Ki",
+                encode_heater_gain(self.heater_ki_spin.value()),
+                self.heater_ki_status,
+            )
+        )
+        self.heater_kd_btn.clicked.connect(
+            lambda: self.send_heater_parameter(
+                COMMAND_HEATER_SET_KD, "Kd",
+                encode_heater_gain(self.heater_kd_spin.value()),
+                self.heater_kd_status,
+            )
+        )
+
+        self.heater_apply_buttons = [
+            self.heater_target_btn,
+            self.heater_kp_btn,
+            self.heater_ki_btn,
+            self.heater_kd_btn,
+        ]
+
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        grid.addWidget(QLabel("Parameter"), 0, 0)
+        grid.addWidget(QLabel("Value"), 0, 1)
+        grid.addWidget(QLabel("Status"), 0, 2)
+        grid.addWidget(QLabel(""), 0, 3)
+
+        grid.addWidget(QLabel("Target"), 1, 0)
+        grid.addWidget(self.heater_target_spin, 1, 1)
+        grid.addWidget(self.heater_target_status, 1, 2)
+        grid.addWidget(self.heater_target_btn, 1, 3)
+
+        grid.addWidget(QLabel("Kp"), 2, 0)
+        grid.addWidget(self.heater_kp_spin, 2, 1)
+        grid.addWidget(self.heater_kp_status, 2, 2)
+        grid.addWidget(self.heater_kp_btn, 2, 3)
+
+        grid.addWidget(QLabel("Ki"), 3, 0)
+        grid.addWidget(self.heater_ki_spin, 3, 1)
+        grid.addWidget(self.heater_ki_status, 3, 2)
+        grid.addWidget(self.heater_ki_btn, 3, 3)
+
+        grid.addWidget(QLabel("Kd"), 4, 0)
+        grid.addWidget(self.heater_kd_spin, 4, 1)
+        grid.addWidget(self.heater_kd_status, 4, 2)
+        grid.addWidget(self.heater_kd_btn, 4, 3)
+
+        panel.layout.addLayout(grid)
+        return panel
 
     def build_health_page(self) -> QWidget:
         page = QWidget()
@@ -1009,6 +1312,19 @@ class MainWindow(QMainWindow):
 
         panel = Panel("SETTINGS")
         layout.addWidget(panel)
+
+        test_panel = Panel("TEST MODES")
+        self.geiger_test_checkbox = QCheckBox("Geiger test mode (hide geiger 2)")
+        self.geiger_test_checkbox.setChecked(self.geiger_test_mode)
+        self.geiger_test_checkbox.toggled.connect(self._on_geiger_test_toggle)
+        test_panel.layout.addWidget(self.geiger_test_checkbox)
+
+        self.heater_test_checkbox = QCheckBox("Heater test mode (hide PID controls)")
+        self.heater_test_checkbox.setChecked(self.heater_test_mode)
+        self.heater_test_checkbox.toggled.connect(self._on_heater_test_toggle)
+        test_panel.layout.addWidget(self.heater_test_checkbox)
+
+        layout.addWidget(test_panel)
 
         db_panel = Panel("ADC DATABASE")
         db_path = "chronocat_adc.db"
@@ -1045,6 +1361,24 @@ class MainWindow(QMainWindow):
         if ret == QMessageBox.Yes:
             self.adc_db.clear()
             self.log("ADC database cleared")
+
+    def _on_geiger_test_toggle(self, checked: bool) -> None:
+        self.geiger_test_mode = checked
+        self._settings.setValue("geiger_test_mode", checked)
+        self._apply_geiger_test_mode(checked)
+
+    def _apply_geiger_test_mode(self, hide: bool) -> None:
+        for widget in self.geiger_2_widgets:
+            widget.setVisible(not hide)
+
+    def _on_heater_test_toggle(self, checked: bool) -> None:
+        self.heater_test_mode = checked
+        self._settings.setValue("heater_test_mode", checked)
+        self._apply_heater_test_mode(checked)
+
+    def _apply_heater_test_mode(self, hide: bool) -> None:
+        if self.heater_controls_panel is not None:
+            self.heater_controls_panel.setVisible(not hide)
 
     def switch_view(self, view: str) -> None:
         order = [VIEW_MONITORING, VIEW_RADIATION, VIEW_SAMPLES, VIEW_TEMPERATURE, VIEW_HEALTH, VIEW_SETTINGS]
@@ -1100,7 +1434,7 @@ class MainWindow(QMainWindow):
                 color: #444444;
                 font-size: 12px;
             }
-            QLineEdit, QPlainTextEdit {
+            QLineEdit, QPlainTextEdit, QDoubleSpinBox {
                 background: #ffffff;
                 border: 1px solid #777777;
                 border-radius: 0px;
@@ -1312,6 +1646,9 @@ class MainWindow(QMainWindow):
         ):
             button.setEnabled(connected and not self.command_in_progress)
 
+        for button in self.heater_apply_buttons:
+            button.setEnabled(connected and not self.command_in_progress)
+
     def send_command(
         self,
         command: int,
@@ -1338,18 +1675,81 @@ class MainWindow(QMainWindow):
 
     def command_completed(self, response: CommandResponse) -> None:
         self.command_in_progress = False
-        self.log_response(response)
         self.update_connection_state()
+
+        if (
+            self.pending_heater_command is not None
+            and response.command == self.pending_heater_command["command"]
+        ):
+            status_label: QLabel = self.pending_heater_command["status_label"]  # type: ignore[assignment]
+            param_name: str = self.pending_heater_command["param_name"]  # type: ignore[assignment]
+            encoded_value: int = self.pending_heater_command["encoded_value"]  # type: ignore[assignment]
+            self.pending_heater_command = None
+
+            if response.status == 0 and response.arg1 == 0:
+                if "target" in param_name:
+                    decoded = decode_heater_target_c(response.arg2)
+                    if response.arg2 != encoded_value:
+                        status_label.setText(
+                            f"applied {decoded:.3f} C "
+                            f"(requested {decode_heater_target_c(encoded_value):.3f} C)"
+                        )
+                    else:
+                        status_label.setText(f"applied {decoded:.3f} C")
+                else:
+                    decoded = decode_heater_gain(response.arg2)
+                    if response.arg2 != encoded_value:
+                        status_label.setText(
+                            f"applied {decoded:.3f} "
+                            f"(requested {decode_heater_gain(encoded_value):.3f})"
+                        )
+                    else:
+                        status_label.setText(f"applied {decoded:.3f}")
+                self.log_response(response)
+            else:
+                status_label.setText(f"rejected: {status_name(response.status)}")
+                self.log(f"Heater {param_name} rejected: {status_name(response.status)}")
+        else:
+            self.pending_heater_command = None
+            self.log_response(response)
 
     def command_failed(self, message: str) -> None:
         self.command_in_progress = False
-        self.log(f"Command failed: {message}")
+        if self.pending_heater_command is not None:
+            status_label: QLabel = self.pending_heater_command["status_label"]  # type: ignore[assignment]
+            param_name: str = self.pending_heater_command["param_name"]  # type: ignore[assignment]
+            self.pending_heater_command = None
+            status_label.setText(f"failed: {message}")
+            self.log(f"Heater {param_name} command failed: {message}")
+        else:
+            self.log(f"Command failed: {message}")
         self.client.disconnect()
         self.update_connection_state()
 
     def send_geiger_command(self, command: int, action: str, timeout: float | None = None) -> None:
         self.log(f"Sending Geiger command: {action}")
         self.send_command(command, 0, 0, timeout=timeout)
+
+    def send_heater_parameter(
+        self,
+        command: int,
+        param_name: str,
+        encoded_value: int,
+        status_label: QLabel,
+    ) -> None:
+        if not self.client.connected:
+            self.log(f"Cannot set heater {param_name}: not connected")
+            return
+
+        self.pending_heater_command = {
+            "command": command,
+            "param_name": param_name,
+            "encoded_value": encoded_value,
+            "status_label": status_label,
+        }
+        status_label.setText("sending...")
+        self.log(f"Sending heater {param_name} command (value={encoded_value})")
+        self.send_command(command, 0, encoded_value)
 
     def log_response(self, response: CommandResponse) -> None:
         if response.command in (
@@ -1475,6 +1875,7 @@ class MainWindow(QMainWindow):
     def on_telemetry_packet(self, packet: TelemetryPacket, source: str) -> None:
         self.telemetry_count += 1
         self.last_telemetry_time = time.monotonic()
+        received_at = time.monotonic()
 
         self.telemetry_state.setText("Telemetry receiving")
         self.telemetry_state.setProperty("active", True)
@@ -1500,13 +1901,14 @@ class MainWindow(QMainWindow):
             self.geiger_hv_card,
             self.geiger_errors_card,
         )
-        self.update_geiger_cards(
-            geiger_2,
-            self.geiger_2_dose_rate_card,
-            self.geiger_2_total_dose_card,
-            self.geiger_2_hv_card,
-            self.geiger_2_errors_card,
-        )
+        if not self.geiger_test_mode:
+            self.update_geiger_cards(
+                geiger_2,
+                self.geiger_2_dose_rate_card,
+                self.geiger_2_total_dose_card,
+                self.geiger_2_hv_card,
+                self.geiger_2_errors_card,
+            )
         self.update_geiger_cards(
             geiger_1,
             self.radiation_dose_rate_card,
@@ -1514,27 +1916,28 @@ class MainWindow(QMainWindow):
             self.radiation_hv_card,
             self.radiation_errors_card,
         )
-        self.update_geiger_cards(
-            geiger_2,
-            self.radiation_2_dose_rate_card,
-            self.radiation_2_total_dose_card,
-            self.radiation_2_hv_card,
-            self.radiation_2_errors_card,
-        )
+        if not self.geiger_test_mode:
+            self.update_geiger_cards(
+                geiger_2,
+                self.radiation_2_dose_rate_card,
+                self.radiation_2_total_dose_card,
+                self.radiation_2_hv_card,
+                self.radiation_2_errors_card,
+            )
         self.timestamp_label.setText(f"RECEPTION TIMESTAMP: {datetime.now().strftime('%H:%M:%S')}")
 
         for counter_id, reading in enumerate((geiger_1, geiger_2)):
             if reading is None or not reading.valid:
                 continue
             self.geiger_dose_rate_histories[counter_id].append(
-                (float(packet.timestamp), reading.dose_rate_cps)
+                (received_at, time.time(), reading.dose_rate_cps)
             )
             points = list(self.geiger_dose_rate_histories[counter_id])
             if counter_id == 0:
                 self.monitoring_geiger_plot.set_points(points)
                 self.radiation_geiger_plot.set_points(points)
                 self.radiation_plot_status.setText(f"{len(points)}/300 points")
-            else:
+            elif not self.geiger_test_mode:
                 self.monitoring_geiger_2_plot.set_points(points)
                 self.radiation_geiger_2_plot.set_points(points)
                 self.radiation_2_plot_status.setText(f"{len(points)}/300 points")
@@ -1544,7 +1947,7 @@ class MainWindow(QMainWindow):
         readings_pairs: list[tuple[int, int]] = []
         for reading in packet.ad7177_readings:
             readings_pairs.append((reading.slot, reading.raw24))
-            self.adc_raw24_histories[reading.slot].append((float(packet.timestamp), float(reading.raw24)))
+            self.adc_raw24_histories[reading.slot].append((received_at, time.time(), float(reading.raw24)))
             if reading.slot < len(self.sample_cards):
                 points = list(self.adc_raw24_histories[reading.slot])
                 self.sample_cards[reading.slot].set_points(points)
@@ -1559,12 +1962,15 @@ class MainWindow(QMainWindow):
                 f"0x{reading.raw24:06x} ({reading.raw24})",
             )
         self.adc_db.insert_many(packet.timestamp, readings_pairs)
-        self.update_adc_graph_dialog()
+        self.update_plot_dialogs()
 
         self.telemetry_table.set_value("AD7177 Readings", adc_summary)
         self.telemetry_table.set_value("Temperature Measurements", temp_summary)
+        self.telemetry_table.set_value("Heater Duty (permille)", str(packet.heater_duty_permille))
         self.telemetry_table.set_value("Subsystem Health Indicators", health)
         for number, reading in ((1, geiger_1), (2, geiger_2)):
+            if number == 2 and self.geiger_test_mode:
+                continue
             prefix = f"Geiger {number}"
             if reading is None or not reading.valid:
                 state = "unavailable" if reading is None else "invalid"
@@ -1607,17 +2013,42 @@ class MainWindow(QMainWindow):
         self.packet_table.set_value("ADC Legacy Valid Mask", f"0x{packet.os_adc_valid_mask:04x}")
         self.packet_table.set_value("AD7177 Readings", adc_summary)
         self.update_packet_geiger_fields(1, geiger_1)
-        self.update_packet_geiger_fields(2, geiger_2)
+        if not self.geiger_test_mode:
+            self.update_packet_geiger_fields(2, geiger_2)
         self.packet_table.set_value("TCP Server", tcp_state)
 
         self.update_geiger_detail_table(self.radiation_table, geiger_1)
-        self.update_geiger_detail_table(self.radiation_2_table, geiger_2)
+        if not self.geiger_test_mode:
+            self.update_geiger_detail_table(self.radiation_2_table, geiger_2)
 
         for index, value in enumerate(packet.temperatures):
-            validity = "valid" if packet.temperature_valid(index) else "invalid"
+            if packet.temperature_valid(index):
+                display = f"{value / 100:.2f} C (valid)"
+            else:
+                display = "\u2014 (invalid)"
             self.temperature_table.set_value(
-                f"Temperature sensor {index + 1}", f"{value / 100:.2f} C ({validity})"
+                f"Temperature sensor {index + 1}", display
             )
+            if index == 0:
+                self.temperature_table.set_value(
+                    f"Temperature sensor {index + 1}",
+                    str(packet.heater_duty_permille),
+                    col=2,
+                )
+
+        temperature_c = packet.temperature_c(0)
+        if temperature_c is None:
+            self.temperature_0_card.set_value("invalid")
+        else:
+            self.temperature_0_card.set_value(f"{temperature_c:.2f} C")
+            self.temperature_0_history.append(
+                (received_at, time.time(), temperature_c)
+            )
+            points = list(self.temperature_0_history)
+            self.temperature_0_plot.set_points(points)
+            self.temperature_plot_status.setText(f"{len(points)}/300 valid points")
+
+        self.heater_duty_card.set_value(f"{packet.heater_duty_permille} / 250")
 
         self.health_table.set_value("TCP Server", tcp_state)
         self.health_table.set_value("Flags", flags)
@@ -1669,8 +2100,10 @@ class MainWindow(QMainWindow):
         self.log_view.appendPlainText(f"[{timestamp}] {message}")
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        if self.adc_dialog is not None:
-            self.adc_dialog.close()
+        for dialog in list(self.plot_dialogs.values()):
+            dialog.close()
+        self.plot_dialogs.clear()
+        self.plot_dialog_refs.clear()
         self.adc_db.close()
         if self.csv_logger is not None:
             self.csv_logger.stop()
