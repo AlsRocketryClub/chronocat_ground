@@ -13,8 +13,19 @@ from chronocat_ground.protocol import (
     GEIGER_RECORD_STRUCT,
     TELEMETRY_PACKET_SIZE_V1,
     TELEMETRY_PACKET_SIZE_V2,
+    encode_heater_gain,
+    encode_heater_target_c,
+    decode_heater_gain,
+    decode_heater_target_c,
     geiger_error_names,
     parse_telemetry_packet,
+    telemetry_health_name,
+    build_command,
+    parse_command_response,
+    COMMAND_HEATER_SET_TARGET,
+    COMMAND_HEATER_SET_KP,
+    COMMAND_HEATER_SET_KI,
+    COMMAND_HEATER_SET_KD,
 )
 from chronocat_ground.telemetry_cli import build_parser
 from chronocat_ground.telemetry_csv import (
@@ -336,6 +347,92 @@ class TelemetryProtocolTests(unittest.TestCase):
         args = build_parser().parse_args(["--geiger-only", "--overwrite", "--out", "test.csv"])
         self.assertTrue(args.geiger_only)
         self.assertTrue(args.overwrite)
+
+    def test_v2_invalid_geiger_1_with_id_1_accepted(self) -> None:
+        valid = geiger_record(0, 100, 1.5)
+        invalid = GEIGER_RECORD_STRUCT.pack(
+            0, 1, 0, 0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0,
+        )
+        data = telemetry_packet(2, [valid, invalid])
+        packet = parse_telemetry_packet(data)
+
+        self.assertEqual(len(data), 165)
+        self.assertTrue(packet.geiger_reading(0).valid)
+        self.assertFalse(packet.geiger_reading(1).valid)
+        self.assertEqual(packet.geiger_reading(1).counter_id, 1)
+
+    def test_health_name_temperature_sensor_error(self) -> None:
+        self.assertEqual(telemetry_health_name(2), "temperature sensor error")
+
+    def test_temperature_c_valid(self) -> None:
+        data = bytearray(telemetry_packet(2, [geiger_record(0, 1, 1.0), geiger_record(1, 2, 2.0)]))
+        struct.pack_into(">h", data, 21, 2345)
+        struct.pack_into(">H", data, 19, 0x0001)
+        packet = parse_telemetry_packet(bytes(data))
+
+        self.assertAlmostEqual(packet.temperature_c(0), 23.45)
+        self.assertEqual(packet.temperatures[0], 2345)
+
+    def test_temperature_c_invalid(self) -> None:
+        data = bytearray(telemetry_packet(2, [geiger_record(0, 1, 1.0), geiger_record(1, 2, 2.0)]))
+        struct.pack_into(">H", data, 19, 0x0000)
+        packet = parse_telemetry_packet(bytes(data))
+
+        self.assertIsNone(packet.temperature_c(0))
+        self.assertIsNone(packet.temperature_c(1))
+
+    def test_temperature_c_negative(self) -> None:
+        data = bytearray(telemetry_packet(2, [geiger_record(0, 1, 1.0), geiger_record(1, 2, 2.0)]))
+        struct.pack_into(">h", data, 21, -625)
+        struct.pack_into(">H", data, 19, 0x0001)
+        packet = parse_telemetry_packet(bytes(data))
+
+        self.assertAlmostEqual(packet.temperature_c(0), -6.25)
+
+    def test_encode_heater_target_c(self) -> None:
+        self.assertEqual(encode_heater_target_c(60.0), 60000)
+        self.assertEqual(encode_heater_target_c(0.0), 0)
+        self.assertEqual(encode_heater_target_c(64.99), 64990)
+        with self.assertRaises(ValueError):
+            encode_heater_target_c(-1.0)
+        with self.assertRaises(ValueError):
+            encode_heater_target_c(65.0)
+
+    def test_decode_heater_target_c(self) -> None:
+        self.assertAlmostEqual(decode_heater_target_c(60000), 60.0)
+        self.assertAlmostEqual(decode_heater_target_c(0), 0.0)
+
+    def test_encode_heater_gain(self) -> None:
+        self.assertEqual(encode_heater_gain(10.0), 10000)
+        self.assertEqual(encode_heater_gain(0.1), 100)
+        self.assertEqual(encode_heater_gain(0.0), 0)
+        with self.assertRaises(ValueError):
+            encode_heater_gain(-1.0)
+
+    def test_decode_heater_gain(self) -> None:
+        self.assertAlmostEqual(decode_heater_gain(10000), 10.0)
+        self.assertAlmostEqual(decode_heater_gain(100), 0.1)
+        self.assertAlmostEqual(decode_heater_gain(0), 0.0)
+
+    def test_heater_command_bytes(self) -> None:
+        cmd = build_command(COMMAND_HEATER_SET_TARGET, 0, 60000)
+        self.assertEqual(cmd, bytes([0x10, 0x00, 0x00, 0xEA, 0x60]))
+
+        cmd = build_command(COMMAND_HEATER_SET_KP, 0, 10000)
+        self.assertEqual(cmd, bytes([0x12, 0x00, 0x00, 0x27, 0x10]))
+
+        cmd = build_command(COMMAND_HEATER_SET_KI, 0, 100)
+        self.assertEqual(cmd, bytes([0x14, 0x00, 0x00, 0x00, 0x64]))
+
+        cmd = build_command(COMMAND_HEATER_SET_KD, 0, 0)
+        self.assertEqual(cmd, bytes([0x16, 0x00, 0x00, 0x00, 0x00]))
+
+    def test_heater_response_parse(self) -> None:
+        resp = parse_command_response(bytes([0x00, 0x10, 0x00, 0x00, 0xEA, 0x60]))
+        self.assertEqual(resp.status, 0)
+        self.assertEqual(resp.command, 0x10)
+        self.assertEqual(resp.arg1, 0)
+        self.assertEqual(resp.arg2, 60000)
 
 
 if __name__ == "__main__":
