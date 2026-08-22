@@ -11,11 +11,13 @@ DEFAULT_TELEMETRY_PORT = 5005
 TELEMETRY_MAGIC = b"CCTM"
 TELEMETRY_VERSION_V1 = 1
 TELEMETRY_VERSION_V2 = 2
-TELEMETRY_VERSION = TELEMETRY_VERSION_V2
+TELEMETRY_VERSION_V3 = 3
+TELEMETRY_VERSION = TELEMETRY_VERSION_V3
 TELEMETRY_MESSAGE_TYPE = 1
 TELEMETRY_PACKET_SIZE_V1 = 131
 TELEMETRY_PACKET_SIZE_V2 = 165
-TELEMETRY_PACKET_SIZE = TELEMETRY_PACKET_SIZE_V2
+TELEMETRY_PACKET_SIZE_V3 = 167
+TELEMETRY_PACKET_SIZE = TELEMETRY_PACKET_SIZE_V3
 TELEMETRY_TEMP_COUNT = 13
 TELEMETRY_OS_ADC_COUNT = 12
 TELEMETRY_GEIGER_COUNT_V2 = 2
@@ -36,6 +38,7 @@ TELEMETRY_FLAG_TCP_LISTENING = 1 << 1
 TELEMETRY_HEALTH_NAMES = {
     0: "ok",
     1: "tcp not listening",
+    2: "temperature sensor error",
 }
 
 GEIGER_ERROR_NAMES = {
@@ -60,6 +63,15 @@ COMMAND_GEIGER_RESET_ACCUMULATED_DOSE = 0x47
 COMMAND_GEIGER_CLEAR_HISTORY = 0x4F
 COMMAND_GEIGER_RESET_STATS = 0x58
 
+COMMAND_HEATER_SET_TARGET = 0x10
+COMMAND_HEATER_GET_TARGET = 0x11
+COMMAND_HEATER_SET_KP = 0x12
+COMMAND_HEATER_GET_KP = 0x13
+COMMAND_HEATER_SET_KI = 0x14
+COMMAND_HEATER_GET_KI = 0x15
+COMMAND_HEATER_SET_KD = 0x16
+COMMAND_HEATER_GET_KD = 0x17
+
 VALUE_OFF = 0x00
 VALUE_ON = 0x01
 
@@ -78,6 +90,14 @@ COMMAND_NAMES = {
     COMMAND_GEIGER_RESET_ACCUMULATED_DOSE: "geiger reset accumulated dose",
     COMMAND_GEIGER_CLEAR_HISTORY: "geiger clear history",
     COMMAND_GEIGER_RESET_STATS: "geiger reset statistics",
+    COMMAND_HEATER_SET_TARGET: "heater set target",
+    COMMAND_HEATER_GET_TARGET: "heater get target",
+    COMMAND_HEATER_SET_KP: "heater set Kp",
+    COMMAND_HEATER_GET_KP: "heater get Kp",
+    COMMAND_HEATER_SET_KI: "heater set Ki",
+    COMMAND_HEATER_GET_KI: "heater get Ki",
+    COMMAND_HEATER_SET_KD: "heater set Kd",
+    COMMAND_HEATER_GET_KD: "heater get Kd",
 }
 
 STATUS_NAMES = {
@@ -155,6 +175,7 @@ class TelemetryPacket:
     health_code: int
     temperature_valid_mask: int
     temperatures: tuple[int, ...]
+    heater_duty_permille: int
     os_adc_valid_mask: int
     os_adc_readings: tuple[int, ...]
     geiger_readings: tuple[GeigerReading, ...]
@@ -249,6 +270,11 @@ class TelemetryPacket:
     def temperature_valid(self, index: int) -> bool:
         return (self.temperature_valid_mask & (1 << index)) != 0
 
+    def temperature_c(self, index: int) -> float | None:
+        if not self.temperature_valid(index):
+            return None
+        return self.temperatures[index] / 100.0
+
     def os_adc_valid(self, index: int) -> bool:
         return (self.os_adc_valid_mask & (1 << index)) != 0
 
@@ -307,6 +333,7 @@ def parse_telemetry_packet(data: bytes) -> TelemetryPacket:
     expected_sizes = {
         TELEMETRY_VERSION_V1: TELEMETRY_PACKET_SIZE_V1,
         TELEMETRY_VERSION_V2: TELEMETRY_PACKET_SIZE_V2,
+        TELEMETRY_VERSION_V3: TELEMETRY_PACKET_SIZE_V3,
     }
     expected_size = expected_sizes.get(version)
     if expected_size is None:
@@ -340,6 +367,12 @@ def parse_telemetry_packet(data: bytes) -> TelemetryPacket:
     offset += 2
     temperatures = struct.unpack_from(f">{TELEMETRY_TEMP_COUNT}h", data, offset)
     offset += TELEMETRY_TEMP_COUNT * 2
+
+    heater_duty_permille = 0
+    if version >= TELEMETRY_VERSION_V3:
+        heater_duty_permille = struct.unpack_from(">H", data, offset)[0]
+        offset += 2
+
     os_adc_valid_mask = struct.unpack_from(">H", data, offset)[0]
     offset += 2
     os_adc_readings = struct.unpack_from(f">{TELEMETRY_OS_ADC_COUNT}I", data, offset)
@@ -373,6 +406,7 @@ def parse_telemetry_packet(data: bytes) -> TelemetryPacket:
         health_code=health_code,
         temperature_valid_mask=temperature_valid_mask,
         temperatures=temperatures,
+        heater_duty_permille=heater_duty_permille,
         os_adc_valid_mask=os_adc_valid_mask,
         os_adc_readings=os_adc_readings,
         geiger_readings=tuple(geiger_readings),
@@ -468,3 +502,26 @@ def ad7177_status_names(status: int) -> str:
         names.append("REG_ERROR")
     names.append(f"CH{status & AD7177_STATUS_CHANNEL_MASK}")
     return ", ".join(names)
+
+
+HEATER_GAIN_SCALE = 1000.0
+
+
+def encode_heater_target_c(value: float) -> int:
+    if not (0 <= value < 65.0):
+        raise ValueError(f"heater target {value} out of range 0..64.999 C")
+    return int(value * 1000.0 + 0.5)
+
+
+def decode_heater_target_c(encoded: int) -> float:
+    return encoded / 1000.0
+
+
+def encode_heater_gain(value: float) -> int:
+    if not (0.0 <= value <= 65.535):
+        raise ValueError(f"heater gain {value} out of range 0..65.535")
+    return int(value * HEATER_GAIN_SCALE + 0.5)
+
+
+def decode_heater_gain(encoded: int) -> float:
+    return encoded / HEATER_GAIN_SCALE

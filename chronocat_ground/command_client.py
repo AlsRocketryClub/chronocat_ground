@@ -57,7 +57,13 @@ class CommandClient:
         try:
             self._socket.sendall(build_command(command, arg1, arg2))
             response = self._recv_exact(RESPONSE_PACKET_SIZE)
-            return parse_command_response(response)
+            parsed = parse_command_response(response)
+            if parsed.command != command:
+                raise ValueError(
+                    f"response command 0x{parsed.command:02x} "
+                    f"does not match request 0x{command:02x}"
+                )
+            return parsed
         finally:
             if self._socket is not None and timeout is not None:
                 self._socket.settimeout(old_timeout)
