@@ -37,6 +37,7 @@ class PlotWidget(pg.PlotWidget):
         self._points: list[tuple[float, float, float]] = []
         self._abs_time = absolute_time
         self._on_double_click = None
+        self._first_draw = True
 
         # Plot configuration
         self.setBackground("#ffffff")
@@ -72,7 +73,7 @@ class PlotWidget(pg.PlotWidget):
         self._stats_label.setAlignment(Qt.AlignRight | Qt.AlignTop)
         self._stats_label.setStyleSheet(
             "color: #333333; font-size: 11px; font-family: SF Mono, Menlo, Consolas, monospace; "
-            "background: rgba(255,255,255,180); padding: 4px;"
+            "background: rgba(255,255,255,180); padding: 6px 4px;"
         )
         self._stats_label.setVisible(False)
 
@@ -143,12 +144,13 @@ class PlotWidget(pg.PlotWidget):
 
         self._curve.setData(x, y)
 
-        if not self._abs_time:
-            self.enableAutoRange(x=False, y=False)
-            self.setXRange(x.min(), 0, padding=0)
-            y_span = y.max() - y.min()
-            y_pad = max(y_span * 0.2, 1.0)
-            self.setYRange(y.min() - y_pad, y.max() + y_pad, padding=0)
+        if self._first_draw:
+            self._first_draw = False
+            if not self._abs_time:
+                self.enableAutoRange(x=False, y=True)
+                self.setXRange(x.min(), 0, padding=0)
+            else:
+                self.enableAutoRange(x=True, y=True)
 
         self._update_stats()
 
@@ -166,7 +168,7 @@ class PlotWidget(pg.PlotWidget):
             return
         w, h = event.size().width(), event.size().height()
         self._empty_label.setGeometry(0, 0, w, h)
-        self._stats_label.setGeometry(w - 220, 4, 216, 20)
+        self._stats_label.setGeometry(w - 220, 4, 216, 26)
         self._tooltip_label.setGeometry(4, 4, 200, 40)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802

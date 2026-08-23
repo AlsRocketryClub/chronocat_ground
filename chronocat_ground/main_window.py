@@ -824,7 +824,7 @@ class MainWindow(QMainWindow):
                 plot_id=f"adc_{slot}",
                 title=title,
                 y_label="raw24",
-                points_fn=lambda s=slot: list(self.adc_raw24_histories[s]),
+                points_fn=lambda s=slot: list(self.adc_db.query_adc(s)),
                 latest_fn=lambda s=slot: f"{self.sample_cards[s].reading_label.text()} / {self.sample_cards[s].temperature_label.text()}",
             )
         except Exception as exc:
@@ -836,7 +836,7 @@ class MainWindow(QMainWindow):
                 plot_id="temperature_0",
                 title="HEATER 0 TEMPERATURE",
                 y_label="temperature (C)",
-                points_fn=lambda: list(self.temperature_0_history),
+                points_fn=lambda: list(self.adc_db.query_temperature(0)),
                 latest_fn=lambda: self.temperature_0_card.value_label.text(),
             )
         except Exception as exc:
@@ -849,7 +849,7 @@ class MainWindow(QMainWindow):
                 plot_id=f"geiger_{counter_id}",
                 title=f"{name} DOSE RATE",
                 y_label="dose rate CPS",
-                points_fn=lambda cid=counter_id: list(self.geiger_dose_rate_histories[cid]),
+                points_fn=lambda cid=counter_id: list(self.adc_db.query_geiger(cid)),
                 latest_fn=lambda: "",
             )
         except Exception as exc:
@@ -894,21 +894,14 @@ class MainWindow(QMainWindow):
         plot = PlotWidget(y_label, "Waiting for telemetry", absolute_time=True)
         plot.setMinimumHeight(400)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(False)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setWidget(plot)
-
         frame_layout.addLayout(top_row)
         if latest_fn:
             frame_layout.addWidget(latest_label)
-        frame_layout.addWidget(scroll, 1)
+        frame_layout.addWidget(plot, 1)
 
         self.plot_dialogs[plot_id] = dialog
         self.plot_dialog_refs[plot_id] = {
             "plot": plot,
-            "scroll": scroll,
             "latest": latest_label,
             "points_fn": points_fn,
             "latest_fn": latest_fn,
@@ -918,8 +911,6 @@ class MainWindow(QMainWindow):
 
         points = points_fn()
         plot.set_points(points)
-        if points:
-            plot.setFixedWidth(max(len(points), 876))
         dialog.show()
 
     def clear_plot_dialog(self, plot_id: str) -> None:
@@ -929,7 +920,6 @@ class MainWindow(QMainWindow):
     def update_plot_dialogs(self) -> None:
         for plot_id, refs in list(self.plot_dialog_refs.items()):
             plot: PlotWidget = refs["plot"]
-            scroll: QScrollArea = refs["scroll"]
             latest: QLabel = refs["latest"]
             points_fn = refs["points_fn"]
             latest_fn = refs["latest_fn"]
@@ -939,15 +929,6 @@ class MainWindow(QMainWindow):
 
             points = points_fn()
             plot.set_points(points)
-            sb = scroll.horizontalScrollBar()
-            was_at_end = sb.value() == sb.maximum()
-            if points:
-                vp_w = scroll.viewport().width()
-                w = max(len(points), vp_w)
-                if plot.width() != w:
-                    plot.setFixedWidth(w)
-            if was_at_end:
-                sb.setValue(sb.maximum())
 
     def build_temperature_page(self) -> QWidget:
         page = QWidget()
@@ -1751,6 +1732,11 @@ class MainWindow(QMainWindow):
             self.geiger_dose_rate_histories[counter_id].append(
                 (received_at, time.time(), reading.dose_rate_cps)
             )
+            self.adc_db.insert_geiger(
+                packet.timestamp, counter_id, reading.dose_rate_cps,
+                reading.total_dose_sv, reading.dose_time_sec,
+                reading.hv_voltage, reading.stat_error_percent, time.time(),
+            )
             points = list(self.geiger_dose_rate_histories[counter_id])
             if counter_id == 0:
                 self.monitoring_geiger_plot.set_points(points)
@@ -1780,7 +1766,7 @@ class MainWindow(QMainWindow):
                 f"{materials[ch]} {device_types[dev_off]}",
                 f"0x{reading.raw24:06x} ({reading.raw24})",
             )
-        self.adc_db.insert_many(packet.timestamp, readings_pairs)
+        self.adc_db.insert_adc(packet.timestamp, readings_pairs, time.time())
         self.update_plot_dialogs()
 
         self.telemetry_table.set_value("AD7177 Readings", adc_summary)
@@ -1862,6 +1848,9 @@ class MainWindow(QMainWindow):
             self.temperature_0_card.set_value(f"{temperature_c:.2f} C")
             self.temperature_0_history.append(
                 (received_at, time.time(), temperature_c)
+            )
+            self.adc_db.insert_temperature(
+                packet.timestamp, 0, temperature_c, time.time(),
             )
             points = list(self.temperature_0_history)
             self.temperature_0_plot.set_points(points)
