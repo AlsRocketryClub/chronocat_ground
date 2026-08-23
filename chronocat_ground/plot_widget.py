@@ -133,8 +133,7 @@ class PlotWidget(pg.PlotWidget):
         if len(points[0]) == 3:
             raw = [(mono, wall, val) for mono, wall, val in points]
         else:
-            now = time.time()
-            raw = [(x, now, y) for x, y in points]
+            raw = [(x, x, y) for x, y in points]
 
         if self._abs_time:
             max_wall = max(wall for _mono, wall, _val in raw)
