@@ -85,12 +85,13 @@ class PlotWidget(pg.PlotWidget):
         )
         self._tooltip_label.setVisible(False)
 
-        # Connect mouse move for crosshair
-        self.sigPlotChanged.connect(self._update_stats)
-
         # Time window controls
         self._time_window = None  # None = auto / show all
         self._time_window_s = None
+
+        # Clamp x-axis so latest point (0) is always at right edge
+        if not absolute_time:
+            self.plotItem.vb.setLimits(xMax=0)
 
     @property
     def on_double_click(self):
@@ -141,6 +142,14 @@ class PlotWidget(pg.PlotWidget):
             y = y[mask]
 
         self._curve.setData(x, y)
+
+        if not self._abs_time:
+            self.enableAutoRange(x=False, y=False)
+            self.setXRange(x.min(), 0, padding=0)
+            y_span = y.max() - y.min()
+            y_pad = max(y_span * 0.2, 1.0)
+            self.setYRange(y.min() - y_pad, y.max() + y_pad, padding=0)
+
         self._update_stats()
 
     def _update_stats(self) -> None:
@@ -153,6 +162,8 @@ class PlotWidget(pg.PlotWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        if event is None:
+            return
         w, h = event.size().width(), event.size().height()
         self._empty_label.setGeometry(0, 0, w, h)
         self._stats_label.setGeometry(w - 220, 4, 216, 20)
