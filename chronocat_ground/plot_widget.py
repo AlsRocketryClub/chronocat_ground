@@ -10,6 +10,27 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QLabel, QWidget
 
 
+class WallClockAxis(pg.AxisItem):
+    """X-axis that formats relative seconds as wall-clock HH:MM:SS."""
+
+    def __init__(self, *args, wall_ref: float = 0.0, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._wall_ref = wall_ref
+
+    def setWallRef(self, wall_ref: float) -> None:  # noqa: N802
+        self._wall_ref = wall_ref
+
+    def tickStrings(self, values, scale, spacing):  # noqa: N802
+        strings = []
+        for v in values:
+            wall = self._wall_ref + v
+            if wall > 0:
+                strings.append(datetime.fromtimestamp(wall).strftime("%H:%M:%S"))
+            else:
+                strings.append("")
+        return strings
+
+
 class PlotWidget(pg.PlotWidget):
     """Drop-in replacement for LinePlotWidget using pyqtgraph."""
 
@@ -23,7 +44,8 @@ class PlotWidget(pg.PlotWidget):
         on_click=None,
         absolute_time: bool = False,
     ) -> None:
-        super().__init__()
+        self._wall_clock_axis = WallClockAxis(orientation="bottom")
+        super().__init__(axisItems={"bottom": self._wall_clock_axis})
         self.setObjectName("linePlot")
         self.setMinimumHeight(180)
         self.y_label = y_label
@@ -115,7 +137,9 @@ class PlotWidget(pg.PlotWidget):
             raw = [(x, now, y) for x, y in points]
 
         if self._abs_time:
-            self._points = raw
+            max_wall = max(wall for _mono, wall, _val in raw)
+            self._wall_clock_axis.setWallRef(max_wall)
+            self._points = [((wall - max_wall), wall, val) for _mono, wall, val in raw]
         else:
             max_mono = max(mono for mono, _wall, _val in raw)
             self._points = [((mono - max_mono), wall, val) for mono, wall, val in raw]
