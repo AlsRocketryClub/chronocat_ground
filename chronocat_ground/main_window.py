@@ -2081,6 +2081,10 @@ class MainWindow(QMainWindow):
         )
 
     def update_telemetry_age(self) -> None:
+        if self.client.connected and not self.client.check_connection():
+            self.update_connection_state()
+            self.log("Connection lost")
+
         if self.last_telemetry_time is None:
             return
 
