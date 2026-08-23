@@ -1156,12 +1156,15 @@ class MainWindow(QMainWindow):
     def _on_clear_db(self) -> None:
         ret = QMessageBox.question(
             self, "Clear Database",
-            "Delete all stored ADC records? In-memory graphs keep current session data.",
+            "Archive current database and start a new one? Old data is preserved with a timestamp.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if ret == QMessageBox.Yes:
-            self.adc_db.clear()
-            self.log("ADC database cleared")
+            self.adc_db.close()
+            archive = f"chronocat_adc_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+            os.rename("chronocat_adc.db", archive)
+            self.adc_db = TelemetryDb("chronocat_adc.db")
+            self.log(f"Database archived to {archive}, new database created")
 
     def _on_geiger_test_toggle(self, checked: bool) -> None:
         self.geiger_test_mode = checked
