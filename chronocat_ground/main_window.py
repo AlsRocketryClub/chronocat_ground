@@ -6,8 +6,8 @@ import os
 import threading
 import time
 
-from PySide6.QtCore import QObject, QPointF, QRectF, QSettings, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtCore import QObject, QSettings, QTimer, Qt, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -30,12 +30,12 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
-    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
 from .command_client import CommandClient
+from .plot_widget import PlotWidget
 from .protocol import (
     AD7177_CHANNEL_COUNT,
     TELEMETRY_OS_ADC_COUNT,
@@ -166,186 +166,6 @@ class ValueTable(QTableWidget):
                 return
 
 
-class LinePlotWidget(QWidget):
-    def __init__(self, y_label: str, empty_text: str = "Waiting for telemetry", on_click=None, absolute_time: bool = False) -> None:
-        super().__init__()
-        self.setObjectName("linePlot")
-        self.setMinimumHeight(180)
-        self.points: list[tuple[float, float, float]] = []
-        self.y_label = y_label
-        self.empty_text = empty_text
-        self.on_click = on_click
-        self.absolute_time = absolute_time
-        self.on_double_click = None
-        self.setMouseTracking(True)
-        if on_click is not None:
-            self.setCursor(Qt.PointingHandCursor)
-
-    def set_points(self, points: list[tuple]) -> None:
-        if not points:
-            self.points = []
-            self.update()
-            return
-        if len(points[0]) == 3:
-            raw = [(mono, wall, val) for mono, wall, val in points]
-        else:
-            now = time.time()
-            raw = [(x, now, y) for x, y in points]
-        if self.absolute_time:
-            self.points = raw
-        else:
-            max_mono = max(mono for mono, _wall, _val in raw)
-            self.points = [((mono - max_mono), wall, val) for mono, wall, val in raw]
-        self.update()
-
-    def _plot_bounds(self) -> QRectF:
-        bounds = self.rect()
-        return QRectF(54, 18, max(10, bounds.width() - 72), max(10, bounds.height() - 48))
-
-    def _compute_axes(self):
-        if len(self.points) < 2:
-            return None
-        x_values = [p[0] for p in self.points]
-        y_values = [p[2] for p in self.points]
-        min_x, max_x = min(x_values), max(x_values)
-        min_y, max_y = min(y_values), max(y_values)
-        if max_x == min_x:
-            max_x = min_x + 1
-        if max_y == min_y:
-            max_y = min_y + 1
-        return min_x, max_x, min_y, max_y
-
-    def _format_x_label(self, value: float, wall_at_value: float = 0.0) -> str:
-        if self.absolute_time:
-            return datetime.fromtimestamp(wall_at_value).strftime("%H:%M:%S")
-        return "now" if abs(value) < 0.01 else f"{value:.0f}s" if abs(value) >= 10 else f"{value:.1f}s"
-
-    def _format_tooltip(self, mono: float, wall: float, val: float) -> str:
-        if self.absolute_time:
-            ts = datetime.fromtimestamp(wall).strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            max_mono = max(p[0] for p in self.points) if self.points else 0
-            elapsed = mono - max_mono
-            ts = "now" if abs(elapsed) < 0.01 else f"{elapsed:.1f}s ago"
-        return f"{ts}\n{self.y_label}: {val:.6g}"
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        if self.on_click is not None and event.button() == Qt.LeftButton:
-            self.on_click()
-            return
-        super().mousePressEvent(event)
-
-    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
-        if self.on_double_click is not None and event.button() == Qt.LeftButton:
-            self.on_double_click()
-            return
-        super().mouseDoubleClickEvent(event)
-
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if not self.points or len(self.points) < 2:
-            super().mouseMoveEvent(event)
-            return
-        axes = self._compute_axes()
-        if axes is None:
-            super().mouseMoveEvent(event)
-            return
-        min_x, max_x, min_y, max_y = axes
-        plot = self._plot_bounds()
-        mx = event.position().x()
-        if mx < plot.left() or mx > plot.right():
-            QToolTip.hideText()
-            super().mouseMoveEvent(event)
-            return
-        x_val = min_x + ((mx - plot.left()) / plot.width()) * (max_x - min_x)
-        best_idx = 0
-        best_dist = float("inf")
-        for i, (px, _wall, _py) in enumerate(self.points):
-            d = abs(px - x_val)
-            if d < best_dist:
-                best_dist = d
-                best_idx = i
-        mono, wall, val = self.points[best_idx]
-        QToolTip.showText(event.globalPosition().toPoint(), self._format_tooltip(mono, wall, val), self)
-        super().mouseMoveEvent(event)
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        super().paintEvent(event)
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        bounds = self.rect()
-        painter.fillRect(bounds, QColor("#ffffff"))
-        painter.setPen(QPen(QColor("#b0b0b0"), 1))
-        painter.drawRect(bounds.adjusted(0, 0, -1, -1))
-
-        plot = self._plot_bounds()
-        painter.setPen(QPen(QColor("#d0d0d0"), 1))
-        for index in range(1, 4):
-            y = plot.top() + plot.height() * index / 4
-            painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
-        for index in range(1, 5):
-            x = plot.left() + plot.width() * index / 5
-            painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
-
-        painter.setPen(QPen(QColor("#111111"), 1))
-        painter.drawText(8, 16, self.y_label)
-        if self.absolute_time:
-            painter.drawText(QRectF(8, bounds.height() - 26, bounds.width() - 16, 22), Qt.AlignRight | Qt.AlignVCenter, "wall-clock time")
-        else:
-            painter.drawText(QRectF(8, bounds.height() - 26, bounds.width() - 16, 22), Qt.AlignRight | Qt.AlignVCenter, "seconds ago")
-
-        if len(self.points) < 2:
-            painter.drawText(plot, Qt.AlignCenter, self.empty_text)
-            return
-
-        axes = self._compute_axes()
-        if axes is None:
-            return
-        min_x, max_x, min_y, max_y = axes
-
-        painter.setPen(QPen(QColor("#444444"), 1))
-        painter.drawText(8, int(plot.top()) + 8, f"{max_y:.3g}")
-        painter.drawText(8, int(plot.bottom()), f"{min_y:.3g}")
-
-        painter.save()
-        font = painter.font()
-        if font.pointSize() > 1:
-            font.setPointSize(font.pointSize() - 1)
-        painter.setFont(font)
-        for index in range(1, 5):
-            fx = plot.left() + plot.width() * index / 5
-            x_val = min_x + (max_x - min_x) * index / 5
-            frac = (x_val - min_x) / (max_x - min_x) if max_x != min_x else 0
-            wall_at = 0.0
-            for p_mono, p_wall, _p_val in self.points:
-                p_frac = (p_mono - min_x) / (max_x - min_x) if max_x != min_x else 0
-                if abs(p_frac - frac) < 0.02:
-                    wall_at = p_wall
-                    break
-            label = self._format_x_label(x_val, wall_at)
-            text_rect = QRectF(fx - 40, plot.bottom() + 2, 80, 20)
-            painter.drawText(text_rect, Qt.AlignCenter, label)
-        painter.restore()
-
-        polyline = QPolygonF()
-        vp = event.rect()
-        vis_left = min_x + ((vp.left() - plot.left()) / plot.width()) * (max_x - min_x)
-        vis_right = min_x + ((vp.right() - plot.left()) / plot.width()) * (max_x - min_x)
-        for x_value, _wall, y_value in self.points:
-            if x_value < vis_left:
-                continue
-            if x_value > vis_right:
-                break
-            x = plot.left() + ((x_value - min_x) / (max_x - min_x)) * plot.width()
-            y = plot.bottom() - ((y_value - min_y) / (max_y - min_y)) * plot.height()
-            polyline.append(QPointF(x, y))
-
-        painter.setPen(QPen(QColor("#111111"), 2))
-        painter.drawPolyline(polyline)
-
-
-
 class SampleCard(QFrame):
     graph_requested = Signal(int)
 
@@ -367,7 +187,7 @@ class SampleCard(QFrame):
         self.meta_label = QLabel(f"ADC{adc_index} CH{channel_index}")
         self.meta_label.setObjectName("smallNote")
 
-        self.plot = LinePlotWidget("raw24", "Waiting for ADC telemetry", on_click=lambda: self.graph_requested.emit(self.slot))
+        self.plot = PlotWidget("raw24", "Waiting for ADC telemetry", on_click=lambda: self.graph_requested.emit(self.slot))
         self.plot.on_double_click = lambda: self.graph_requested.emit(self.slot)
         self.plot.setMinimumHeight(140)
 
@@ -671,14 +491,14 @@ class MainWindow(QMainWindow):
         chart_header.addStretch(1)
         chart_header.addWidget(self.timestamp_label)
         chart_panel.layout.addLayout(chart_header)
-        self.monitoring_geiger_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger telemetry")
+        self.monitoring_geiger_plot = PlotWidget("dose rate CPS", "Waiting for Geiger telemetry")
         self.monitoring_geiger_plot.on_double_click = lambda: self.show_geiger_dialog(0)
         chart_panel.layout.addWidget(self.monitoring_geiger_plot)
         geiger_2_title = QLabel("GEIGER 2 DOSE RATE TIME-SERIES")
         geiger_2_title.setObjectName("panelTitle")
         self.monitoring_geiger_2_title = geiger_2_title
         chart_panel.layout.addWidget(geiger_2_title)
-        self.monitoring_geiger_2_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger 2 telemetry")
+        self.monitoring_geiger_2_plot = PlotWidget("dose rate CPS", "Waiting for Geiger 2 telemetry")
         self.monitoring_geiger_2_plot.on_double_click = lambda: self.show_geiger_dialog(1)
         chart_panel.layout.addWidget(self.monitoring_geiger_2_plot)
         return chart_panel
@@ -721,7 +541,7 @@ class MainWindow(QMainWindow):
         plot_header.addStretch(1)
         plot_header.addWidget(self.radiation_plot_status)
         plot_panel.layout.addLayout(plot_header)
-        self.radiation_geiger_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger telemetry")
+        self.radiation_geiger_plot = PlotWidget("dose rate CPS", "Waiting for Geiger telemetry")
         self.radiation_geiger_plot.on_double_click = lambda: self.show_geiger_dialog(0)
         self.radiation_geiger_plot.setMinimumHeight(320)
         plot_panel.layout.addWidget(self.radiation_geiger_plot)
@@ -735,7 +555,7 @@ class MainWindow(QMainWindow):
         geiger_2_header.addStretch(1)
         geiger_2_header.addWidget(self.radiation_2_plot_status)
         plot_panel.layout.addLayout(geiger_2_header)
-        self.radiation_geiger_2_plot = LinePlotWidget("dose rate CPS", "Waiting for Geiger 2 telemetry")
+        self.radiation_geiger_2_plot = PlotWidget("dose rate CPS", "Waiting for Geiger 2 telemetry")
         self.radiation_geiger_2_plot.on_double_click = lambda: self.show_geiger_dialog(1)
         self.radiation_geiger_2_plot.setMinimumHeight(320)
         plot_panel.layout.addWidget(self.radiation_geiger_2_plot)
@@ -1071,7 +891,7 @@ class MainWindow(QMainWindow):
         latest_label.setObjectName("smallNote")
         latest_label.setWordWrap(True)
 
-        plot = LinePlotWidget(y_label, "Waiting for telemetry", absolute_time=True)
+        plot = PlotWidget(y_label, "Waiting for telemetry", absolute_time=True)
         plot.setMinimumHeight(400)
 
         scroll = QScrollArea()
@@ -1108,7 +928,7 @@ class MainWindow(QMainWindow):
 
     def update_plot_dialogs(self) -> None:
         for plot_id, refs in list(self.plot_dialog_refs.items()):
-            plot: LinePlotWidget = refs["plot"]
+            plot: PlotWidget = refs["plot"]
             scroll: QScrollArea = refs["scroll"]
             latest: QLabel = refs["latest"]
             points_fn = refs["points_fn"]
@@ -1150,7 +970,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.heater_duty_card)
 
         chart_panel = Panel("HEATER 0 TEMPERATURE TIME-SERIES")
-        self.temperature_0_plot = LinePlotWidget(
+        self.temperature_0_plot = PlotWidget(
             "temperature (C)", "Waiting for valid temperature telemetry"
         )
         self.temperature_0_plot.on_double_click = lambda: self.show_temperature_dialog()
@@ -1532,7 +1352,6 @@ class MainWindow(QMainWindow):
                 font-weight: 700;
             }
             #linePlot, #sparkline, #sampleChart, #chartBox {
-                background: #ffffff;
                 border: 1px solid #b0b0b0;
             }
             #linePlot {
