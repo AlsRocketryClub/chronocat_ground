@@ -1137,13 +1137,10 @@ class MainWindow(QMainWindow):
                 db_count = cur.fetchone()[0]
         except Exception:
             pass
-        size_str = f"{db_size:,} bytes" if db_size > 0 else "N/A"
-        info = QLabel(
-            f"File: {db_path}\nRecords: {db_count:,}\nSize: {size_str}"
-        )
-        info.setObjectName("smallNote")
-        info.setWordWrap(True)
-        db_panel.layout.addWidget(info)
+        self._db_info_label = QLabel(self._format_db_info(db_size, db_count))
+        self._db_info_label.setObjectName("smallNote")
+        self._db_info_label.setWordWrap(True)
+        db_panel.layout.addWidget(self._db_info_label)
 
         clear_btn = QPushButton("CLEAR DATABASE")
         clear_btn.clicked.connect(self._on_clear_db)
@@ -1152,6 +1149,27 @@ class MainWindow(QMainWindow):
         layout.addWidget(db_panel)
         layout.addStretch(1)
         return page
+
+    def _format_db_info(self, db_size: int, db_count: int) -> str:
+        if db_size >= 1_048_576:
+            size_str = f"{db_size / 1_048_576:.2f} MB"
+        elif db_size > 0:
+            size_str = f"{db_size:,} bytes"
+        else:
+            size_str = "N/A"
+        return f"File: chronocat_adc.db\nRecords: {db_count:,}\nSize: {size_str}"
+
+    def _refresh_db_info(self) -> None:
+        db_path = "chronocat_adc.db"
+        db_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+        db_count = 0
+        try:
+            if self.adc_db.conn:
+                cur = self.adc_db.conn.execute("SELECT COUNT(*) FROM adc")
+                db_count = cur.fetchone()[0]
+        except Exception:
+            pass
+        self._db_info_label.setText(self._format_db_info(db_size, db_count))
 
     def _on_clear_db(self) -> None:
         ret = QMessageBox.question(
@@ -1164,6 +1182,7 @@ class MainWindow(QMainWindow):
             archive = f"chronocat_adc_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
             os.rename("chronocat_adc.db", archive)
             self.adc_db = TelemetryDb("chronocat_adc.db")
+            self._refresh_db_info()
             self.log(f"Database archived to {archive}, new database created")
 
     def _on_geiger_test_toggle(self, checked: bool) -> None:
