@@ -40,6 +40,16 @@ class CommandClient:
         finally:
             self._socket = None
 
+    def check_connection(self) -> bool:
+        if self._socket is None:
+            return False
+        try:
+            self._socket.getpeername()
+            return True
+        except OSError:
+            self.disconnect()
+            return False
+
     def send_command(
         self,
         command: int,
