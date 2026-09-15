@@ -9,6 +9,9 @@ Minimal PySide6 desktop chronocat_ground app for Chronocat firmware.
 - Shows packet counter, firmware timestamp, flags, health, sensor masks, AD7177 raw ADC telemetry, Geiger telemetry, source address, packet count, and packet age.
 - Sends binary command packets for ping, telemetry on, telemetry off, and telemetry status.
 - Provides Geiger detector memory controls on the Radiation page.
+- Provides an open-loop Heater Test page for one heater at a time, including baseline,
+  heating, stop/cooldown, status polling, all 12 temperature plots, validity indicators,
+  and command-duty plotting.
 
 ## Setup
 
@@ -64,8 +67,11 @@ python -m chronocat_ground.telemetry_cli --out flight.csv --quiet
 ```
 
 The recorder listens on UDP `0.0.0.0:5005` by default and flushes the CSV after every
-valid telemetry packet. Each write is also synchronized to disk so completed rows survive
-an unexpected power loss. Only one process can bind UDP port `5005` at a time.
+completed telemetry row. Current combined packets are written directly as one row;
+legacy standard and PID packets sharing a sequence are still joined into one row.
+Incomplete legacy rows are retained rather than discarded. Each write is synchronized to
+disk so completed rows survive an unexpected power loss. Only one process can bind UDP
+port `5005` at a time.
 
 ## Record Telemetry to CSV
 
@@ -78,7 +84,9 @@ chronocat_telemetry
 By default it listens on UDP `0.0.0.0:5005` and writes a timestamped CSV file such as
 `telemetry_20260628_143012_a1b2c3d4_e5f6a7b8.csv` in the current directory. The final two
 components are the Linux boot ID and a random logger session ID. They prevent repeated
-boots with a stale Raspberry Pi clock from selecting the same filename.
+boots with a stale Raspberry Pi clock from selecting the same filename. Full logging writes
+current combined packets as one row. For legacy traffic it joins the standard and PID
+packets using their shared timestamp and sequence counter.
 
 New logs are created exclusively and never overwrite an existing file. An explicit
 `--out` path also refuses to replace an existing file unless `--overwrite` is supplied.
@@ -103,10 +111,19 @@ filenames never overwrite, even when the Pi clock is wrong.
 timestamp, detector ID, and fields supplied by detector command D; it omits all other
 telemetry, interpreted error names, aliases, and placeholder columns.
 
-The CSV includes receive time, source address, packet timestamp in milliseconds, counter, flags, health,
+The CSV includes receive time, packet timestamp in milliseconds, counter, flags, health,
 13 temperature sensor values with validity flags, 12 decoded AD7177 readings, both Geiger measurements,
 and TCP status. Legacy `geiger_*` columns remain aliases for Geiger 1; explicit `geiger_0_*` and
 `geiger_1_*` columns identify both counters.
+
+The Monitoring view also plots a rolling average of the error-free AD7177
+`raw24` channel values present in each packet. Channels carrying ADC/CRC/register
+errors are excluded from that average sample.
+
+The PID Heating view keeps the selected-heater temperature and duty plots and
+also provides rolling all-heater averages. Average temperature uses sensor-valid
+heater readings; average duty uses all twelve applied duty values, including
+zero/off channels.
 
 The GUI and recorder both bind UDP port `5005`, so normally run only one of them at a time
 on the same machine.
@@ -131,7 +148,10 @@ os_adc_valid_mask             2
 os_adc_readings_1_12         48  uint32 AD7177 word: [31:8] raw24, [7:0] status
 ```
 
-The common prefix is 97 bytes. It is followed by one or more 34-byte Geiger records:
+The 97-byte prefix applies to legacy versions 1/2 and to the standard portion of
+the current combined packet. Legacy version 3 type 1 additionally inserts a
+2-byte H0 duty field after the temperatures, making its standard prefix 99 bytes.
+The prefix is followed by one or more 34-byte Geiger records:
 
 ```text
 Geiger record field           Bytes
@@ -149,12 +169,37 @@ stat_error_percent            1
 stat_cell_count               1
 ```
 
-Supported packet versions:
+Supported telemetry packets:
 
 ```text
-version 1: 131 bytes, one Geiger record (Geiger 1 / counter ID 0)
-version 2: 165 bytes, two Geiger records with counter IDs 0 and 1
+version 1, type 1: 131 bytes, one Geiger record (legacy)
+version 2, type 1: 165 bytes, two Geiger records (legacy)
+version 3, type 1: 167 bytes, standard telemetry (legacy)
+version 3, type 2: 560 bytes, PID telemetry (legacy)
+version 3, type 3: 707 bytes, combined telemetry (current firmware)
 ```
+
+The current firmware sends one version 3, type 3 datagram per second. It combines
+the 165-byte standard body with PID metadata and twelve 44-byte heater records:
+
+```text
+offset  size  field
+0       18    common header
+18      1     health_code
+19      2     temperature_valid_mask
+21      26    13 signed int16 temperatures in centi-degrees C
+47      2     os_adc_valid_mask
+49      48    12 uint32 AD7177 words
+97      68    two 34-byte Geiger records
+165     14    heater_count, record_size, six uint16 PID masks
+179     528   twelve 44-byte heater records
+707           total application payload length
+```
+
+Each combined heater record is encoded as heater ID (1 byte), sensor ID (1 byte),
+flags (uint16), target (int32 milli-degrees C), measurement (int32 milli-degrees C),
+duty (uint16 permille), result (1 byte), reserved (1 byte), and seven float32
+values: proportional, integral, derivative, output, Kp, Ki, and Kd.
 
 IPv4 and UDP headers are generated by LwIP and are not included in these app payload sizes.
 
@@ -255,6 +300,31 @@ arg2 = 0
 ```
 
 The current GUI controls intentionally target Geiger 1 only.
+
+Heater characterization commands are available from the GUI Heater Test page:
+
+```text
+0x20 start: arg1 = heater ID (0..11), arg2 = duty permille (0..20)
+0x21 stop:  arg1 = 0, arg2 = 0; first stop enters cooldown
+0x22 status: arg1 = 0, arg2 = 0
+```
+
+For characterization responses, `arg1` is the state (`idle`, `baseline`, `heating`,
+`cooldown`, `complete`, or `fault`) and `arg2` is the effective duty permille. The
+Heater Test page polls status once per second while a test is active. Existing CSV logging
+continues to record the raw telemetry packets; use it alongside the page for durable test
+records.
+
+The same page provides guarded global heater controls:
+
+```text
+0x1B all on:  arg1 = 0, arg2 = duty permille (1..20)
+0x1C all off: arg1 = 0, arg2 = 0
+```
+
+All On requires confirmation and is accepted only when all 12 temperature sensors are
+valid and below 65 C. All Off stops every heater and cancels active characterization
+heating output.
 
 Geiger memory commands can take a few seconds while the detector writes flash.
 The TCP response uses `arg1` for detector error flags and

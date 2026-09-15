@@ -4,7 +4,13 @@ import socket
 
 from PySide6.QtCore import QThread, Signal
 
-from .protocol import DEFAULT_TELEMETRY_PORT, TelemetryPacket, parse_telemetry_packets
+from .protocol import (
+    CombinedTelemetryPacket,
+    DEFAULT_TELEMETRY_PORT,
+    PidTelemetryPacket,
+    TelemetryPacket,
+    parse_telemetry_packets,
+)
 
 
 class TelemetryReceiver(QThread):
@@ -50,7 +56,9 @@ class TelemetryReceiver(QThread):
                     break
 
                 try:
-                    packets: list[TelemetryPacket] = parse_telemetry_packets(data)
+                    packets: list[
+                        TelemetryPacket | PidTelemetryPacket | CombinedTelemetryPacket
+                    ] = parse_telemetry_packets(data)
                 except ValueError as exc:
                     preview = data[:16].hex(" ")
                     self.receive_error.emit(

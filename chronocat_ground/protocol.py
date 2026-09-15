@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Iterable
 import struct
 
 
@@ -14,10 +15,16 @@ TELEMETRY_VERSION_V2 = 2
 TELEMETRY_VERSION_V3 = 3
 TELEMETRY_VERSION = TELEMETRY_VERSION_V3
 TELEMETRY_MESSAGE_TYPE = 1
+PID_TELEMETRY_MESSAGE_TYPE = 2
+COMBINED_TELEMETRY_MESSAGE_TYPE = 3
 TELEMETRY_PACKET_SIZE_V1 = 131
 TELEMETRY_PACKET_SIZE_V2 = 165
 TELEMETRY_PACKET_SIZE_V3 = 167
 TELEMETRY_PACKET_SIZE = TELEMETRY_PACKET_SIZE_V3
+PID_TELEMETRY_HEATER_COUNT = 12
+PID_TELEMETRY_RECORD_SIZE = 44
+PID_TELEMETRY_PACKET_SIZE = 560
+COMBINED_TELEMETRY_PACKET_SIZE = 707
 TELEMETRY_TEMP_COUNT = 13
 TELEMETRY_OS_ADC_COUNT = 12
 TELEMETRY_GEIGER_COUNT_V2 = 2
@@ -34,6 +41,8 @@ AD7177_STATUS_CHANNEL_MASK = 0x03
 
 TELEMETRY_FLAG_ENABLED = 1 << 0
 TELEMETRY_FLAG_TCP_LISTENING = 1 << 1
+TELEMETRY_FLAG_SD_LOG_ACTIVE = 1 << 2
+TELEMETRY_FLAG_SD_LOG_ERROR = 1 << 3
 
 TELEMETRY_HEALTH_NAMES = {
     0: "ok",
@@ -51,6 +60,32 @@ GEIGER_ERROR_NAMES = {
     32: "history writing error",
     64: "calibration: no statistics reset",
     128: "calibration: no background deduction",
+}
+
+PID_SENSOR_UNMAPPED = 0xFF
+PID_FLAG_ENABLED = 1 << 0
+PID_FLAG_MANUAL = 1 << 1
+PID_FLAG_ALL_MANUAL = 1 << 2
+PID_FLAG_CHARACTERIZATION = 1 << 3
+PID_FLAG_INITIALIZED = 1 << 4
+PID_FLAG_SENSOR_MAPPED = 1 << 5
+PID_FLAG_SENSOR_VALID = 1 << 6
+PID_FLAG_OVERTEMPERATURE = 1 << 7
+PID_FLAG_HEATER_INITIALIZED = 1 << 8
+PID_FLAG_OUTPUT_SATURATED = 1 << 9
+
+PID_RESULT_NAMES = {
+    0: "disabled",
+    1: "ok",
+    2: "manual",
+    3: "all manual",
+    4: "characterization",
+    5: "unmapped sensor",
+    6: "invalid sensor",
+    7: "overtemperature",
+    8: "invalid argument",
+    9: "invalid timing",
+    10: "heater write failed",
 }
 
 COMMAND_PACKET_SIZE = 5
@@ -71,6 +106,30 @@ COMMAND_HEATER_SET_KI = 0x14
 COMMAND_HEATER_GET_KI = 0x15
 COMMAND_HEATER_SET_KD = 0x16
 COMMAND_HEATER_GET_KD = 0x17
+COMMAND_HEATER_SET_MANUAL_DUTY = 0x18
+COMMAND_HEATER_RETURN_TO_PID = 0x19
+COMMAND_HEATER_GET_MANUAL_MODE = 0x1A
+COMMAND_HEATER_ALL_ON = 0x1B
+COMMAND_HEATER_ALL_OFF = 0x1C
+COMMAND_CHARACTERIZATION_START = 0x20
+COMMAND_CHARACTERIZATION_STOP = 0x21
+COMMAND_CHARACTERIZATION_STATUS = 0x22
+
+CHARACTERIZATION_IDLE = 0
+CHARACTERIZATION_BASELINE = 1
+CHARACTERIZATION_HEATING = 2
+CHARACTERIZATION_COOLDOWN = 3
+CHARACTERIZATION_COMPLETE = 4
+CHARACTERIZATION_FAULT = 5
+
+CHARACTERIZATION_STATE_NAMES = {
+    CHARACTERIZATION_IDLE: "idle",
+    CHARACTERIZATION_BASELINE: "baseline",
+    CHARACTERIZATION_HEATING: "heating",
+    CHARACTERIZATION_COOLDOWN: "cooldown",
+    CHARACTERIZATION_COMPLETE: "complete",
+    CHARACTERIZATION_FAULT: "fault",
+}
 
 VALUE_OFF = 0x00
 VALUE_ON = 0x01
@@ -98,6 +157,14 @@ COMMAND_NAMES = {
     COMMAND_HEATER_GET_KI: "heater get Ki",
     COMMAND_HEATER_SET_KD: "heater set Kd",
     COMMAND_HEATER_GET_KD: "heater get Kd",
+    COMMAND_HEATER_SET_MANUAL_DUTY: "heater set manual duty",
+    COMMAND_HEATER_RETURN_TO_PID: "heater return to PID",
+    COMMAND_HEATER_GET_MANUAL_MODE: "heater get manual mode",
+    COMMAND_HEATER_ALL_ON: "all heaters on",
+    COMMAND_HEATER_ALL_OFF: "all heaters off",
+    COMMAND_CHARACTERIZATION_START: "characterization start",
+    COMMAND_CHARACTERIZATION_STOP: "characterization stop",
+    COMMAND_CHARACTERIZATION_STATUS: "characterization status",
 }
 
 STATUS_NAMES = {
@@ -279,6 +346,110 @@ class TelemetryPacket:
         return (self.os_adc_valid_mask & (1 << index)) != 0
 
 
+@dataclass(frozen=True)
+class HeaterPidReading:
+    heater_id: int
+    sensor_id: int
+    flags: int
+    target_milli_c: int
+    measurement_milli_c: int
+    duty_permille: int
+    result: int
+    proportional_term: float
+    integral_term: float
+    derivative_term: float
+    output: float
+    kp: float
+    ki: float
+    kd: float
+
+    @property
+    def sensor_mapped(self) -> bool:
+        return (self.flags & PID_FLAG_SENSOR_MAPPED) != 0
+
+    @property
+    def sensor_valid(self) -> bool:
+        return (self.flags & PID_FLAG_SENSOR_VALID) != 0
+
+    @property
+    def pid_enabled(self) -> bool:
+        return (self.flags & PID_FLAG_ENABLED) != 0
+
+    @property
+    def manual(self) -> bool:
+        return (self.flags & PID_FLAG_MANUAL) != 0
+
+    @property
+    def result_name(self) -> str:
+        return PID_RESULT_NAMES.get(self.result, f"unknown ({self.result})")
+
+    @property
+    def temperature_c(self) -> float | None:
+        if not self.sensor_valid:
+            return None
+        return self.measurement_milli_c / 1000.0
+
+    @property
+    def target_c(self) -> float:
+        return self.target_milli_c / 1000.0
+
+
+@dataclass(frozen=True)
+class PidTelemetryPacket:
+    version: int
+    message_type: int
+    flags: int
+    payload_length: int
+    timestamp: int
+    counter: int
+    heater_count: int
+    record_size: int
+    mapped_mask: int
+    sensor_valid_mask: int
+    pid_enabled_mask: int
+    manual_mask: int
+    initialized_mask: int
+    fault_mask: int
+    heaters: tuple[HeaterPidReading, ...]
+
+
+@dataclass(frozen=True)
+class CombinedTelemetryPacket:
+    standard: TelemetryPacket
+    pid: PidTelemetryPacket
+
+    @property
+    def flags(self) -> int:
+        return self.standard.flags
+
+    @property
+    def timestamp(self) -> int:
+        return self.standard.timestamp
+
+    @property
+    def counter(self) -> int:
+        return self.standard.counter
+
+
+def heater_pid_averages(
+    heaters: Iterable[HeaterPidReading],
+) -> tuple[float | None, float | None]:
+    heater_list = tuple(heaters)
+    temperature_values = [
+        heater.measurement_milli_c / 1000.0
+        for heater in heater_list
+        if heater.sensor_valid
+    ]
+    duty_values = [float(heater.duty_permille) for heater in heater_list]
+    average_temperature = (
+        sum(temperature_values) / len(temperature_values)
+        if temperature_values
+        else None
+    )
+    average_duty = sum(duty_values) / len(duty_values) if duty_values else None
+    return average_temperature, average_duty
+
+
 TCP_STATUS_NAMES = {
     0: "uninit",
     1: "tcp_new failed",
@@ -321,7 +492,172 @@ def _parse_geiger_reading(
     return reading, offset + GEIGER_RECORD_STRUCT.size
 
 
-def parse_telemetry_packet(data: bytes) -> TelemetryPacket:
+def _parse_pid_records(
+    data: bytes, offset: int, expected_end: int
+) -> tuple[int, int, tuple[int, ...], tuple[HeaterPidReading, ...], int]:
+    heater_count = data[offset]
+    record_size = data[offset + 1]
+    offset += 2
+    if (heater_count != PID_TELEMETRY_HEATER_COUNT) or (
+        record_size != PID_TELEMETRY_RECORD_SIZE
+    ):
+        raise ValueError(f"unexpected PID telemetry shape {heater_count}x{record_size}")
+
+    masks = struct.unpack_from(">HHHHHH", data, offset)
+    offset += 12
+    heaters: list[HeaterPidReading] = []
+    for _ in range(heater_count):
+        heater_id, sensor_id, flags = struct.unpack_from(">BBH", data, offset)
+        offset += 4
+        target_milli_c = struct.unpack_from(">I", data, offset)[0]
+        offset += 4
+        measurement_milli_c = struct.unpack_from(">i", data, offset)[0]
+        offset += 4
+        duty_permille = struct.unpack_from(">H", data, offset)[0]
+        offset += 2
+        result = data[offset]
+        offset += 2
+        terms = struct.unpack_from(">fffffff", data, offset)
+        offset += 28
+        heaters.append(
+            HeaterPidReading(
+                heater_id=heater_id,
+                sensor_id=sensor_id,
+                flags=flags,
+                target_milli_c=target_milli_c,
+                measurement_milli_c=measurement_milli_c,
+                duty_permille=duty_permille,
+                result=result,
+                proportional_term=terms[0],
+                integral_term=terms[1],
+                derivative_term=terms[2],
+                output=terms[3],
+                kp=terms[4],
+                ki=terms[5],
+                kd=terms[6],
+            )
+        )
+
+    if offset != expected_end:
+        raise ValueError(f"PID telemetry size mismatch: consumed {offset} bytes")
+    return heater_count, record_size, masks, tuple(heaters), offset
+
+
+def _parse_pid_telemetry_packet(data: bytes) -> PidTelemetryPacket:
+    if len(data) != PID_TELEMETRY_PACKET_SIZE:
+        raise ValueError(
+            f"expected {PID_TELEMETRY_PACKET_SIZE} PID telemetry bytes, got {len(data)}"
+        )
+    if data[4] != TELEMETRY_VERSION_V3 or data[5] != PID_TELEMETRY_MESSAGE_TYPE:
+        raise ValueError("unsupported PID telemetry header")
+
+    payload_length = struct.unpack_from(">H", data, 8)[0]
+    if payload_length != PID_TELEMETRY_PACKET_SIZE:
+        raise ValueError(f"bad PID telemetry payload length {payload_length}")
+
+    timestamp, counter = struct.unpack_from(">II", data, 10)
+    heater_count, record_size, masks, heaters, _offset = _parse_pid_records(
+        data, 18, PID_TELEMETRY_PACKET_SIZE
+    )
+    return PidTelemetryPacket(
+        version=data[4],
+        message_type=data[5],
+        flags=struct.unpack_from(">H", data, 6)[0],
+        payload_length=payload_length,
+        timestamp=timestamp,
+        counter=counter,
+        heater_count=heater_count,
+        record_size=record_size,
+        mapped_mask=masks[0],
+        sensor_valid_mask=masks[1],
+        pid_enabled_mask=masks[2],
+        manual_mask=masks[3],
+        initialized_mask=masks[4],
+        fault_mask=masks[5],
+        heaters=heaters,
+    )
+
+
+def _parse_combined_telemetry_packet(data: bytes) -> CombinedTelemetryPacket:
+    if len(data) != COMBINED_TELEMETRY_PACKET_SIZE:
+        raise ValueError(
+            f"expected {COMBINED_TELEMETRY_PACKET_SIZE} combined telemetry bytes, "
+            f"got {len(data)}"
+        )
+    if data[4] != TELEMETRY_VERSION_V3 or data[5] != COMBINED_TELEMETRY_MESSAGE_TYPE:
+        raise ValueError("unsupported combined telemetry header")
+
+    flags = struct.unpack_from(">H", data, 6)[0]
+    payload_length = struct.unpack_from(">H", data, 8)[0]
+    if payload_length != COMBINED_TELEMETRY_PACKET_SIZE:
+        raise ValueError(f"bad combined telemetry payload length {payload_length}")
+    timestamp, counter = struct.unpack_from(">II", data, 10)
+
+    offset = 18
+    health_code = data[offset]
+    offset += 1
+    temperature_valid_mask = struct.unpack_from(">H", data, offset)[0]
+    offset += 2
+    temperatures = struct.unpack_from(f">{TELEMETRY_TEMP_COUNT}h", data, offset)
+    offset += TELEMETRY_TEMP_COUNT * 2
+    os_adc_valid_mask = struct.unpack_from(">H", data, offset)[0]
+    offset += 2
+    os_adc_readings = struct.unpack_from(f">{TELEMETRY_OS_ADC_COUNT}I", data, offset)
+    offset += TELEMETRY_OS_ADC_COUNT * 4
+
+    geiger_readings: list[GeigerReading] = []
+    for _ in range(TELEMETRY_GEIGER_COUNT_V2):
+        reading, offset = _parse_geiger_reading(data, offset)
+        geiger_readings.append(reading)
+    counter_ids = [reading.counter_id for reading in geiger_readings]
+    if any(counter_id not in (0, 1) for counter_id in counter_ids):
+        raise ValueError(f"invalid Geiger counter IDs {counter_ids}")
+    if len(set(counter_ids)) != len(counter_ids):
+        raise ValueError(f"duplicate Geiger counter IDs {counter_ids}")
+
+    standard = TelemetryPacket(
+        version=TELEMETRY_VERSION_V3,
+        message_type=COMBINED_TELEMETRY_MESSAGE_TYPE,
+        flags=flags,
+        payload_length=payload_length,
+        timestamp=timestamp,
+        counter=counter,
+        health_code=health_code,
+        temperature_valid_mask=temperature_valid_mask,
+        temperatures=temperatures,
+        heater_duty_permille=0,
+        os_adc_valid_mask=os_adc_valid_mask,
+        os_adc_readings=os_adc_readings,
+        geiger_readings=tuple(geiger_readings),
+    )
+    heater_count, record_size, masks, heaters, offset = _parse_pid_records(
+        data, offset, COMBINED_TELEMETRY_PACKET_SIZE
+    )
+    pid = PidTelemetryPacket(
+        version=TELEMETRY_VERSION_V3,
+        message_type=COMBINED_TELEMETRY_MESSAGE_TYPE,
+        flags=flags,
+        payload_length=payload_length,
+        timestamp=timestamp,
+        counter=counter,
+        heater_count=heater_count,
+        record_size=record_size,
+        mapped_mask=masks[0],
+        sensor_valid_mask=masks[1],
+        pid_enabled_mask=masks[2],
+        manual_mask=masks[3],
+        initialized_mask=masks[4],
+        fault_mask=masks[5],
+        heaters=heaters,
+    )
+    if offset != COMBINED_TELEMETRY_PACKET_SIZE:
+        raise ValueError(f"combined telemetry size mismatch: consumed {offset} bytes")
+    return CombinedTelemetryPacket(standard=standard, pid=pid)
+
+
+def parse_telemetry_packet(
+    data: bytes,
+) -> TelemetryPacket | PidTelemetryPacket | CombinedTelemetryPacket:
     if len(data) < 10:
         raise ValueError(f"telemetry packet too short: {len(data)} bytes")
 
@@ -330,6 +666,12 @@ def parse_telemetry_packet(data: bytes) -> TelemetryPacket:
         raise ValueError(f"bad telemetry magic {magic!r}")
 
     version = data[4]
+    if (version == TELEMETRY_VERSION_V3) and (data[5] == PID_TELEMETRY_MESSAGE_TYPE):
+        return _parse_pid_telemetry_packet(data)
+    if (version == TELEMETRY_VERSION_V3) and (
+        data[5] == COMBINED_TELEMETRY_MESSAGE_TYPE
+    ):
+        return _parse_combined_telemetry_packet(data)
     expected_sizes = {
         TELEMETRY_VERSION_V1: TELEMETRY_PACKET_SIZE_V1,
         TELEMETRY_VERSION_V2: TELEMETRY_PACKET_SIZE_V2,
@@ -413,7 +755,9 @@ def parse_telemetry_packet(data: bytes) -> TelemetryPacket:
     )
 
 
-def parse_telemetry_packets(data: bytes) -> list[TelemetryPacket]:
+def parse_telemetry_packets(
+    data: bytes,
+) -> list[TelemetryPacket | PidTelemetryPacket | CombinedTelemetryPacket]:
     return [parse_telemetry_packet(data)]
 
 
@@ -443,6 +787,10 @@ def command_name(command: int) -> str:
 
 def status_name(status: int) -> str:
     return STATUS_NAMES.get(status, f"0x{status:02x}")
+
+
+def characterization_state_name(state: int) -> str:
+    return CHARACTERIZATION_STATE_NAMES.get(state, f"unknown ({state})")
 
 
 def telemetry_value_name(value: int) -> str:
@@ -505,6 +853,7 @@ def ad7177_status_names(status: int) -> str:
 
 
 HEATER_GAIN_SCALE = 1000.0
+HEATER_MANUAL_MAX_DUTY_PERMILLE = 20
 
 
 def encode_heater_target_c(value: float) -> int:
@@ -525,3 +874,12 @@ def encode_heater_gain(value: float) -> int:
 
 def decode_heater_gain(encoded: int) -> float:
     return encoded / HEATER_GAIN_SCALE
+
+
+def encode_heater_duty_permille(value: int) -> int:
+    if not (0 <= value <= HEATER_MANUAL_MAX_DUTY_PERMILLE):
+        raise ValueError(
+            f"heater duty {value} out of range "
+            f"0..{HEATER_MANUAL_MAX_DUTY_PERMILLE} permille"
+        )
+    return value

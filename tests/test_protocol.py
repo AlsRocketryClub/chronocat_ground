@@ -11,10 +11,15 @@ from unittest.mock import patch
 
 from chronocat_ground.protocol import (
     GEIGER_RECORD_STRUCT,
+    COMBINED_TELEMETRY_PACKET_SIZE,
+    PID_TELEMETRY_PACKET_SIZE,
+    PID_TELEMETRY_RECORD_SIZE,
     TELEMETRY_PACKET_SIZE_V1,
     TELEMETRY_PACKET_SIZE_V2,
     encode_heater_gain,
     encode_heater_target_c,
+    encode_heater_duty_permille,
+    heater_pid_averages,
     decode_heater_gain,
     decode_heater_target_c,
     geiger_error_names,
@@ -26,6 +31,10 @@ from chronocat_ground.protocol import (
     COMMAND_HEATER_SET_KP,
     COMMAND_HEATER_SET_KI,
     COMMAND_HEATER_SET_KD,
+    COMMAND_HEATER_SET_MANUAL_DUTY,
+    COMMAND_HEATER_RETURN_TO_PID,
+    COMMAND_HEATER_ALL_ON,
+    COMMAND_HEATER_ALL_OFF,
 )
 from chronocat_ground.telemetry_cli import build_parser
 from chronocat_ground.telemetry_csv import (
@@ -36,6 +45,9 @@ from chronocat_ground.telemetry_csv import (
     default_output_path,
     packet_to_geiger_rows,
     packet_to_row,
+    combined_packet_to_row,
+    pid_csv_fieldnames,
+    pid_packet_to_row,
 )
 
 
@@ -69,7 +81,77 @@ def telemetry_packet(version: int, records: list[bytes]) -> bytes:
     return bytes(prefix) + b"".join(records)
 
 
+def pid_telemetry_packet() -> bytes:
+    packet = bytearray(PID_TELEMETRY_PACKET_SIZE)
+    packet[:6] = b"CCTM\x03\x02"
+    struct.pack_into(">HHII", packet, 6, 0x0003, PID_TELEMETRY_PACKET_SIZE, 1234, 99)
+    packet[18:20] = bytes((12, PID_TELEMETRY_RECORD_SIZE))
+    struct.pack_into(">HHHHHH", packet, 20, 0x003F, 0x0001, 0x0001, 0, 0x0001, 0)
+    offset = 32
+    for heater_id in range(12):
+        struct.pack_into(">BBH", packet, offset, heater_id, 3 if heater_id == 0 else 0xFF, 0x0061 if heater_id == 0 else 0)
+        struct.pack_into(
+            ">IiHBBfffffff",
+            packet,
+            offset + 4,
+            20000,
+            21500,
+            42,
+            1 if heater_id == 0 else 0,
+            0,
+            15.0,
+            2.0,
+            0.5,
+            17.5,
+            10.0,
+            0.1,
+            0.0,
+        )
+        offset += PID_TELEMETRY_RECORD_SIZE
+    return bytes(packet)
+
+
+def combined_telemetry_packet() -> bytes:
+    standard = telemetry_packet(
+        2, [geiger_record(0, 300, 3.0), geiger_record(1, 301, 4.0)]
+    )
+    pid = pid_telemetry_packet()
+    packet = bytearray()
+    packet.extend(b"CCTM\x03\x03")
+    packet.extend(struct.pack(">HHII", 0x0007, COMBINED_TELEMETRY_PACKET_SIZE, 1234, 99))
+    packet.extend(standard[18:])
+    packet.extend(pid[18:])
+    assert len(packet) == COMBINED_TELEMETRY_PACKET_SIZE
+    return bytes(packet)
+
+
 class TelemetryProtocolTests(unittest.TestCase):
+    def test_parses_combined_telemetry_packet(self) -> None:
+        packet = parse_telemetry_packet(combined_telemetry_packet())
+
+        self.assertEqual(packet.standard.timestamp, 1234)
+        self.assertEqual(packet.pid.counter, 99)
+        self.assertEqual(packet.pid.heaters[0].duty_permille, 42)
+        self.assertEqual(packet.standard.geiger_reading(1).event_id, 301)
+
+    def test_parses_pid_telemetry_for_all_heaters(self) -> None:
+        packet = parse_telemetry_packet(pid_telemetry_packet())
+
+        self.assertEqual(len(packet.heaters), 12)
+        self.assertEqual(packet.heaters[0].sensor_id, 3)
+        self.assertTrue(packet.heaters[0].sensor_valid)
+        self.assertAlmostEqual(packet.heaters[0].kp, 10.0)
+        self.assertEqual(packet.heaters[1].sensor_id, 0xFF)
+        self.assertEqual(packet.heaters[1].result_name, "disabled")
+
+    def test_calculates_heater_temperature_and_duty_averages(self) -> None:
+        packet = parse_telemetry_packet(pid_telemetry_packet())
+
+        average_temperature, average_duty = heater_pid_averages(packet.heaters)
+
+        self.assertAlmostEqual(average_temperature, 21.5)
+        self.assertAlmostEqual(average_duty, 42.0)
+
     def test_parses_v1_and_preserves_legacy_properties(self) -> None:
         data = telemetry_packet(1, [geiger_record(0, 100, 1.5)])
 
@@ -119,8 +201,8 @@ class TelemetryProtocolTests(unittest.TestCase):
             parse_telemetry_packet(bytes(data))
 
         data[:4] = b"CCTM"
-        data[4] = 3
-        with self.assertRaisesRegex(ValueError, "unsupported telemetry version 3"):
+        data[4] = 4
+        with self.assertRaisesRegex(ValueError, "unsupported telemetry version 4"):
             parse_telemetry_packet(bytes(data))
 
     def test_rejects_duplicate_or_invalid_v2_counter_ids(self) -> None:
@@ -166,6 +248,53 @@ class TelemetryProtocolTests(unittest.TestCase):
         self.assertEqual(row["geiger_event_id"], 400)
         self.assertEqual(row["geiger_0_event_id"], 400)
         self.assertEqual(row["geiger_1_event_id"], "")
+
+    def test_pid_csv_contains_all_heater_records(self) -> None:
+        packet = parse_telemetry_packet(pid_telemetry_packet())
+
+        fields = pid_csv_fieldnames()
+        row = pid_packet_to_row(packet, datetime(2026, 1, 1), ("127.0.0.1", 5005))
+
+        self.assertIn("heater_11_duty_permille", fields)
+        self.assertEqual(row["heater_0_duty_permille"], 42)
+        self.assertEqual(row["heater_11_duty_permille"], 42)
+
+    def test_full_logger_merges_pid_into_one_csv_row(self) -> None:
+        standard = parse_telemetry_packet(
+            telemetry_packet(2, [geiger_record(0, 450, 4.5), geiger_record(1, 451, 5.5)])
+        )
+        pid = parse_telemetry_packet(pid_telemetry_packet())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "telemetry.csv"
+            logger = TelemetryCsvLogger(path, durable=False)
+            logger.start()
+            logger.write_packet(standard, ("127.0.0.1", 5005), datetime(2026, 1, 1))
+            logger.write_packet(pid, ("127.0.0.1", 5005), datetime(2026, 1, 1))
+            logger.stop()
+
+            with path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["heater_0_duty_permille"], "42")
+        self.assertEqual(rows[0]["heater_11_duty_permille"], "42")
+        self.assertEqual(rows[0]["geiger_0_event_id"], "450")
+
+    def test_full_logger_writes_combined_packet_directly(self) -> None:
+        packet = parse_telemetry_packet(combined_telemetry_packet())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "combined.csv"
+            logger = TelemetryCsvLogger(path, durable=False)
+            logger.start()
+            logger.write_packet(packet, ("127.0.0.1", 5005), datetime(2026, 1, 1))
+            logger.stop()
+
+            with path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["heater_11_duty_permille"], "42")
+        self.assertEqual(rows[0]["counter"], "99")
 
     def test_geiger_only_rows_contain_only_valid_detector_data(self) -> None:
         valid = geiger_record(0, 500, 6.5)
@@ -310,7 +439,7 @@ class TelemetryProtocolTests(unittest.TestCase):
                 logger.write_packet(packet, ("127.0.0.1", 5005))
                 logger.stop()
 
-        self.assertGreaterEqual(fsync.call_count, 4)
+        self.assertGreaterEqual(fsync.call_count, 3)
 
     def test_durable_logger_syncs_new_parent_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -427,12 +556,37 @@ class TelemetryProtocolTests(unittest.TestCase):
         cmd = build_command(COMMAND_HEATER_SET_KD, 0, 0)
         self.assertEqual(cmd, bytes([0x16, 0x00, 0x00, 0x00, 0x00]))
 
+        cmd = build_command(COMMAND_HEATER_SET_MANUAL_DUTY, 0, 20)
+        self.assertEqual(cmd, bytes([0x18, 0x00, 0x00, 0x00, 0x14]))
+
+        cmd = build_command(COMMAND_HEATER_RETURN_TO_PID, 0, 0)
+        self.assertEqual(cmd, bytes([0x19, 0x00, 0x00, 0x00, 0x00]))
+
+        cmd = build_command(COMMAND_HEATER_ALL_ON, 0, 20)
+        self.assertEqual(cmd, bytes([0x1B, 0x00, 0x00, 0x00, 0x14]))
+
+        cmd = build_command(COMMAND_HEATER_ALL_OFF, 0, 0)
+        self.assertEqual(cmd, bytes([0x1C, 0x00, 0x00, 0x00, 0x00]))
+
+    def test_encode_heater_duty_permille(self) -> None:
+        self.assertEqual(encode_heater_duty_permille(0), 0)
+        self.assertEqual(encode_heater_duty_permille(20), 20)
+        with self.assertRaises(ValueError):
+            encode_heater_duty_permille(-1)
+        with self.assertRaises(ValueError):
+            encode_heater_duty_permille(21)
+
     def test_heater_response_parse(self) -> None:
         resp = parse_command_response(bytes([0x00, 0x10, 0x00, 0x00, 0xEA, 0x60]))
         self.assertEqual(resp.status, 0)
         self.assertEqual(resp.command, 0x10)
         self.assertEqual(resp.arg1, 0)
         self.assertEqual(resp.arg2, 60000)
+
+        resp = parse_command_response(bytes([0x00, 0x1B, 0x00, 0x00, 0x00, 0x14]))
+        self.assertEqual(resp.command, COMMAND_HEATER_ALL_ON)
+        self.assertEqual(resp.arg1, 0)
+        self.assertEqual(resp.arg2, 20)
 
 
 if __name__ == "__main__":

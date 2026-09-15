@@ -43,6 +43,10 @@ class PlotWidget(pg.PlotWidget):
         empty_text: str = "Waiting for telemetry",
         on_click=None,
         absolute_time: bool = False,
+        y_range: tuple[float, float] | None = None,
+        min_y_range: float | None = None,
+        min_x_range: float | None = None,
+        monitor_mode: bool = False,
     ) -> None:
         self._wall_clock_axis = WallClockAxis(orientation="bottom")
         super().__init__(axisItems={"bottom": self._wall_clock_axis})
@@ -51,6 +55,10 @@ class PlotWidget(pg.PlotWidget):
         self.y_label = y_label
         self.empty_text = empty_text
         self.absolute_time = absolute_time
+        self._y_range = y_range
+        self._min_y_range = min_y_range
+        self._min_x_range = min_x_range
+        self._monitor_mode = monitor_mode
 
         if on_click is not None:
             self.clicked.connect(on_click)
@@ -73,6 +81,14 @@ class PlotWidget(pg.PlotWidget):
         self.getAxis("left").setPen(pen)
         self.getAxis("bottom").setPen(pen)
 
+        # Monitor mode: disable zoom, pan, context menu, and auto-range buttons
+        if self._monitor_mode:
+            vb = self.plotItem.vb
+            vb.setMenuEnabled(False)
+            vb.setMouseEnabled(x=False, y=False)
+            vb.enableAutoRange(x=False, y=False)
+            self.plotItem.hideButtons()
+
         # Add crosshair
         self._vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(color="#888888", style=Qt.DashLine))
         self._hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen(color="#888888", style=Qt.DashLine))
@@ -94,7 +110,7 @@ class PlotWidget(pg.PlotWidget):
         self._stats_label = QLabel(self)
         self._stats_label.setAlignment(Qt.AlignRight | Qt.AlignTop)
         self._stats_label.setStyleSheet(
-            "color: #333333; font-size: 11px; font-family: SF Mono, Menlo, Consolas, monospace; "
+            "color: #333333; font-size: 11px; font-family: Menlo, Consolas, monospace; "
             "background: rgba(255,255,255,180); padding: 6px 4px;"
         )
         self._stats_label.setVisible(False)
@@ -169,11 +185,33 @@ class PlotWidget(pg.PlotWidget):
 
         if self._first_draw:
             self._first_draw = False
-            if not self._abs_time:
+            if self._y_range is not None:
+                self.enableAutoRange(x=True, y=False)
+                self.setYRange(self._y_range[0], self._y_range[1], padding=0)
+                self.plotItem.vb.setLimits(yMin=self._y_range[0], yMax=self._y_range[1])
+            elif not self._abs_time:
                 self.enableAutoRange(x=False, y=True)
                 self.setXRange(x.min(), 0, padding=0)
             else:
                 self.enableAutoRange(x=True, y=True)
+
+            if self._min_y_range is not None:
+                self.plotItem.vb.setLimits(minYRange=self._min_y_range)
+
+            if self._min_x_range is not None:
+                self.plotItem.vb.setLimits(minXRange=self._min_x_range)
+
+        if self._monitor_mode:
+            y_min = float(y.min())
+            y_max = float(y.max())
+            if y_max - y_min < self._min_y_range:
+                mid = (y_min + y_max) / 2
+                y_min = mid - self._min_y_range / 2
+                y_max = mid + self._min_y_range / 2
+            if self._y_range is not None:
+                y_min = max(y_min, self._y_range[0])
+                y_max = min(y_max, self._y_range[1])
+            self.setYRange(y_min, y_max, padding=0)
 
         self._update_stats()
 

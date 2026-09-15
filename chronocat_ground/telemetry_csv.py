@@ -10,9 +10,11 @@ from uuid import uuid4
 
 from .protocol import (
     AD7177_CHANNEL_COUNT,
+    CombinedTelemetryPacket,
     TELEMETRY_OS_ADC_COUNT,
     TELEMETRY_TEMP_COUNT,
     GeigerReading,
+    PidTelemetryPacket,
     TelemetryPacket,
     ad7177_status_names,
     geiger_error_names,
@@ -82,12 +84,7 @@ def default_output_path(
 def csv_fieldnames() -> list[str]:
     fields = [
         "received_at",
-        "source_ip",
-        "source_port",
-        "version",
-        "message_type",
         "flags",
-        "payload_length",
         "packet_timestamp_ms",
         "counter",
         "health_code",
@@ -99,7 +96,6 @@ def csv_fieldnames() -> list[str]:
         fields.append(f"temp_{index}_c")
         fields.append(f"temp_{index}_valid")
 
-    fields.append("heater_duty_permille")
     fields.append("os_adc_valid_mask")
 
     for index in range(1, TELEMETRY_OS_ADC_COUNT + 1):
@@ -130,19 +126,14 @@ def csv_fieldnames() -> list[str]:
     )
     for counter_id in (0, 1):
         fields.extend(f"geiger_{counter_id}_{field}" for field in GEIGER_CSV_FIELDS)
+    fields.extend(pid_csv_fieldnames())
     return fields
 
 
 def packet_to_row(packet: TelemetryPacket, received_at: datetime, source: tuple[str, int] | str) -> dict[str, object]:
-    source_ip, source_port = normalize_source(source)
     row: dict[str, object] = {
         "received_at": received_at.isoformat(timespec="microseconds"),
-        "source_ip": source_ip,
-        "source_port": source_port,
-        "version": packet.version,
-        "message_type": packet.message_type,
         "flags": f"0x{packet.flags:04x}",
-        "payload_length": packet.payload_length,
         "packet_timestamp_ms": packet.timestamp,
         "counter": packet.counter,
         "health_code": packet.health_code,
@@ -155,7 +146,6 @@ def packet_to_row(packet: TelemetryPacket, received_at: datetime, source: tuple[
         row[f"temp_{index}_c"] = f"{value / 100:.2f}"
         row[f"temp_{index}_valid"] = int(packet.temperature_valid(zero_based))
 
-    row["heater_duty_permille"] = packet.heater_duty_permille
     row["os_adc_valid_mask"] = f"0x{packet.os_adc_valid_mask:04x}"
 
     for reading in packet.ad7177_readings:
@@ -209,6 +199,89 @@ def packet_to_geiger_rows(
             }
         )
     return rows
+
+
+def pid_csv_fieldnames() -> list[str]:
+    fields = [
+        "pid_heater_count",
+        "pid_record_size",
+        "pid_mapped_mask",
+        "pid_sensor_valid_mask",
+        "pid_enabled_mask",
+        "pid_manual_mask",
+        "pid_initialized_mask",
+        "pid_fault_mask",
+    ]
+    for heater_id in range(12):
+        prefix = f"heater_{heater_id}"
+        fields.extend(
+            [
+                f"{prefix}_id",
+                f"{prefix}_sensor_id",
+                f"{prefix}_flags",
+                f"{prefix}_target_milli_c",
+                f"{prefix}_measurement_milli_c",
+                f"{prefix}_duty_permille",
+                f"{prefix}_result",
+                f"{prefix}_proportional",
+                f"{prefix}_integral",
+                f"{prefix}_derivative",
+                f"{prefix}_output",
+                f"{prefix}_kp",
+                f"{prefix}_ki",
+                f"{prefix}_kd",
+            ]
+        )
+    return fields
+
+
+def pid_packet_to_row(
+    packet: PidTelemetryPacket,
+    received_at: datetime,
+    source: tuple[str, int] | str,
+) -> dict[str, object]:
+    row: dict[str, object] = {
+        "received_at": received_at.isoformat(timespec="microseconds"),
+        "pid_heater_count": packet.heater_count,
+        "pid_record_size": packet.record_size,
+        "pid_mapped_mask": f"0x{packet.mapped_mask:04x}",
+        "pid_sensor_valid_mask": f"0x{packet.sensor_valid_mask:04x}",
+        "pid_enabled_mask": f"0x{packet.pid_enabled_mask:04x}",
+        "pid_manual_mask": f"0x{packet.manual_mask:04x}",
+        "pid_initialized_mask": f"0x{packet.initialized_mask:04x}",
+        "pid_fault_mask": f"0x{packet.fault_mask:04x}",
+    }
+    for index, heater in enumerate(packet.heaters):
+        prefix = f"heater_{index}"
+        row.update(
+            {
+                f"{prefix}_id": heater.heater_id,
+                f"{prefix}_sensor_id": heater.sensor_id,
+                f"{prefix}_flags": f"0x{heater.flags:04x}",
+                f"{prefix}_target_milli_c": heater.target_milli_c,
+                f"{prefix}_measurement_milli_c": heater.measurement_milli_c,
+                f"{prefix}_duty_permille": heater.duty_permille,
+                f"{prefix}_result": heater.result,
+                f"{prefix}_proportional": f"{heater.proportional_term:.9g}",
+                f"{prefix}_integral": f"{heater.integral_term:.9g}",
+                f"{prefix}_derivative": f"{heater.derivative_term:.9g}",
+                f"{prefix}_output": f"{heater.output:.9g}",
+                f"{prefix}_kp": f"{heater.kp:.9g}",
+                f"{prefix}_ki": f"{heater.ki:.9g}",
+                f"{prefix}_kd": f"{heater.kd:.9g}",
+            }
+        )
+    return row
+
+
+def combined_packet_to_row(
+    packet: CombinedTelemetryPacket,
+    received_at: datetime,
+    source: tuple[str, int] | str,
+) -> dict[str, object]:
+    row = packet_to_row(packet.standard, received_at, source)
+    row.update(pid_packet_to_row(packet.pid, received_at, source))
+    return row
 
 
 def add_geiger_reading_to_row(
@@ -273,6 +346,9 @@ class TelemetryCsvLogger:
         self.writer: csv.DictWriter | None = None
         self.packet_count = 0
         self.last_geiger_samples: dict[int, tuple[object, ...]] = {}
+        self.pending_packets: dict[
+            tuple[int, int], dict[str, object]
+        ] = {}
 
     @property
     def active(self) -> bool:
@@ -282,6 +358,7 @@ class TelemetryCsvLogger:
         if self.file is not None:
             return
         self.last_geiger_samples.clear()
+        self.pending_packets.clear()
         self._create_parent_directory()
         while True:
             try:
@@ -290,7 +367,6 @@ class TelemetryCsvLogger:
                     newline="",
                     encoding="utf-8",
                 )
-                break
             except FileExistsError:
                 if not self.automatic_path:
                     raise
@@ -300,6 +376,8 @@ class TelemetryCsvLogger:
                     boot_id=self.boot_id,
                     session_id=self.session_id,
                 )
+                continue
+            break
         fieldnames = (
             GEIGER_ONLY_CSV_FIELDS
             if self.mode == CSV_MODE_GEIGER_ONLY
@@ -318,10 +396,25 @@ class TelemetryCsvLogger:
 
     def write_packet(
         self,
-        packet: TelemetryPacket,
+        packet: TelemetryPacket | PidTelemetryPacket | CombinedTelemetryPacket,
         source: tuple[str, int] | str,
         received_at: datetime | None = None,
     ) -> None:
+        if isinstance(packet, CombinedTelemetryPacket):
+            if self.file is None or self.writer is None:
+                raise RuntimeError("CSV logger is not active")
+            timestamp = received_at or datetime.now()
+            if self.mode == CSV_MODE_GEIGER_ONLY:
+                rows = packet_to_geiger_rows(packet.standard, timestamp)
+                self.writer.writerows(rows)
+            else:
+                self.writer.writerow(combined_packet_to_row(packet, timestamp, source))
+            self._sync_file()
+            self.packet_count += 1
+            return
+        if isinstance(packet, PidTelemetryPacket):
+            self.write_pid_packet(packet, source, received_at)
+            return
         if self.file is None or self.writer is None:
             raise RuntimeError("CSV logger is not active")
         timestamp = received_at or datetime.now()
@@ -341,7 +434,51 @@ class TelemetryCsvLogger:
                     row[field] for field in GEIGER_ONLY_CSV_FIELDS[2:]
                 )
         else:
-            self.writer.writerow(packet_to_row(packet, timestamp, source))
+            self._queue_packet(
+                (packet.counter, packet.timestamp),
+                "standard",
+                packet_to_row(packet, timestamp, source),
+            )
+
+    def write_pid_packet(
+        self,
+        packet: PidTelemetryPacket,
+        source: tuple[str, int] | str,
+        received_at: datetime | None = None,
+    ) -> None:
+        if self.mode == CSV_MODE_GEIGER_ONLY:
+            return
+        timestamp = received_at or datetime.now()
+        self._queue_packet(
+            (packet.counter, packet.timestamp),
+            "pid",
+            pid_packet_to_row(packet, timestamp, source),
+        )
+
+    def _queue_packet(
+        self,
+        key: tuple[int, int],
+        packet_kind: str,
+        row: dict[str, object],
+    ) -> None:
+        if self.file is None or self.writer is None:
+            raise RuntimeError("CSV logger is not active")
+        entry = self.pending_packets.setdefault(key, {})
+        entry[packet_kind] = row
+        if len(entry) == 2:
+            self._write_pending_packet(key)
+        while len(self.pending_packets) > 2:
+            oldest_key = min(self.pending_packets)
+            self._write_pending_packet(oldest_key)
+
+    def _write_pending_packet(self, key: tuple[int, int]) -> None:
+        entry = self.pending_packets.pop(key, {})
+        row = {field: "" for field in csv_fieldnames()}
+        for packet_row in entry.values():
+            row.update(packet_row)  # type: ignore[arg-type]
+        if self.writer is None:
+            raise RuntimeError("CSV logger is not active")
+        self.writer.writerow(row)
         self._sync_file()
         self.packet_count += 1
 
@@ -382,6 +519,8 @@ class TelemetryCsvLogger:
     def stop(self) -> None:
         if self.file is None:
             return
+        for key in sorted(self.pending_packets):
+            self._write_pending_packet(key)
         self._sync_file()
         self.file.close()
         self.file = None

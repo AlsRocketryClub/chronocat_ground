@@ -7,7 +7,13 @@ import signal
 import socket
 import sys
 
-from .protocol import DEFAULT_TELEMETRY_PORT, parse_telemetry_packets, telemetry_health_name
+from .protocol import (
+    CombinedTelemetryPacket,
+    DEFAULT_TELEMETRY_PORT,
+    PidTelemetryPacket,
+    parse_telemetry_packets,
+    telemetry_health_name,
+)
 from .telemetry_csv import CSV_MODE_GEIGER_ONLY, TelemetryCsvLogger
 
 
@@ -129,7 +135,12 @@ def record(args: argparse.Namespace) -> int:
                 packets_written += 1
 
                 if not args.quiet:
-                    health = telemetry_health_name(packet.health_code)
+                    if isinstance(packet, CombinedTelemetryPacket):
+                        health = "combined"
+                    elif isinstance(packet, PidTelemetryPacket):
+                        health = "pid"
+                    else:
+                        health = telemetry_health_name(packet.health_code)
                     print(
                         f"packet {packets_written}: counter={packet.counter} "
                         f"timestamp_ms={packet.timestamp} health={health} source={address[0]}:{address[1]}"
