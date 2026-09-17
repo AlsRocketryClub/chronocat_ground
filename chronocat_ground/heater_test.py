@@ -80,7 +80,9 @@ class HeaterTestSession:
         if self.start_timestamp_ms is None:
             self.start_timestamp_ms = packet.timestamp
         self.last_timestamp_ms = packet.timestamp
-        elapsed_s = (packet.timestamp - self.start_timestamp_ms) / 1000.0
+        elapsed_s = (
+            (packet.timestamp - self.start_timestamp_ms) & 0xFFFFFFFF
+        ) / 1000.0
         for sensor_id in range(min(HEATER_TEST_COUNT, len(packet.temperatures))):
             valid = packet.temperature_valid(sensor_id)
             self.validity_histories[sensor_id].append((elapsed_s, valid))
@@ -106,4 +108,6 @@ class HeaterTestSession:
     def elapsed_s(self) -> float | None:
         if self.start_timestamp_ms is None or self.last_timestamp_ms is None:
             return None
-        return (self.last_timestamp_ms - self.start_timestamp_ms) / 1000.0
+        return (
+            (self.last_timestamp_ms - self.start_timestamp_ms) & 0xFFFFFFFF
+        ) / 1000.0
