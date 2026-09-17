@@ -15,6 +15,7 @@ from chronocat_ground.telemetry_csv import (
 )
 from chronocat_ground.telemetry_db import TelemetryDb
 from chronocat_ground.telemetry_history import TelemetryHistory
+from chronocat_ground.protocol_models import CombinedTelemetryPacket, PidTelemetryPacket
 
 
 def sample_packet() -> TelemetryPacket:
@@ -128,4 +129,23 @@ class GeigerCsvDurabilityTests(unittest.TestCase):
             with path.open(newline="") as stream:
                 rows = list(csv.DictReader(stream))
             self.assertEqual(len(rows), 1)
+            logger.stop()
+
+    def test_combined_geiger_packets_are_deduplicated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "combined-geiger.csv"
+            logger = TelemetryCsvLogger(
+                path=path, mode=CSV_MODE_GEIGER_ONLY, durable=False
+            )
+            logger.start()
+            pid = PidTelemetryPacket(3, 3, 0, 0, 100, 2, 0, 0, 0, 0, 0, 0, 0, 0, ())
+            combined = CombinedTelemetryPacket(sample_packet(), pid)
+
+            logger.write_packet(combined, "127.0.0.1:5005", datetime.now())
+            logger.write_packet(combined, "127.0.0.1:5005", datetime.now())
+
+            with path.open(newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(logger.packet_count, 1)
             logger.stop()
