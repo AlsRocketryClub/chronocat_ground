@@ -68,6 +68,15 @@ class HeaterTestSessionTests(unittest.TestCase):
         self.assertEqual(session.selected_heater, 1)
         self.assertEqual(session.requested_duty, 2)
 
+    def test_timestamp_wrap_keeps_elapsed_time_positive(self) -> None:
+        session = HeaterTestSession()
+        session.prepare_start(0, 1)
+        session.apply_command_response(CommandResponse(0, COMMAND_CHARACTERIZATION_START, 1, 1))
+        session.append_packet(packet(0xFFFFFF00))
+        session.append_packet(packet(0x000000F4))
+
+        self.assertAlmostEqual(session.elapsed_s or 0.0, 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()
