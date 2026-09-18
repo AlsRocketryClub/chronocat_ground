@@ -154,6 +154,38 @@ QPushButton:disabled {
 #statusIndicator[status="off"] {
     color: #555555;
 }
+#healthCard {
+    background: #f8f8f8;
+    border: 2px solid #999999;
+}
+#healthCard[state="healthy"] {
+    background: #eef6ee;
+    border-color: #6e9f6e;
+}
+#healthCard[state="warning"] {
+    background: #fff8df;
+    border-color: #c49a37;
+}
+#healthCard[state="error"] {
+    background: #fbeaea;
+    border-color: #b36a6a;
+}
+#healthCardHeader {
+    text-align: left;
+    background: transparent;
+    border: none;
+    padding: 0;
+    min-width: 0;
+    color: #444444;
+    font-size: 11px;
+    letter-spacing: 1px;
+}
+#healthCardValue {
+    color: #111111;
+    font-size: 21px;
+    font-weight: 700;
+    min-height: 48px;
+}
 #telemetryState {
     padding: 10px;
     font-weight: 700;

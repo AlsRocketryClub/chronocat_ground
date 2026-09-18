@@ -40,12 +40,12 @@ from ..protocol import (
 )
 from ..telemetry_db import TelemetryDb
 from ..telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY
-from .widgets import Panel, SampleCard, StatCard, ValueTable
+from .widgets import HealthCard, Panel, SampleCard, StatCard, ValueTable
 from .status_widgets import StatusIndicator
 from .pid_widgets import SENSOR_NAMES
 
 
-VIEW_MONITORING = "MONITORING"
+VIEW_DASHBOARD = "DASHBOARD"
 VIEW_RADIATION = "RADIATION"
 VIEW_SAMPLES = "SAMPLES"
 VIEW_TEMPERATURE = "HEATING"
@@ -72,7 +72,7 @@ class MainWindowPagesMixin:
 
         self.pages = QStackedWidget()
         self.pages.setObjectName("pages")
-        self.pages.addWidget(self.scroll_page(self.build_monitoring_page()))
+        self.pages.addWidget(self.scroll_page(self.build_dashboard_page()))
         self.pages.addWidget(self.scroll_page(self.build_radiation_page()))
         self.pages.addWidget(self.scroll_page(self.build_samples_page()))
         self.pages.addWidget(self.scroll_page(self.build_temperature_page()))
@@ -170,7 +170,7 @@ class MainWindowPagesMixin:
         sidebar.setMaximumWidth(210)
 
         for view in (
-            VIEW_MONITORING,
+            VIEW_DASHBOARD,
             VIEW_RADIATION,
             VIEW_SAMPLES,
             VIEW_TEMPERATURE,
@@ -195,7 +195,7 @@ class MainWindowPagesMixin:
         scroll.setWidget(page)
         return scroll
 
-    def build_monitoring_page(self) -> QWidget:
+    def build_dashboard_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -203,7 +203,7 @@ class MainWindowPagesMixin:
 
         self.seq_card = StatCard("PACKET SEQUENCE")
         self.tick_card = StatCard("FIRMWARE TICK (ms)")
-        self.tcp_card = StatCard("HEALTH")
+        self.tcp_card = StatCard("FIRMWARE HEALTH")
         self.count_card = StatCard("SESSION PACKETS")
         self.geiger_dose_rate_card = StatCard("GEIGER 1 DOSE RATE (CPS)")
         self.geiger_total_dose_card = StatCard("GEIGER 1 TOTAL DOSE (Sv)")
@@ -213,6 +213,10 @@ class MainWindowPagesMixin:
         self.geiger_2_total_dose_card = StatCard("GEIGER 2 TOTAL DOSE (Sv)")
         self.geiger_2_hv_card = StatCard("GEIGER 2 HV (V)")
         self.geiger_2_errors_card = StatCard("GEIGER 2 ERRORS")
+        self.temperature_summary_card = StatCard("TEMPERATURE SENSORS")
+        self.adc_summary_card = StatCard("ADC CHANNELS")
+        self.heater_summary_card = StatCard("HEATER / PID")
+        self.source_card = StatCard("DOWNLINK SOURCE")
 
         cards = QGridLayout()
         cards.setSpacing(8)
@@ -228,18 +232,21 @@ class MainWindowPagesMixin:
         cards.addWidget(self.geiger_2_total_dose_card, 2, 1)
         cards.addWidget(self.geiger_2_hv_card, 2, 2)
         cards.addWidget(self.geiger_2_errors_card, 2, 3)
+        cards.addWidget(self.temperature_summary_card, 3, 0)
+        cards.addWidget(self.adc_summary_card, 3, 1)
+        cards.addWidget(self.heater_summary_card, 3, 2)
+        cards.addWidget(self.source_card, 3, 3)
         layout.addLayout(cards)
 
         layout.addWidget(self.build_chart_panel())
 
-        layout.addWidget(QLabel("Open DIAGNOSTICS for packet fields, sensor samples, commands, and the operator log."))
         layout.addStretch(1)
         return page
 
     def build_chart_panel(self) -> Panel:
         chart_panel = Panel()
         chart_header = QHBoxLayout()
-        chart_title = QLabel("GEIGER DOSE RATE")
+        chart_title = QLabel("GEIGER DOSE RATE HISTORY")
         chart_title.setObjectName("panelTitle")
         self.timestamp_label = QLabel("Received —")
         self.timestamp_label.setObjectName("smallNote")
@@ -287,20 +294,44 @@ class MainWindowPagesMixin:
 
         layout.addWidget(self.build_geiger_controls_panel())
 
-        plot_panel = Panel()
-        plot_header = QHBoxLayout()
-        title = QLabel("GEIGER DOSE RATE")
-        title.setObjectName("panelTitle")
+        plot_panel = Panel("DOSE RATE HISTORY")
+        plot_grid = QGridLayout()
+        plot_grid.setSpacing(12)
+
+        geiger_1_plot_frame = QFrame()
+        geiger_1_layout = QVBoxLayout(geiger_1_plot_frame)
+        geiger_1_header = QHBoxLayout()
+        geiger_1_title = QLabel("GEIGER 1")
+        geiger_1_title.setObjectName("panelTitle")
         self.radiation_plot_status = QLabel("0/300 points")
         self.radiation_plot_status.setObjectName("smallNote")
-        plot_header.addWidget(title)
-        plot_header.addStretch(1)
-        plot_header.addWidget(self.radiation_plot_status)
-        plot_panel.layout.addLayout(plot_header)
+        geiger_1_header.addWidget(geiger_1_title)
+        geiger_1_header.addStretch(1)
+        geiger_1_header.addWidget(self.radiation_plot_status)
+        geiger_1_layout.addLayout(geiger_1_header)
         self.radiation_geiger_plot = PlotWidget("Dose rate (CPS)", "No data", hover_label="CPS")
         self.radiation_geiger_plot.on_double_click = lambda: self.show_geiger_dialog(0)
         self.radiation_geiger_plot.setMinimumHeight(320)
-        plot_panel.layout.addWidget(self.radiation_geiger_plot)
+        geiger_1_layout.addWidget(self.radiation_geiger_plot)
+        plot_grid.addWidget(geiger_1_plot_frame, 0, 0)
+
+        geiger_2_plot_frame = QFrame()
+        geiger_2_layout = QVBoxLayout(geiger_2_plot_frame)
+        geiger_2_header = QHBoxLayout()
+        geiger_2_title = QLabel("GEIGER 2")
+        geiger_2_title.setObjectName("panelTitle")
+        self.radiation_2_plot_status = QLabel("0/300 points")
+        self.radiation_2_plot_status.setObjectName("smallNote")
+        geiger_2_header.addWidget(geiger_2_title)
+        geiger_2_header.addStretch(1)
+        geiger_2_header.addWidget(self.radiation_2_plot_status)
+        geiger_2_layout.addLayout(geiger_2_header)
+        self.radiation_geiger_2_plot = PlotWidget("Dose rate (CPS)", "No data", hover_label="CPS")
+        self.radiation_geiger_2_plot.on_double_click = lambda: self.show_geiger_dialog(1)
+        self.radiation_geiger_2_plot.setMinimumHeight(320)
+        geiger_2_layout.addWidget(self.radiation_geiger_2_plot)
+        plot_grid.addWidget(geiger_2_plot_frame, 0, 1)
+        plot_panel.layout.addLayout(plot_grid)
         layout.addWidget(plot_panel)
 
         geiger_detail_rows = [
@@ -370,9 +401,6 @@ class MainWindowPagesMixin:
         }
         for label in self.geiger_xder_labels.values():
             label.setObjectName("smallNote")
-            label.setTextInteractionFlags(
-                Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
-            )
         xder_grid.addWidget(self.geiger_xder_labels[0], 0, 1)
         xder_grid.addWidget(self.geiger_xder_labels[1], 1, 1)
         read_geiger_1_xder_button = QPushButton("Read Geiger 1 xDER")
@@ -687,6 +715,7 @@ class MainWindowPagesMixin:
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
+        self.health_cards: dict[str, HealthCard] = {}
         self.health_table = ValueTable(
             [
                 ("Command Connection", "Disconnected"),
@@ -711,12 +740,6 @@ class MainWindowPagesMixin:
         )
         geiger_panel = Panel("RADIATION SENSORS")
         geiger_panel.layout.addWidget(self.health_geiger_table)
-
-        top = QGridLayout()
-        top.setSpacing(12)
-        top.addWidget(summary_panel, 0, 0)
-        top.addWidget(geiger_panel, 0, 1)
-        layout.addLayout(top)
 
         self.health_temperature_table = ValueTable(
             [(f"TMP117-{index + 1}", "—", "unknown") for index in range(13)],
@@ -743,7 +766,22 @@ class MainWindowPagesMixin:
         )
         heater_panel = Panel("HEATER / PID HEALTH")
         heater_panel.layout.addWidget(self.health_heater_table)
-        layout.addWidget(heater_panel)
+
+        card_definitions = (
+            ("system", "SYSTEM STATUS", summary_panel),
+            ("radiation", "RADIATION SENSORS", geiger_panel),
+            ("temperature", "TEMPERATURE SENSORS", temperature_panel),
+            ("adc", "AD7177 CHANNELS", adc_panel),
+            ("heaters", "HEATER / PID", heater_panel),
+        )
+        cards = QGridLayout()
+        cards.setSpacing(12)
+        for index, (key, title, detail) in enumerate(card_definitions):
+            card = HealthCard(title)
+            card.set_detail(detail)
+            self.health_cards[key] = card
+            cards.addWidget(card, index // 2, index % 2)
+        layout.addLayout(cards)
         layout.addStretch(1)
         return page
 
@@ -776,17 +814,10 @@ class MainWindowPagesMixin:
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        overview = QGridLayout()
-        overview.setSpacing(12)
-        overview.addWidget(self.build_samples_summary_panel(), 0, 0)
-        overview.addWidget(self.build_telemetry_panel(), 0, 1)
-        layout.addLayout(overview)
-
-        command_and_packet = QGridLayout()
-        command_and_packet.setSpacing(12)
-        command_and_packet.addWidget(self.build_command_panel(), 0, 0)
-        command_and_packet.addWidget(self.build_packet_panel(), 0, 1)
-        layout.addLayout(command_and_packet)
+        layout.addWidget(self.build_samples_summary_panel())
+        layout.addWidget(self.build_telemetry_panel())
+        layout.addWidget(self.build_command_panel())
+        layout.addWidget(self.build_packet_panel())
 
         log_panel = Panel("OPERATOR LOG")
         self.log_view = QPlainTextEdit()
@@ -842,7 +873,7 @@ class MainWindowPagesMixin:
 
     def switch_view(self, view: str) -> None:
         order = [
-            VIEW_MONITORING,
+            VIEW_DASHBOARD,
             VIEW_RADIATION,
             VIEW_SAMPLES,
             VIEW_TEMPERATURE,
