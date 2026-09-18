@@ -116,7 +116,7 @@ The CSV includes receive time, packet timestamp in milliseconds, counter, flags,
 and TCP status. Legacy `geiger_*` columns remain aliases for Geiger 1; explicit `geiger_0_*` and
 `geiger_1_*` columns identify both counters.
 
-The Monitoring view also plots a rolling average of the error-free AD7177
+The Dashboard view also plots a rolling average of the error-free AD7177
 `raw24` channel values present in each packet. Channels carrying ADC/CRC/register
 errors are excluded from that average sample.
 
