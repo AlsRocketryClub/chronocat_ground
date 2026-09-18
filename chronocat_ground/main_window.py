@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
-    QWidget,
 )
 
 from .command_client import CommandClient

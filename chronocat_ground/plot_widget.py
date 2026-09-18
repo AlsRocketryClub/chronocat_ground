@@ -191,7 +191,10 @@ class PlotWidget(pg.PlotWidget):
                 for label, points in raw_series
             ]
 
-        self._points = self._series_points[0][1]
+        self._points = next(
+            (points for _label, points in self._series_points if points),
+            [],
+        )
         self._update_series_legend()
         self._update_empty()
         self._redraw()
