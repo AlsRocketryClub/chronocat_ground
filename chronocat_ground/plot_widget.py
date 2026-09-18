@@ -110,6 +110,9 @@ class PlotWidget(pg.PlotWidget):
 
         # Plot curve
         self._curve = self.plot(pen=pg.mkPen(color="#111111", width=2), symbol=None)
+        self._curves = [self._curve]
+        self._legend = None
+        self._series_points: list[tuple[str, list[tuple[float, float, float]]]] = []
 
         # Empty label
         self._empty_label = QLabel(empty_text, self)
@@ -152,47 +155,96 @@ class PlotWidget(pg.PlotWidget):
         self._on_double_click = callback
 
     def set_points(self, points: Sequence[tuple]) -> None:
-        if not points:
+        self.set_series((('', points),))
+
+    def set_series(self, series: Sequence[tuple[str, Sequence[tuple]]]) -> None:
+        """Set one or more aligned histories, keeping the inline chart compact."""
+        if not series or not any(points for _label, points in series):
+            self._series_points = []
             self._points = []
             self._update_empty()
+            self._redraw()
             return
 
-        if len(points[0]) == 3:
-            raw = [(mono, wall, val) for mono, wall, val in points]
-        else:
-            raw = [(x, x, y) for x, y in points]
+        raw_series = []
+        for label, points in series:
+            if not points:
+                continue
+            raw = (
+                [(mono, wall, val) for mono, wall, val in points]
+                if len(points[0]) == 3
+                else [(x, x, y) for x, y in points]
+            )
+            raw_series.append((label, raw))
 
         if self._abs_time:
-            max_wall = max(wall for _mono, wall, _val in raw)
+            max_wall = max(wall for _label, points in raw_series for _mono, wall, _val in points)
             self._wall_clock_axis.setWallRef(max_wall)
-            self._points = [((wall - max_wall), wall, val) for _mono, wall, val in raw]
+            self._series_points = [
+                (label, [(wall - max_wall, wall, val) for _mono, wall, val in points])
+                for label, points in raw_series
+            ]
         else:
-            max_mono = max(mono for mono, _wall, _val in raw)
-            self._points = [((mono - max_mono), wall, val) for mono, wall, val in raw]
+            max_mono = max(mono for _label, points in raw_series for mono, _wall, _val in points)
+            self._series_points = [
+                (label, [(mono - max_mono, wall, val) for mono, wall, val in points])
+                for label, points in raw_series
+            ]
 
+        self._points = self._series_points[0][1]
+        self._update_series_legend()
         self._update_empty()
         self._redraw()
 
+    def _update_series_legend(self) -> None:
+        multiple = len(self._series_points) > 1
+        if multiple and self._legend is None:
+            self._legend = self.addLegend(offset=(10, 10))
+        if self._legend is None:
+            return
+        self._legend.clear()
+        self._legend.setVisible(multiple)
+        for index, (label, _points) in enumerate(self._series_points):
+            if index < len(self._curves):
+                curve = self._curves[index]
+            else:
+                curve = self.plot()
+                self._curves.append(curve)
+            curve.setPen(pg.mkPen(color=("#111111", "#3f6f9f", "#6d8c66", "#9a6f3f")[index % 4], width=2))
+            self._legend.addItem(curve, label)
+        for curve in self._curves[len(self._series_points):]:
+            curve.setData([], [])
+
     def _update_empty(self) -> None:
-        visible = len(self._points) < 2
+        point_count = sum(len(points) for _label, points in self._series_points)
+        visible = point_count < 2
         self._empty_label.setVisible(visible)
-        self._stats_label.setVisible(not visible and len(self._points) >= 2)
+        self._stats_label.setVisible(not visible)
 
     def _redraw(self) -> None:
-        if len(self._points) < 2:
-            self._curve.setData([], [])
+        if sum(len(points) for _label, points in self._series_points) < 2:
+            for curve in self._curves:
+                curve.setData([], [])
             return
 
-        x = np.array([p[0] for p in self._points])
-        y = np.array([p[2] for p in self._points])
+        x_values = [point[0] for _label, points in self._series_points for point in points]
+        y_values = [point[2] for _label, points in self._series_points for point in points]
+        x = np.array(x_values)
+        y = np.array(y_values)
 
         if self._time_window_s is not None and not self._abs_time:
             max_x = x.max()
-            mask = x >= max_x - self._time_window_s
-            x = x[mask]
-            y = y[mask]
-
-        self._curve.setData(x, y)
+            for curve, (_label, points) in zip(self._curves, self._series_points):
+                series_x = np.array([point[0] for point in points])
+                series_y = np.array([point[2] for point in points])
+                mask = series_x >= max_x - self._time_window_s
+                curve.setData(series_x[mask], series_y[mask])
+        else:
+            for curve, (_label, points) in zip(self._curves, self._series_points):
+                curve.setData(
+                    np.array([point[0] for point in points]),
+                    np.array([point[2] for point in points]),
+                )
 
         if self._first_draw:
             self._first_draw = False
@@ -215,7 +267,7 @@ class PlotWidget(pg.PlotWidget):
         if self._monitor_mode:
             y_min = float(y.min())
             y_max = float(y.max())
-            if y_max - y_min < self._min_y_range:
+            if self._min_y_range is not None and y_max - y_min < self._min_y_range:
                 mid = (y_min + y_max) / 2
                 y_min = mid - self._min_y_range / 2
                 y_max = mid + self._min_y_range / 2
@@ -227,10 +279,10 @@ class PlotWidget(pg.PlotWidget):
         self._update_stats()
 
     def _update_stats(self) -> None:
-        if len(self._points) < 2:
+        if sum(len(points) for _label, points in self._series_points) < 2:
             return
 
-        y = np.array([p[2] for p in self._points])
+        y = np.array([p[2] for _label, points in self._series_points for p in points])
         stats = f"min {y.min():.4g}  max {y.max():.4g}  mean {y.mean():.4g}"
         self._stats_label.setText(stats)
 

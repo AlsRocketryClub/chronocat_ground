@@ -6,7 +6,6 @@ import os
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QFrame,
@@ -50,6 +49,7 @@ VIEW_RADIATION = "RADIATION"
 VIEW_SAMPLES = "SAMPLES"
 VIEW_TEMPERATURE = "HEATING"
 VIEW_HEALTH = "HEALTH"
+VIEW_DIAGNOSTICS = "DIAGNOSTICS"
 VIEW_SETTINGS = "SETTINGS"
 
 
@@ -76,6 +76,7 @@ class MainWindowPagesMixin:
         self.pages.addWidget(self.scroll_page(self.build_samples_page()))
         self.pages.addWidget(self.scroll_page(self.build_temperature_page()))
         self.pages.addWidget(self.scroll_page(self.build_health_page()))
+        self.pages.addWidget(self.scroll_page(self.build_diagnostics_page()))
         self.pages.addWidget(self.scroll_page(self.build_settings_page()))
         body.addWidget(self.pages, 1)
 
@@ -173,6 +174,7 @@ class MainWindowPagesMixin:
             VIEW_SAMPLES,
             VIEW_TEMPERATURE,
             VIEW_HEALTH,
+            VIEW_DIAGNOSTICS,
             VIEW_SETTINGS,
         ):
             button = QPushButton(view)
@@ -229,32 +231,14 @@ class MainWindowPagesMixin:
 
         layout.addWidget(self.build_chart_panel())
 
-        tables = QGridLayout()
-        tables.setSpacing(12)
-        tables.addWidget(self.build_samples_summary_panel(), 0, 0)
-        tables.addWidget(self.build_telemetry_panel(), 0, 1)
-        layout.addLayout(tables)
-
-        lower = QGridLayout()
-        lower.setSpacing(12)
-        lower.addWidget(self.build_command_panel(), 0, 0)
-        lower.addWidget(self.build_packet_panel(), 0, 1)
-        layout.addLayout(lower)
-
-        log_panel = Panel("OPERATOR LOG")
-        self.log_view = QPlainTextEdit()
-        self.log_view.setObjectName("logView")
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(300)
-        log_panel.layout.addWidget(self.log_view)
-        layout.addWidget(log_panel, 1)
-
+        layout.addWidget(QLabel("Open DIAGNOSTICS for packet fields, sensor samples, commands, and the operator log."))
+        layout.addStretch(1)
         return page
 
     def build_chart_panel(self) -> Panel:
         chart_panel = Panel()
         chart_header = QHBoxLayout()
-        chart_title = QLabel("GEIGER 1 DOSE RATE")
+        chart_title = QLabel("GEIGER DOSE RATE")
         chart_title.setObjectName("panelTitle")
         self.timestamp_label = QLabel("Received —")
         self.timestamp_label.setObjectName("smallNote")
@@ -265,13 +249,6 @@ class MainWindowPagesMixin:
         self.monitoring_geiger_plot = PlotWidget("Dose rate (CPS)", "No data", hover_label="CPS")
         self.monitoring_geiger_plot.on_double_click = lambda: self.show_geiger_dialog(0)
         chart_panel.layout.addWidget(self.monitoring_geiger_plot)
-        geiger_2_title = QLabel("GEIGER 2 DOSE RATE")
-        geiger_2_title.setObjectName("panelTitle")
-        self.monitoring_geiger_2_title = geiger_2_title
-        chart_panel.layout.addWidget(geiger_2_title)
-        self.monitoring_geiger_2_plot = PlotWidget("Dose rate (CPS)", "No data", hover_label="CPS")
-        self.monitoring_geiger_2_plot.on_double_click = lambda: self.show_geiger_dialog(1)
-        chart_panel.layout.addWidget(self.monitoring_geiger_2_plot)
         average_title = QLabel("ADC CHANNEL AVERAGE")
         average_title.setObjectName("panelTitle")
         chart_panel.layout.addWidget(average_title)
@@ -311,7 +288,7 @@ class MainWindowPagesMixin:
 
         plot_panel = Panel()
         plot_header = QHBoxLayout()
-        title = QLabel("GEIGER 1 DOSE RATE")
+        title = QLabel("GEIGER DOSE RATE")
         title.setObjectName("panelTitle")
         self.radiation_plot_status = QLabel("0/300 points")
         self.radiation_plot_status.setObjectName("smallNote")
@@ -323,20 +300,6 @@ class MainWindowPagesMixin:
         self.radiation_geiger_plot.on_double_click = lambda: self.show_geiger_dialog(0)
         self.radiation_geiger_plot.setMinimumHeight(320)
         plot_panel.layout.addWidget(self.radiation_geiger_plot)
-        geiger_2_header = QHBoxLayout()
-        geiger_2_title = QLabel("GEIGER 2 DOSE RATE")
-        geiger_2_title.setObjectName("panelTitle")
-        self.radiation_geiger_2_title = geiger_2_title
-        self.radiation_2_plot_status = QLabel("0/300 points")
-        self.radiation_2_plot_status.setObjectName("smallNote")
-        geiger_2_header.addWidget(geiger_2_title)
-        geiger_2_header.addStretch(1)
-        geiger_2_header.addWidget(self.radiation_2_plot_status)
-        plot_panel.layout.addLayout(geiger_2_header)
-        self.radiation_geiger_2_plot = PlotWidget("Dose rate (CPS)", "No data", hover_label="CPS")
-        self.radiation_geiger_2_plot.on_double_click = lambda: self.show_geiger_dialog(1)
-        self.radiation_geiger_2_plot.setMinimumHeight(320)
-        plot_panel.layout.addWidget(self.radiation_geiger_2_plot)
         layout.addWidget(plot_panel)
 
         geiger_detail_rows = [
@@ -352,14 +315,13 @@ class MainWindowPagesMixin:
             ("Statistical cell count", "—"),
             ("Error flags", "—"),
         ]
-        self.radiation_table = ValueTable(geiger_detail_rows, ("Metric", "Value"))
-        table_panel = Panel("GEIGER 1 PACKET DETAILS")
+        self.radiation_table = ValueTable(
+            [(name, "—", "—") for name, _value in geiger_detail_rows],
+            ("Metric", "Geiger 1", "Geiger 2"),
+        )
+        table_panel = Panel("GEIGER PACKET DETAILS")
         table_panel.layout.addWidget(self.radiation_table)
         layout.addWidget(table_panel)
-        self.radiation_2_table = ValueTable(geiger_detail_rows, ("Metric", "Value"))
-        self.radiation_2_table_panel = Panel("GEIGER 2 PACKET DETAILS")
-        self.radiation_2_table_panel.layout.addWidget(self.radiation_2_table)
-        layout.addWidget(self.radiation_2_table_panel)
         layout.addStretch(1)
         return page
 
@@ -748,14 +710,6 @@ class MainWindowPagesMixin:
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        test_panel = Panel("GEIGER")
-        self.geiger_test_checkbox = QCheckBox("Hide Geiger 2")
-        self.geiger_test_checkbox.setChecked(self.geiger_test_mode)
-        self.geiger_test_checkbox.toggled.connect(self._on_geiger_test_toggle)
-        test_panel.layout.addWidget(self.geiger_test_checkbox)
-
-        layout.addWidget(test_panel)
-
         db_panel = Panel("ADC DATABASE")
         db_path = "chronocat_adc.db"
         db_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
@@ -770,6 +724,35 @@ class MainWindowPagesMixin:
         db_panel.layout.addWidget(clear_btn)
 
         layout.addWidget(db_panel)
+        layout.addStretch(1)
+        return page
+
+    def build_diagnostics_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        overview = QGridLayout()
+        overview.setSpacing(12)
+        overview.addWidget(self.build_samples_summary_panel(), 0, 0)
+        overview.addWidget(self.build_telemetry_panel(), 0, 1)
+        layout.addLayout(overview)
+
+        command_and_packet = QGridLayout()
+        command_and_packet.setSpacing(12)
+        command_and_packet.addWidget(self.build_command_panel(), 0, 0)
+        command_and_packet.addWidget(self.build_packet_panel(), 0, 1)
+        layout.addLayout(command_and_packet)
+
+        log_panel = Panel("OPERATOR LOG")
+        self.log_view = QPlainTextEdit()
+        self.log_view.setObjectName("logView")
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumBlockCount(300)
+        self.log_view.setMinimumHeight(220)
+        log_panel.layout.addWidget(self.log_view)
+        layout.addWidget(log_panel)
         layout.addStretch(1)
         return page
 
@@ -814,15 +797,6 @@ class MainWindowPagesMixin:
             self._refresh_db_info()
             self.log(f"Database archived to {archive}, new database created")
 
-    def _on_geiger_test_toggle(self, checked: bool) -> None:
-        self.geiger_test_mode = checked
-        self._settings.setValue("geiger_test_mode", checked)
-        self._apply_geiger_test_mode(checked)
-
-    def _apply_geiger_test_mode(self, hide: bool) -> None:
-        for widget in self.geiger_2_widgets:
-            widget.setVisible(not hide)
-
     def switch_view(self, view: str) -> None:
         order = [
             VIEW_MONITORING,
@@ -830,6 +804,7 @@ class MainWindowPagesMixin:
             VIEW_SAMPLES,
             VIEW_TEMPERATURE,
             VIEW_HEALTH,
+            VIEW_DIAGNOSTICS,
             VIEW_SETTINGS,
         ]
         self.pages.setCurrentIndex(order.index(view))

@@ -94,9 +94,11 @@ class ValueTable(QTableWidget):
             for col, value in enumerate(row_data):
                 self.setItem(row_index, col, QTableWidgetItem(value))
             label = self.item(row_index, 0)
-            target = self.item(row_index, 1)
-            if label is not None and target is not None:
-                self._value_items[(label.text(), 1)] = target
+            if label is not None:
+                for col in range(1, num_cols):
+                    target = self.item(row_index, col)
+                    if target is not None:
+                        self._value_items[(label.text(), col)] = target
 
         self.resizeRowsToContents()
 
