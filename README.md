@@ -7,11 +7,11 @@ Minimal PySide6 desktop chronocat_ground app for Chronocat firmware.
 - Receives UDP telemetry on port `5005`.
 - Connects to the firmware TCP command server on `192.168.1.50:5006`.
 - Shows packet counter, firmware timestamp, flags, health, sensor masks, AD7177 raw ADC telemetry, Geiger telemetry, source address, packet count, and packet age.
+- Shows top-bar telemetry state alongside TCP connection and SD logger state.
 - Sends binary command packets for ping, telemetry on, telemetry off, and telemetry status.
 - Provides Geiger detector memory controls on the Radiation page.
-- Provides an open-loop Heater Test page for one heater at a time, including baseline,
-  heating, stop/cooldown, status polling, all 12 temperature plots, validity indicators,
-  and command-duty plotting.
+- Provides a PID Heating page with mapped-heater telemetry and plots, individual controls,
+  and a common-setpoint PID activation control with selectable profiles.
 
 ## Setup
 
@@ -127,6 +127,14 @@ zero/off channels.
 
 The GUI and recorder both bind UDP port `5005`, so normally run only one of them at a time
 on the same machine.
+
+## Code Layout
+
+The GUI composition root is intentionally small. Reusable Qt widgets and page construction
+live under `chronocat_ground/ui/`; command transport is handled by `command_dispatcher.py`;
+telemetry history and durable database projection are handled by `telemetry_history.py`.
+The public `protocol.py` and `telemetry_csv.py` modules remain compatibility facades over
+the focused codec, model, schema, and logger modules.
 
 ## Firmware Protocol
 
@@ -245,7 +253,7 @@ bit 4    REG_ERROR
 bits 1:0 status channel number
 ```
 
-Current firmware fills ADC0 CH0/CH1/CH2. The remaining AD7177 slots are reserved for the later 4 ADC x 3 channel hardware and may remain zero.
+Firmware fills all four AD7177 devices and their three configured channels.
 
 TCP command request app payload, carried inside normal TCP/IP packets:
 
@@ -301,30 +309,15 @@ arg2 = 0
 
 The current GUI controls intentionally target Geiger 1 only.
 
-Heater characterization commands are available from the GUI Heater Test page:
-
-```text
-0x20 start: arg1 = heater ID (0..11), arg2 = duty permille (0..20)
-0x21 stop:  arg1 = 0, arg2 = 0; first stop enters cooldown
-0x22 status: arg1 = 0, arg2 = 0
-```
-
-For characterization responses, `arg1` is the state (`idle`, `baseline`, `heating`,
-`cooldown`, `complete`, or `fault`) and `arg2` is the effective duty permille. The
-Heater Test page polls status once per second while a test is active. Existing CSV logging
-continues to record the raw telemetry packets; use it alongside the page for durable test
-records.
-
-The same page provides guarded global heater controls:
+The legacy manual global heater controls remain protocol-compatible:
 
 ```text
 0x1B all on:  arg1 = 0, arg2 = duty permille (1..20)
 0x1C all off: arg1 = 0, arg2 = 0
 ```
 
-All On requires confirmation and is accepted only when all 12 temperature sensors are
-valid and below 65 C. All Off stops every heater and cancels active characterization
-heating output.
+All On requires all 12 temperature sensors to be valid and below 65 C. All Off stops
+every heater immediately.
 
 Geiger memory commands can take a few seconds while the detector writes flash.
 The TCP response uses `arg1` for detector error flags and

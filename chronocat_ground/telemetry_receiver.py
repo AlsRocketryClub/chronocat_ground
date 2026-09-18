@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import time
 
 from PySide6.QtCore import QThread, Signal
 
@@ -14,7 +15,7 @@ from .protocol import (
 
 
 class TelemetryReceiver(QThread):
-    packet_received = Signal(object, str)
+    packet_received = Signal(object, str, float, float)
     receive_error = Signal(str)
 
     def __init__(self, port: int = DEFAULT_TELEMETRY_PORT) -> None:
@@ -31,14 +32,21 @@ class TelemetryReceiver(QThread):
             except OSError:
                 pass
 
-    def run(self) -> None:
+    def start(self, priority: QThread.Priority = QThread.InheritPriority) -> None:
+        """Mark the receiver active before Qt schedules ``run``."""
         self._running = True
+        super().start(priority)
+
+    def run(self) -> None:
+        if not self._running:
+            return
 
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.settimeout(0.25)
             sock.bind(("0.0.0.0", self.port))
         except OSError as exc:
+            self._running = False
             self.receive_error.emit(f"Could not bind UDP telemetry port {self.port}: {exc}")
             return
 
@@ -48,6 +56,8 @@ class TelemetryReceiver(QThread):
             while self._running:
                 try:
                     data, address = sock.recvfrom(2048)
+                    received_monotonic = time.monotonic()
+                    received_wall = time.time()
                 except TimeoutError:
                     continue
                 except OSError:
@@ -67,8 +77,14 @@ class TelemetryReceiver(QThread):
                     continue
 
                 for packet in packets:
-                    self.packet_received.emit(packet, f"{address[0]}:{address[1]} ({len(data)} bytes)")
+                    self.packet_received.emit(
+                        packet,
+                        f"{address[0]}:{address[1]} ({len(data)} bytes)",
+                        received_monotonic,
+                        received_wall,
+                    )
         finally:
+            self._running = False
             self._socket = None
             try:
                 sock.close()

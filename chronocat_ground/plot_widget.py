@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from collections.abc import Sequence
 
 import numpy as np
 import pyqtgraph as pg
@@ -11,18 +12,25 @@ from PySide6.QtWidgets import QLabel, QWidget
 
 
 class WallClockAxis(pg.AxisItem):
-    """X-axis that formats relative seconds as wall-clock HH:MM:SS."""
+    """X-axis that formats absolute points as clocks or relative points as seconds."""
 
     def __init__(self, *args, wall_ref: float = 0.0, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._wall_ref = wall_ref
+        self._relative = False
 
     def setWallRef(self, wall_ref: float) -> None:  # noqa: N802
         self._wall_ref = wall_ref
 
+    def setRelative(self, relative: bool) -> None:  # noqa: N802
+        self._relative = relative
+
     def tickStrings(self, values, scale, spacing):  # noqa: N802
         strings = []
         for v in values:
+            if self._relative:
+                strings.append("now" if abs(v) < 0.5 else f"{v:.0f} s")
+                continue
             wall = self._wall_ref + v
             if wall > 0:
                 strings.append(datetime.fromtimestamp(wall).strftime("%H:%M:%S"))
@@ -40,25 +48,28 @@ class PlotWidget(pg.PlotWidget):
     def __init__(
         self,
         y_label: str,
-        empty_text: str = "Waiting for telemetry",
+        empty_text: str = "No data",
         on_click=None,
         absolute_time: bool = False,
         y_range: tuple[float, float] | None = None,
         min_y_range: float | None = None,
         min_x_range: float | None = None,
         monitor_mode: bool = False,
+        hover_label: str | None = None,
     ) -> None:
         self._wall_clock_axis = WallClockAxis(orientation="bottom")
         super().__init__(axisItems={"bottom": self._wall_clock_axis})
         self.setObjectName("linePlot")
         self.setMinimumHeight(180)
         self.y_label = y_label
+        self.hover_label = hover_label or y_label
         self.empty_text = empty_text
         self.absolute_time = absolute_time
         self._y_range = y_range
         self._min_y_range = min_y_range
         self._min_x_range = min_x_range
         self._monitor_mode = monitor_mode
+        self._wall_clock_axis.setRelative(not absolute_time)
 
         if on_click is not None:
             self.clicked.connect(on_click)
@@ -140,7 +151,7 @@ class PlotWidget(pg.PlotWidget):
     def on_double_click(self, callback):
         self._on_double_click = callback
 
-    def set_points(self, points: list[tuple]) -> None:
+    def set_points(self, points: Sequence[tuple]) -> None:
         if not points:
             self._points = []
             self._update_empty()
@@ -220,7 +231,7 @@ class PlotWidget(pg.PlotWidget):
             return
 
         y = np.array([p[2] for p in self._points])
-        stats = f"n={len(y)}  min={y.min():.4g}  max={y.max():.4g}  avg={y.mean():.4g}"
+        stats = f"min {y.min():.4g}  max {y.max():.4g}  mean {y.mean():.4g}"
         self._stats_label.setText(stats)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -270,7 +281,7 @@ class PlotWidget(pg.PlotWidget):
             elapsed = mono - max_mono
             ts = "now" if abs(elapsed) < 0.01 else f"{elapsed:.1f}s ago"
 
-        self._tooltip_label.setText(f"{ts}  {self.y_label}: {val:.6g}")
+        self._tooltip_label.setText(f"{ts}  {self.hover_label}: {val:.6g}")
         self._tooltip_label.setVisible(True)
 
     def leaveEvent(self, event) -> None:  # noqa: N802

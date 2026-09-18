@@ -5,10 +5,12 @@ from collections import deque
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -18,7 +20,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .heater_page import HEATER_COUNT
+from .heater_safety import HEATER_COUNT
+from .pid_profiles import PID_PROFILES
 from .plot_widget import PlotWidget
 from .protocol import (
     HEATER_MANUAL_MAX_DUTY_PERMILLE,
@@ -26,123 +29,7 @@ from .protocol import (
     PidTelemetryPacket,
     heater_pid_averages,
 )
-
-
-SENSOR_NAMES = (
-    "U3",
-    "U4",
-    "U5",
-    "U0",
-    "U1",
-    "U2",
-    "F2_U3",
-    "F2_U4",
-    "F2_U5",
-    "F2_U0",
-    "F2_U1",
-    "F2_U2",
-)
-
-
-class HeaterOverviewRow(QFrame):
-    clicked = Signal(int)
-
-    def __init__(self, heater_id: int) -> None:
-        super().__init__()
-        self.heater_id = heater_id
-        self.setObjectName("pidRow")
-        self.setMinimumHeight(44)
-        self.setCursor(Qt.PointingHandCursor)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 6, 10, 6)
-        layout.setSpacing(8)
-
-        self.heater_label = QLabel(f"H{heater_id}")
-        self.heater_label.setObjectName("pidRowHeater")
-        self.heater_label.setFixedWidth(34)
-        layout.addWidget(self.heater_label)
-
-        self.sensor_label = QLabel("--")
-        self.sensor_label.setObjectName("pidRowSensor")
-        self.sensor_label.setFixedWidth(62)
-        layout.addWidget(self.sensor_label)
-
-        self.temperature_label = QLabel("--")
-        self.temperature_label.setObjectName("pidRowTemperature")
-        self.temperature_label.setFixedWidth(72)
-        layout.addWidget(self.temperature_label)
-
-        self.duty_label = QLabel("0‰")
-        self.duty_label.setObjectName("pidRowDuty")
-        self.duty_label.setFixedWidth(54)
-        layout.addWidget(self.duty_label)
-
-        self.state_label = QLabel("WAITING")
-        self.state_label.setObjectName("pidBadge")
-        self.state_label.setAlignment(Qt.AlignCenter)
-        self.state_label.setFixedWidth(104)
-        layout.addWidget(self.state_label)
-        layout.addStretch(1)
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit(self.heater_id)
-        super().mousePressEvent(event)
-
-    def set_selected(self, selected: bool) -> None:
-        self.setProperty("selected", selected)
-        self._refresh_style()
-
-    def set_reading(self, reading: HeaterPidReading | None) -> None:
-        if reading is None:
-            self.sensor_label.setText("--")
-            self.temperature_label.setText("--")
-            self.duty_label.setText("0‰")
-            self.state_label.setText("WAITING")
-            self.setProperty("state", "waiting")
-            self._refresh_style()
-            return
-
-        sensor = "UNMAPPED"
-        if reading.sensor_mapped and reading.sensor_id < len(SENSOR_NAMES):
-            sensor = SENSOR_NAMES[reading.sensor_id]
-        temperature = "--"
-        if reading.sensor_valid:
-            temperature = f"{reading.measurement_milli_c / 1000.0:.2f} C"
-
-        if not reading.sensor_mapped:
-            state = "UNMAPPED"
-            state_class = "blocked"
-        elif reading.result >= 7:
-            state = "FAULT"
-            state_class = "fault"
-        elif reading.result >= 5:
-            state = "BLOCKED"
-            state_class = "blocked"
-        elif reading.pid_enabled:
-            state = "PID"
-            state_class = "active"
-        elif reading.manual:
-            state = "MANUAL"
-            state_class = "manual"
-        else:
-            state = "OFF"
-            state_class = "off"
-
-        self.sensor_label.setText(sensor)
-        self.temperature_label.setText(temperature)
-        self.duty_label.setText(f"{reading.duty_permille}‰")
-        self.state_label.setText(state)
-        self.state_label.setToolTip(reading.result_name)
-        self.setProperty("state", state_class)
-        self._refresh_style()
-
-    def _refresh_style(self) -> None:
-        self.style().unpolish(self)
-        self.style().polish(self)
-        self.state_label.style().unpolish(self.state_label)
-        self.state_label.style().polish(self.state_label)
+from .ui.pid_widgets import HeaterOverviewRow, SENSOR_NAMES
 
 
 class PidPage(QWidget):
@@ -151,6 +38,7 @@ class PidPage(QWidget):
     manual_duty_requested = Signal(int, int)
     return_pid_requested = Signal(int)
     all_off_requested = Signal()
+    all_pid_requested = Signal(bool, float, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -163,6 +51,9 @@ class PidPage(QWidget):
         self.average_temperature_history = deque(maxlen=180)
         self.average_duty_history = deque(maxlen=180)
         self.rows: list[HeaterOverviewRow] = []
+        self._mapped_mask = 0
+        self._latest_pid_enabled_mask = 0
+        self._global_operation_busy = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -185,32 +76,43 @@ class PidPage(QWidget):
         self._update_detail()
 
     def _build_header(self) -> QFrame:
-        header = QFrame()
-        header.setObjectName("pidHeader")
-        layout = QHBoxLayout(header)
-        layout.setContentsMargins(14, 12, 14, 12)
+        panel = QFrame()
+        panel.setObjectName("pidGlobalControls")
+        layout = QGridLayout(panel)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(5)
 
-        title_box = QVBoxLayout()
-        title = QLabel("PID HEATING")
-        title.setObjectName("pidTitle")
-        subtitle = QLabel("Closed-loop heater supervision and control")
-        subtitle.setObjectName("smallNote")
-        title_box.addWidget(title)
-        title_box.addWidget(subtitle)
-        layout.addLayout(title_box)
-        layout.addStretch(1)
+        layout.addWidget(QLabel("Setpoint"), 0, 0)
+        self.global_target_spin = self._make_float_spin(0.0, 64.999, 20.0, 0.1)
+        self.global_target_spin.setSuffix(" C")
+        layout.addWidget(self.global_target_spin, 0, 1)
 
-        self.summary_label = QLabel("Waiting for PID telemetry")
-        self.summary_label.setObjectName("pidSummary")
-        self.summary_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        layout.addWidget(self.summary_label)
+        layout.addWidget(QLabel("Profile"), 0, 2)
+        self.profile_combo = QComboBox()
+        for profile in PID_PROFILES:
+            self.profile_combo.addItem(profile.name)
+        self.profile_combo.setMinimumWidth(130)
+        layout.addWidget(self.profile_combo, 0, 3)
 
-        self.all_off_button = QPushButton("ALL OFF")
+        self.all_pid_button = QPushButton("Enable PID")
+        self.all_pid_button.setObjectName("primaryButton")
+        self.all_pid_button.clicked.connect(self._toggle_all_pid)
+        layout.addWidget(self.all_pid_button, 0, 4)
+
+        self.all_off_button = QPushButton("Turn all off")
         self.all_off_button.setObjectName("dangerButton")
         self.all_off_button.setMinimumWidth(105)
         self.all_off_button.clicked.connect(self.all_off_requested.emit)
-        layout.addWidget(self.all_off_button)
-        return header
+        layout.addWidget(self.all_off_button, 0, 5)
+
+        self.summary_label = QLabel("No PID data")
+        self.summary_label.setObjectName("pidSummary")
+        self.global_status = QLabel("")
+        self.global_status.setObjectName("smallNote")
+        layout.addWidget(self.global_status, 1, 0, 1, 4)
+        layout.addWidget(self.summary_label, 1, 4, 1, 2)
+        return panel
 
     def _build_overview(self) -> QFrame:
         panel = QFrame()
@@ -226,9 +128,6 @@ class PidPage(QWidget):
         title.setObjectName("panelTitle")
         title_row.addWidget(title)
         title_row.addStretch(1)
-        note = QLabel("select a row")
-        note.setObjectName("smallNote")
-        title_row.addWidget(note)
         layout.addLayout(title_row)
 
         columns = QHBoxLayout()
@@ -271,28 +170,29 @@ class PidPage(QWidget):
         self.detail_title = QLabel("H0")
         self.detail_title.setObjectName("pidDetailTitle")
         heading.addWidget(self.detail_title)
-        self.detail_mapping = QLabel("UNMAPPED")
+        self.detail_mapping = QLabel("—")
         self.detail_mapping.setObjectName("pidDetailMapping")
         heading.addWidget(self.detail_mapping)
         heading.addStretch(1)
-        self.detail_status = QLabel("No PID telemetry")
+        self.detail_status = QLabel("NO DATA")
         self.detail_status.setObjectName("pidBadge")
         heading.addWidget(self.detail_status)
         layout.addLayout(heading)
 
-        self.detail_alert = QLabel("Waiting for a PID telemetry packet")
+        self.detail_alert = QLabel("No data")
         self.detail_alert.setObjectName("pidAlert")
         self.detail_alert.setWordWrap(True)
+        self.detail_alert.setVisible(False)
         layout.addWidget(self.detail_alert)
 
         plots = QSplitter(Qt.Horizontal)
         plots.setChildrenCollapsible(False)
         self.temperature_plot = PlotWidget(
-            "temperature (C)", "Waiting for PID telemetry",
+            "Temperature (C)", "No data", hover_label="C",
             y_range=(-150.0, 150.0), min_y_range=5.0, monitor_mode=True,
         )
         self.output_plot = PlotWidget(
-            "output / duty (permille)", "Waiting for PID telemetry",
+            "Duty (‰)", "No data", hover_label="‰",
             y_range=(0.0, 20.0), min_y_range=5.0, monitor_mode=True,
         )
         self.temperature_plot.setMinimumHeight(215)
@@ -303,21 +203,23 @@ class PidPage(QWidget):
         plots.setStretchFactor(1, 1)
         layout.addWidget(plots)
 
-        average_title = QLabel("ALL HEATERS AVERAGE")
+        average_title = QLabel("HEATER AVERAGES")
         average_title.setObjectName("panelTitle")
         layout.addWidget(average_title)
         average_plots = QSplitter(Qt.Horizontal)
         average_plots.setChildrenCollapsible(False)
         self.average_temperature_plot = PlotWidget(
-            "average temperature (C)",
-            "Waiting for PID telemetry",
+            "Temperature (C)",
+            "No data",
+            hover_label="C",
             y_range=(-150.0, 150.0),
             min_y_range=5.0,
             monitor_mode=True,
         )
         self.average_duty_plot = PlotWidget(
-            "average duty (permille)",
-            "Waiting for PID telemetry",
+            "Duty (‰)",
+            "No data",
+            hover_label="‰",
             y_range=(0.0, 20.0),
             min_y_range=5.0,
             monitor_mode=True,
@@ -355,7 +257,7 @@ class PidPage(QWidget):
         panel.setObjectName("pidControls")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(10, 8, 10, 8)
-        title = QLabel("CONTROL SELECTED HEATER")
+        title = QLabel("CONTROLS")
         title.setObjectName("panelTitle")
         layout.addWidget(title)
 
@@ -372,21 +274,21 @@ class PidPage(QWidget):
         self.manual_spin.setSuffix(" / 1000")
 
         controls = (
-            ("Target", self.target_spin, "Apply", self._apply_target),
-            ("Kp", self.kp_spin, "Apply", self._apply_kp),
-            ("Ki", self.ki_spin, "Apply", self._apply_ki),
-            ("Kd", self.kd_spin, "Apply", self._apply_kd),
-            ("Manual duty", self.manual_spin, "Apply manual", self._apply_manual),
+            ("Target", self.target_spin, "Set", self._apply_target),
+            ("Kp", self.kp_spin, "Set", self._apply_kp),
+            ("Ki", self.ki_spin, "Set", self._apply_ki),
+            ("Kd", self.kd_spin, "Set", self._apply_kd),
+            ("Manual duty", self.manual_spin, "Set", self._apply_manual),
         )
         for row, (label_text, widget, button_text, callback) in enumerate(controls):
             grid.addWidget(QLabel(label_text), row, 0)
             grid.addWidget(widget, row, 1)
             grid.addWidget(self._button(button_text, callback), row, 2)
 
-        self.return_button = self._button("Return to PID", self._return_pid)
+        self.return_button = self._button("Enable PID", self._return_pid)
         grid.addWidget(self.return_button, len(controls), 2)
         layout.addLayout(grid)
-        self.command_status = QLabel("No command sent")
+        self.command_status = QLabel("—")
         self.command_status.setObjectName("smallNote")
         layout.addWidget(self.command_status)
         return panel
@@ -430,6 +332,34 @@ class PidPage(QWidget):
     def _return_pid(self) -> None:
         self.return_pid_requested.emit(self.selected_heater)
 
+    def _toggle_all_pid(self) -> None:
+        activate = not self._all_pid_active()
+        if activate:
+            heater_ids = self.mapped_heater_ids()
+            if not heater_ids:
+                self.set_command_status("cannot activate PID: no mapped heaters")
+                return
+            answer = QMessageBox.question(
+                self,
+                "Activate mapped heaters",
+                f"Apply the selected PID profile and common setpoint to "
+                f"{len(heater_ids)} mapped heater(s)?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self.all_pid_requested.emit(
+            activate,
+            self.global_target_spin.value(),
+            self.profile_combo.currentText(),
+        )
+
+    def _all_pid_active(self) -> bool:
+        return self._mapped_mask != 0 and (
+            self._latest_pid_enabled_mask & self._mapped_mask
+        ) == self._mapped_mask
+
     def set_connected(self, connected: bool) -> None:
         self._connected = connected
         self._update_enabled()
@@ -444,14 +374,27 @@ class PidPage(QWidget):
             button.setEnabled(enabled)
         for widget in (self.target_spin, self.kp_spin, self.ki_spin, self.kd_spin, self.manual_spin):
             widget.setEnabled(enabled)
+        self.global_target_spin.setEnabled(enabled and not self._global_operation_busy)
+        self.profile_combo.setEnabled(enabled and not self._global_operation_busy)
+        self.all_pid_button.setEnabled(enabled and not self._global_operation_busy)
 
     def set_command_status(self, text: str) -> None:
         self.command_status.setText(text)
+        self.global_status.setText(text)
+
+    def set_global_operation_busy(self, busy: bool) -> None:
+        self._global_operation_busy = busy
+        self._update_enabled()
+
+    def mapped_heater_ids(self) -> list[int]:
+        return [heater_id for heater_id in range(HEATER_COUNT) if self._mapped_mask & (1 << heater_id)]
 
     def update_packet(self, packet: PidTelemetryPacket) -> None:
         valid_count = 0
         enabled_count = 0
         fault_count = 0
+        self._mapped_mask = packet.mapped_mask
+        self._latest_pid_enabled_mask = packet.pid_enabled_mask
         for reading in packet.heaters:
             if not 0 <= reading.heater_id < HEATER_COUNT:
                 continue
@@ -486,29 +429,34 @@ class PidPage(QWidget):
             f"PID {enabled_count}/12   |   sensors {valid_count}/12   |   "
             f"blocked/faulted {fault_count}/12   |   packet {packet.counter}"
         )
+        if self._all_pid_active():
+            self.all_pid_button.setText("Disable PID")
+            self.global_status.setText("PID enabled on all mapped heaters")
+        else:
+            self.all_pid_button.setText("Enable PID")
         self._update_detail()
 
     def _update_detail(self) -> None:
         reading = self.readings[self.selected_heater]
         self.detail_title.setText(f"H{self.selected_heater}")
         if reading is None:
-            self.detail_mapping.setText("UNMAPPED")
-            self.detail_status.setText("WAITING")
-            self.detail_alert.setText("Waiting for PID telemetry")
+            self.detail_mapping.setText("—")
+            self.detail_status.setText("NO DATA")
+            self.detail_alert.setVisible(False)
             return
 
         sensor = "UNMAPPED"
         if reading.sensor_mapped and reading.sensor_id < len(SENSOR_NAMES):
             sensor = SENSOR_NAMES[reading.sensor_id]
         self.detail_mapping.setText(f"SENSOR {sensor}")
+        self.detail_alert.setVisible(True)
         self.detail_status.setText(reading.result_name.upper())
         self.detail_status.setProperty("state", "fault" if reading.result >= 7 else "active" if reading.pid_enabled else "blocked")
         self.detail_status.style().unpolish(self.detail_status)
         self.detail_status.style().polish(self.detail_status)
         self.detail_alert.setText(
-            f"Mode: {'PID' if reading.pid_enabled else 'MANUAL' if reading.manual else 'OFF'}  |  "
-            f"Target: {reading.target_c:.3f} C  |  Duty: {reading.duty_permille} / 1000  |  "
-            f"Result: {reading.result_name}"
+            f"{'PID' if reading.pid_enabled else 'MANUAL' if reading.manual else 'OFF'}  |  "
+            f"Target {reading.target_c:.3f} C  |  Duty {reading.duty_permille}‰"
         )
         self.term_labels["P"].setText(f"{reading.proportional_term:.3f}")
         self.term_labels["I"].setText(f"{reading.integral_term:.3f}")

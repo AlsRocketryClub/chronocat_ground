@@ -22,11 +22,14 @@ from chronocat_ground.protocol import (
     heater_pid_averages,
     decode_heater_gain,
     decode_heater_target_c,
+    decode_float32_args,
     geiger_error_names,
     parse_telemetry_packet,
     telemetry_health_name,
     build_command,
     parse_command_response,
+    PID_FLAG_RESERVED_3,
+    PID_RESULT_NAMES,
     COMMAND_HEATER_SET_TARGET,
     COMMAND_HEATER_SET_KP,
     COMMAND_HEATER_SET_KI,
@@ -35,8 +38,10 @@ from chronocat_ground.protocol import (
     COMMAND_HEATER_RETURN_TO_PID,
     COMMAND_HEATER_ALL_ON,
     COMMAND_HEATER_ALL_OFF,
+    COMMAND_GEIGER_READ_XDER,
 )
 from chronocat_ground.telemetry_cli import build_parser
+from chronocat_ground.heater_safety import HEATER_SENSOR_IDS
 from chronocat_ground.telemetry_csv import (
     CSV_MODE_GEIGER_ONLY,
     GEIGER_ONLY_CSV_FIELDS,
@@ -68,7 +73,12 @@ def geiger_record(counter_id: int, event_id: int, dose_rate: float) -> bytes:
     )
 
 
-def telemetry_packet(version: int, records: list[bytes]) -> bytes:
+def telemetry_packet(
+    version: int,
+    records: list[bytes],
+    adc_words: tuple[int, ...] | None = None,
+    adc_valid_mask: int = 0x0001,
+) -> bytes:
     size = TELEMETRY_PACKET_SIZE_V1 if version == 1 else TELEMETRY_PACKET_SIZE_V2
     prefix = bytearray(b"CCTM")
     prefix.extend((version, 1))
@@ -76,8 +86,10 @@ def telemetry_packet(version: int, records: list[bytes]) -> bytes:
     prefix.append(0)
     prefix.extend(struct.pack(">H", 0x0003))
     prefix.extend(struct.pack(">13h", *range(-6, 7)))
-    prefix.extend(struct.pack(">H", 0x0001))
-    prefix.extend(struct.pack(">12I", *range(12)))
+    prefix.extend(struct.pack(">H", adc_valid_mask))
+    prefix.extend(
+        struct.pack(">12I", *(range(12) if adc_words is None else adc_words))
+    )
     return bytes(prefix) + b"".join(records)
 
 
@@ -111,9 +123,15 @@ def pid_telemetry_packet() -> bytes:
     return bytes(packet)
 
 
-def combined_telemetry_packet() -> bytes:
+def combined_telemetry_packet(
+    adc_words: tuple[int, ...] | None = None,
+    adc_valid_mask: int = 0x0001,
+) -> bytes:
     standard = telemetry_packet(
-        2, [geiger_record(0, 300, 3.0), geiger_record(1, 301, 4.0)]
+        2,
+        [geiger_record(0, 300, 3.0), geiger_record(1, 301, 4.0)],
+        adc_words,
+        adc_valid_mask,
     )
     pid = pid_telemetry_packet()
     packet = bytearray()
@@ -126,6 +144,22 @@ def combined_telemetry_packet() -> bytes:
 
 
 class TelemetryProtocolTests(unittest.TestCase):
+    def test_decodes_xder_float_from_reply_words(self) -> None:
+        bits = struct.unpack(">I", struct.pack(">f", 1.25))[0]
+        value = decode_float32_args(bits >> 16, bits & 0xFFFF)
+
+        self.assertAlmostEqual(value, 1.25)
+        self.assertEqual(COMMAND_GEIGER_READ_XDER, 0x50)
+        self.assertEqual(build_command(COMMAND_GEIGER_READ_XDER, 1, 0), b"\x50\x00\x01\x00\x00")
+
+    def test_rejects_non_finite_xder_float(self) -> None:
+        with self.assertRaises(ValueError):
+            decode_float32_args(0x7F80, 0x0000)
+
+    def test_heater_temperature_mapping_uses_both_boards(self) -> None:
+        self.assertEqual(HEATER_SENSOR_IDS[:6], (3, 4, 5, 0, 1, 2))
+        self.assertEqual(HEATER_SENSOR_IDS[6:], (9, 10, 11, 6, 7, 8))
+
     def test_parses_combined_telemetry_packet(self) -> None:
         packet = parse_telemetry_packet(combined_telemetry_packet())
 
@@ -133,6 +167,22 @@ class TelemetryProtocolTests(unittest.TestCase):
         self.assertEqual(packet.pid.counter, 99)
         self.assertEqual(packet.pid.heaters[0].duty_permille, 42)
         self.assertEqual(packet.standard.geiger_reading(1).event_id, 301)
+
+    def test_parses_all_adc_slots_and_validity_bits(self) -> None:
+        words = tuple(((0x120000 + slot) << 8) | (slot % 3) for slot in range(12))
+        packet = parse_telemetry_packet(
+            combined_telemetry_packet(words, 0x0FFF)
+        ).standard
+
+        self.assertEqual(packet.os_adc_valid_mask, 0x0FFF)
+        self.assertEqual(len(packet.ad7177_readings), 12)
+        for slot, reading in enumerate(packet.ad7177_readings):
+            self.assertEqual(reading.slot, slot)
+            self.assertEqual(reading.adc_index, slot // 3)
+            self.assertEqual(reading.channel_index, slot % 3)
+            self.assertEqual(reading.raw24, 0x120000 + slot)
+            self.assertEqual(reading.status_channel, slot % 3)
+            self.assertTrue(packet.os_adc_valid(slot))
 
     def test_parses_pid_telemetry_for_all_heaters(self) -> None:
         packet = parse_telemetry_packet(pid_telemetry_packet())
@@ -143,6 +193,11 @@ class TelemetryProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(packet.heaters[0].kp, 10.0)
         self.assertEqual(packet.heaters[1].sensor_id, 0xFF)
         self.assertEqual(packet.heaters[1].result_name, "disabled")
+
+    def test_removed_characterization_values_remain_reserved(self) -> None:
+        self.assertEqual(PID_FLAG_RESERVED_3, 1 << 3)
+        self.assertEqual(PID_RESULT_NAMES[4], "reserved")
+        self.assertEqual(PID_RESULT_NAMES[5], "unmapped sensor")
 
     def test_calculates_heater_temperature_and_duty_averages(self) -> None:
         packet = parse_telemetry_packet(pid_telemetry_packet())

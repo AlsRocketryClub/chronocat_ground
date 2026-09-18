@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from datetime import datetime
 import time
 
-from PySide6.QtCore import QSettings, QTimer
+from PySide6.QtCore import QSettings, QTimer, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QLabel,
     QMainWindow,
     QPushButton,
     QWidget,
@@ -17,6 +18,7 @@ from .command_client import CommandClient
 from .command_dispatcher import CommandDispatcher, CommandRequest
 from .protocol import (
     COMMAND_GEIGER_CLEAR_HISTORY,
+    COMMAND_GEIGER_READ_XDER,
     COMMAND_GEIGER_RESET_ACCUMULATED_DOSE,
     COMMAND_GEIGER_RESET_STATS,
     COMMAND_HEATER_SET_KP,
@@ -25,7 +27,6 @@ from .protocol import (
     COMMAND_HEATER_SET_TARGET,
     COMMAND_HEATER_SET_MANUAL_DUTY,
     COMMAND_HEATER_RETURN_TO_PID,
-    COMMAND_HEATER_ALL_ON,
     COMMAND_HEATER_ALL_OFF,
     DEFAULT_TELEMETRY_PORT,
     CommandResponse,
@@ -36,6 +37,7 @@ from .protocol import (
     ad7177_status_names,
     command_name,
     decode_heater_gain,
+    decode_float32_args,
     decode_heater_target_c,
     encode_heater_gain,
     encode_heater_target_c,
@@ -49,9 +51,8 @@ from .protocol import (
     telemetry_value_name,
     tcp_status_name,
 )
-from .heater_page import HeaterControlPage
-from .heater_safety import all_heaters_safe
 from .pid_page import PidPage
+from .pid_profiles import PidProfile, profile_by_name
 from .telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY, TelemetryCsvLogger
 from .telemetry_db import TelemetryDb
 from .telemetry_history import TelemetryHistory
@@ -65,7 +66,6 @@ VIEW_MONITORING = "MONITORING"
 VIEW_RADIATION = "RADIATION"
 VIEW_SAMPLES = "SAMPLES"
 VIEW_TEMPERATURE = "HEATING"
-VIEW_HEATER_TEST = "HEATER TEST"
 VIEW_HEALTH = "HEALTH"
 VIEW_SETTINGS = "SETTINGS"
 
@@ -80,13 +80,21 @@ class PendingHeaterCommand:
     value_kind: str
     expected_arg1: int = 0
     heater_id: int | None = None
-    bulk_duty: int | None = None
+
+
+@dataclass
+class PendingPidOperation:
+    heater_ids: tuple[int, ...]
+    target: float
+    profile: PidProfile
+    heater_index: int = 0
+    step: int = 0
 
 
 class MainWindow(MainWindowPagesMixin, QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("chronocat_ground")
+        self.setWindowTitle("CHRONO-CAT Ground Station")
         self.resize(1180, 760)
         self.setMinimumSize(760, 520)
         self._closing = False
@@ -108,10 +116,10 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.plot_dialog_refs: dict[str, dict[str, object]] = {}
         self.csv_logger: TelemetryCsvLogger | None = None
         self.pending_heater_command: PendingHeaterCommand | None = None
-        self.heater_temperature_safe = False
-        self.heater_page: HeaterControlPage | None = None
+        self.pending_pid_operation: PendingPidOperation | None = None
         self.pid_page: PidPage | None = None
         self.geiger_2_widgets: list[QWidget] = []
+        self.geiger_xder_values: dict[int, float | None] = {0: None, 1: None}
 
         self._settings = QSettings("chronocat", "chronocat_ground")
         self.geiger_test_mode = self._settings.value("geiger_test_mode", False, type=bool)
@@ -125,6 +133,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.age_timer.start(1000)
 
         self.setCentralWidget(self.build_ui())
+        self._enable_text_selection()
         self.apply_style()
 
         self.geiger_2_widgets = [
@@ -154,6 +163,11 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
     def apply_style(self) -> None:
         QApplication.instance().setStyleSheet(APPLICATION_STYLE)
+
+    def _enable_text_selection(self) -> None:
+        flags = Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        for label in self.findChildren(QLabel):
+            label.setTextInteractionFlags(flags)
 
     def toggle_connection(self) -> None:
         if self.client.connected:
@@ -205,7 +219,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self.log(f"CSV logging failed: {exc}")
             return
 
-        self.csv_log_button.setText("Stop CSV Log")
+        self.csv_log_button.setText("Stop CSV logging")
         self.csv_mode_combo.setEnabled(False)
         self.csv_log_status.setText(
             f"CSV ({self.csv_mode_combo.currentText()}): {self.csv_logger.path.name} (0)"
@@ -223,20 +237,20 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.csv_logger.stop()
         self.csv_logger = None
         self.csv_mode_combo.setEnabled(True)
-        self.csv_log_button.setText("Start CSV Log")
+        self.csv_log_button.setText("Start CSV logging")
         self.csv_log_status.setText(f"CSV logging stopped ({packet_count})")
         self.log(f"CSV logging stopped: {path} ({packet_count} packet(s))")
 
     def update_connection_state(self) -> None:
         connected = self.client.connected
         command_in_progress = self.command_dispatcher.busy
-        self.connection_label.setText(
-            "Connecting" if self.connection_pending else ("Connected" if connected else "Disconnected")
+        connection_status = "CONNECTING" if self.connection_pending else (
+            "CONNECTED" if connected else "DISCONNECTED"
         )
-        if self.connection_label.property("connected") != connected:
-            self.connection_label.setProperty("connected", connected)
-            self.connection_label.style().unpolish(self.connection_label)
-            self.connection_label.style().polish(self.connection_label)
+        connection_state = "connecting" if self.connection_pending else (
+            "connected" if connected else "disconnected"
+        )
+        self.connection_indicator.set_status(connection_status, connection_state)
         self.connect_button.setText("Disconnect" if connected else "Connect")
         self.connect_button.setEnabled(not command_in_progress)
         self.host_input.setEnabled(not command_in_progress)
@@ -255,9 +269,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         ):
             button.setEnabled(connected and not command_in_progress)
 
-        if self.heater_page is not None:
-            self.heater_page.set_connected(connected)
-            self.heater_page.set_command_busy(command_in_progress)
         if self.pid_page is not None:
             self.pid_page.set_connected(connected)
             self.pid_page.set_command_busy(command_in_progress)
@@ -278,8 +289,28 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
         self.command_dispatcher.submit(CommandRequest(command, value, arg2, timeout))
 
-    def command_completed(self, _request: CommandRequest, response: CommandResponse) -> None:
+    def command_completed(self, request: CommandRequest, response: CommandResponse) -> None:
         self.update_connection_state()
+
+        if request.command == COMMAND_GEIGER_READ_XDER:
+            detector_id = request.arg1
+            if response.status != 0:
+                self.geiger_xder_values[detector_id] = None
+                self.set_geiger_xder_display(
+                    detector_id, f"failed: {status_name(response.status)}"
+                )
+            else:
+                try:
+                    value = decode_float32_args(response.arg1, response.arg2)
+                except ValueError as exc:
+                    self.geiger_xder_values[detector_id] = None
+                    self.set_geiger_xder_display(detector_id, f"invalid: {exc}")
+                else:
+                    self.geiger_xder_values[detector_id] = value
+                    self.set_geiger_xder_display(detector_id, f"{value:.9g}")
+                    self.log(f"Geiger {detector_id + 1} xDER: {value:.9g}")
+            self.log_response(response)
+            return
 
         if (
             self.pending_heater_command is not None
@@ -291,22 +322,26 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             value_kind = pending.value_kind
             expected_arg1 = pending.expected_arg1
             heater_id = pending.heater_id
-            bulk_duty = pending.bulk_duty
             self.pending_heater_command = None
 
+            if value_kind == "bulk_pid":
+                operation = self.pending_pid_operation
+                response_matches = response.status == 0 and response.arg1 == expected_arg1
+                if response_matches and operation is not None and operation.step < 4:
+                    response_matches = response.arg2 == encoded_value
+                if response_matches:
+                    self.log_response(response)
+                    self._continue_pid_operation()
+                else:
+                    self._fail_pid_operation(
+                        f"H{heater_id} {param_name} rejected: {status_name(response.status)}"
+                    )
+                    self.log_response(response)
+                return
+
             if response.status == 0 and response.arg1 == expected_arg1:
-                if value_kind == "manual_row" and heater_id is not None:
-                    if self.heater_page is not None:
-                        self.heater_page.apply_manual_response(heater_id, response)
-                elif value_kind == "bulk_on" or value_kind == "bulk_off":
-                    if self.heater_page is not None:
-                        self.heater_page.apply_bulk_response(bulk_duty, response)
-                    if self.pid_page is not None:
-                        self.pid_page.set_command_status(
-                            "all heaters off confirmed"
-                            if bulk_duty is None
-                            else f"all heaters on at {response.arg2}/1000 confirmed"
-                        )
+                if value_kind == "bulk_off" and self.pid_page is not None:
+                    self.pid_page.set_command_status("all mapped heaters off confirmed")
                 elif value_kind == "target" and self.pid_page is not None:
                     decoded = decode_heater_target_c(response.arg2)
                     if response.arg2 != encoded_value:
@@ -331,33 +366,26 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                     self.pid_page.set_command_status("PID mode active")
                 self.log_response(response)
             else:
-                if value_kind == "manual_row" and heater_id is not None:
-                    if self.heater_page is not None:
-                        self.heater_page.apply_manual_response(heater_id, response)
-                elif value_kind in ("bulk_on", "bulk_off"):
-                    if self.heater_page is not None:
-                        self.heater_page.apply_bulk_response(bulk_duty, response)
-                    if self.pid_page is not None:
-                        self.pid_page.set_command_status(
-                            f"rejected: {status_name(response.status)}"
-                        )
-                elif self.pid_page is not None:
+                if self.pid_page is not None:
                     self.pid_page.set_command_status(f"rejected: {status_name(response.status)}")
                 self.log(f"Heater {param_name} rejected: {status_name(response.status)}")
         else:
             self.pending_heater_command = None
             self.log_response(response)
 
-    def command_failed(self, _request: CommandRequest, message: str) -> None:
+    def command_failed(self, request: CommandRequest, message: str) -> None:
+        if request.command == COMMAND_GEIGER_READ_XDER:
+            self.geiger_xder_values[request.arg1] = None
+            self.set_geiger_xder_display(request.arg1, f"failed: {message}")
+            self.log(f"Geiger {request.arg1 + 1} xDER command failed: {message}")
+        if self.pending_pid_operation is not None:
+            self._fail_pid_operation(f"PID operation failed: {message}", disconnect=True)
+            return
         if self.pending_heater_command is not None:
             pending = self.pending_heater_command
             param_name = pending.param_name
             heater_id = pending.heater_id
             self.pending_heater_command = None
-            if self.heater_page is not None and (
-                heater_id is not None or param_name.startswith("all heaters")
-            ):
-                self.heater_page.set_command_error(heater_id, message)
             if self.pid_page is not None:
                 self.pid_page.set_command_status(f"failed: {message}")
             self.log(f"Heater {param_name} command failed: {message}")
@@ -366,52 +394,23 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.client.disconnect()
         self.update_connection_state()
 
+    def read_geiger_xder(self, detector_id: int) -> None:
+        if detector_id not in self.geiger_xder_values:
+            return
+        self.log(f"Reading Geiger {detector_id + 1} xDER")
+        self.send_command(COMMAND_GEIGER_READ_XDER, detector_id, 0, timeout=2.0)
+
+    def set_geiger_xder_display(self, detector_id: int, value: str) -> None:
+        label = self.geiger_xder_labels.get(detector_id)
+        if label is not None:
+            label.setText(value)
+
     def send_geiger_command(self, command: int, action: str, timeout: float | None = None) -> None:
         self.log(f"Sending Geiger command: {action}")
         self.send_command(command, 0, 0, timeout=timeout)
 
-    def set_manual_heater_duty(self, heater_id: int, duty_permille: int) -> None:
-        if not self.client.connected or self.command_dispatcher.busy:
-            return
-        if self.heater_page is None:
-            return
-        self.pending_heater_command = PendingHeaterCommand(
-            command=COMMAND_HEATER_SET_MANUAL_DUTY,
-            param_name=f"H{heater_id} manual duty",
-            encoded_value=duty_permille,
-            value_kind="manual_row",
-            expected_arg1=heater_id,
-            heater_id=heater_id,
-        )
-        self.heater_page.set_row_pending(heater_id, duty_permille)
-        self.log(f"Setting H{heater_id} manual duty to {duty_permille}/1000")
-        self.send_command(COMMAND_HEATER_SET_MANUAL_DUTY, heater_id, duty_permille)
-
-    def turn_all_heaters_on(self, duty_permille: int) -> None:
-        if not self.client.connected or self.command_dispatcher.busy:
-            return
-        if self.heater_page is None:
-            return
-        if not self.heater_temperature_safe:
-            self.heater_page.set_command_error(
-                None, "12 valid temperature sensors below 65 C required"
-            )
-            return
-        self.pending_heater_command = PendingHeaterCommand(
-            command=COMMAND_HEATER_ALL_ON,
-            param_name="all heaters on",
-            encoded_value=duty_permille,
-            value_kind="bulk_on",
-            bulk_duty=duty_permille,
-        )
-        self.heater_page.set_bulk_pending(duty_permille)
-        self.log(f"Turning all heaters on at {duty_permille}/1000")
-        self.send_command(COMMAND_HEATER_ALL_ON, 0, duty_permille)
-
     def turn_all_heaters_off(self) -> None:
         if not self.client.connected or self.command_dispatcher.busy:
-            return
-        if self.heater_page is None:
             return
         self.pending_heater_command = PendingHeaterCommand(
             command=COMMAND_HEATER_ALL_OFF,
@@ -419,11 +418,86 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             encoded_value=0,
             value_kind="bulk_off",
         )
-        self.heater_page.set_bulk_pending(None)
         if self.pid_page is not None:
             self.pid_page.set_command_status("sending all-off...")
         self.log("Turning all heaters off")
         self.send_command(COMMAND_HEATER_ALL_OFF, 0, 0)
+
+    def set_all_pid(self, activate: bool, target: float, profile_name: str) -> None:
+        if not self.client.connected or self.command_dispatcher.busy or self.pid_page is None:
+            return
+        if not activate:
+            self.turn_all_heaters_off()
+            return
+
+        heater_ids = self.pid_page.mapped_heater_ids()
+        if not heater_ids:
+            self.pid_page.set_command_status("cannot activate PID: no mapped heaters")
+            return
+        operation = PendingPidOperation(
+            heater_ids=tuple(heater_ids),
+            target=target,
+            profile=profile_by_name(profile_name),
+        )
+        self.pending_pid_operation = operation
+        self.pid_page.set_global_operation_busy(True)
+        self.pid_page.set_command_status(
+            f"applying {operation.profile.name} to {len(operation.heater_ids)} mapped heater(s)..."
+        )
+        self._send_next_pid_operation_step()
+
+    def _send_next_pid_operation_step(self) -> None:
+        operation = self.pending_pid_operation
+        if operation is None or self.pid_page is None:
+            return
+        if operation.heater_index >= len(operation.heater_ids):
+            self.pending_pid_operation = None
+            self.pid_page.set_global_operation_busy(False)
+            self.pid_page.set_command_status("all mapped heaters PID active")
+            return
+
+        heater_id = operation.heater_ids[operation.heater_index]
+        gains = operation.profile.gains_for(heater_id)
+        steps = (
+            (COMMAND_HEATER_SET_TARGET, "target", encode_heater_target_c(operation.target)),
+            (COMMAND_HEATER_SET_KP, "kp", encode_heater_gain(gains.kp)),
+            (COMMAND_HEATER_SET_KI, "ki", encode_heater_gain(gains.ki)),
+            (COMMAND_HEATER_SET_KD, "kd", encode_heater_gain(gains.kd)),
+            (COMMAND_HEATER_RETURN_TO_PID, "PID mode", 0),
+        )
+        command, name, encoded_value = steps[operation.step]
+        self.pending_heater_command = PendingHeaterCommand(
+            command=command,
+            param_name=f"H{heater_id} {name}",
+            encoded_value=encoded_value,
+            value_kind="bulk_pid",
+            expected_arg1=heater_id,
+            heater_id=heater_id,
+        )
+        self.send_command(command, heater_id, encoded_value)
+
+    def _continue_pid_operation(self) -> None:
+        operation = self.pending_pid_operation
+        if operation is None:
+            return
+        operation.step += 1
+        if operation.step == 5:
+            operation.step = 0
+            operation.heater_index += 1
+        self._send_next_pid_operation_step()
+
+    def _fail_pid_operation(self, message: str, disconnect: bool = False) -> None:
+        self.pending_heater_command = None
+        self.pending_pid_operation = None
+        if self.pid_page is not None:
+            self.pid_page.set_global_operation_busy(False)
+            self.pid_page.set_command_status(message)
+        self.log(message)
+        if disconnect:
+            self.client.disconnect()
+            self.update_connection_state()
+        elif self.client.connected and not self.command_dispatcher.busy:
+            self.turn_all_heaters_off()
 
     def set_pid_target(self, heater_id: int, value: float) -> None:
         if self.pid_page is None:
@@ -674,9 +748,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             )
             self.telemetry_history.database_error = None
         self.update_sd_log_status(packet.flags)
-        self.heater_temperature_safe = all_heaters_safe(packet)
-        if self.heater_page is not None:
-            self.heater_page.set_temperature_safety(self.heater_temperature_safe)
         self.set_telemetry_status("receiving")
 
         tcp_state = tcp_status_name(packet.tcp_status)
@@ -722,7 +793,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                 self.radiation_2_errors_card,
             )
         self.timestamp_label.setText(
-            f"RECEPTION TIMESTAMP: {datetime.fromtimestamp(received_wall).strftime('%H:%M:%S')}"
+            f"Received {datetime.fromtimestamp(received_wall).strftime('%H:%M:%S')}"
         )
 
         for counter_id, points in enumerate(history.geiger_points):
@@ -747,12 +818,17 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                 self.sample_cards[reading.slot].set_reading(
                     f"0x{reading.raw24:06x} ({reading.raw24})",
                     f"0x{reading.status:02x} ({ad7177_status_names(reading.status)})",
+                    packet.os_adc_valid(reading.slot),
                 )
             ch = reading.slot % 3
             dev_off = reading.slot // 3
             self.samples_summary_table.set_value(
                 f"{materials[ch]} {device_types[dev_off]}",
-                f"0x{reading.raw24:06x} ({reading.raw24})",
+                (
+                    f"0x{reading.raw24:06x} ({reading.raw24})"
+                    if packet.os_adc_valid(reading.slot)
+                    else f"INVALID/STALE (last 0x{reading.raw24:06x})"
+                ),
             )
         if history.adc_average_points:
             self.monitoring_adc_average_plot.set_points(history.adc_average_points)
@@ -795,7 +871,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.telemetry_table.set_value("Counter", str(packet.counter))
         self.telemetry_table.set_value("Flags", flags)
         self.telemetry_table.set_value("Temperature Valid Mask", f"0x{packet.temperature_valid_mask:04x}")
-        self.telemetry_table.set_value("ADC Legacy Valid Mask", f"0x{packet.os_adc_valid_mask:04x}")
+        self.telemetry_table.set_value("ADC Valid Mask", f"0x{packet.os_adc_valid_mask:04x}")
         self.telemetry_table.set_value("Source", source)
         self.telemetry_table.set_value("Last Seen", "now")
 
@@ -808,7 +884,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.packet_table.set_value("Health Code", health)
         self.packet_table.set_value("Temperature Valid Mask", f"0x{packet.temperature_valid_mask:04x}")
         self.packet_table.set_value("Temperature Sensors", temp_summary)
-        self.packet_table.set_value("ADC Legacy Valid Mask", f"0x{packet.os_adc_valid_mask:04x}")
+        self.packet_table.set_value("ADC Valid Mask", f"0x{packet.os_adc_valid_mask:04x}")
         self.packet_table.set_value("AD7177 Readings", adc_summary)
         self.update_packet_geiger_fields(1, geiger_1)
         if not self.geiger_test_mode:
@@ -843,55 +919,40 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
     def update_sd_log_status(self, flags: int) -> None:
         if (flags & TELEMETRY_FLAG_SD_LOG_ERROR) != 0:
-            text = "SD: ERROR"
+            text = "ERROR"
             state = "error"
             tooltip = "Firmware SD temperature logging has failed"
         elif (flags & TELEMETRY_FLAG_SD_LOG_ACTIVE) != 0:
-            text = "SD: LOGGING"
+            text = "LOGGING"
             state = "active"
             tooltip = "Firmware SD temperature logging is active"
         else:
-            text = "SD: OFF"
+            text = "OFF"
             state = "off"
             tooltip = "Firmware SD temperature logging is not active"
-        self.sd_log_label.setText(text)
-        self.sd_log_label.setToolTip(tooltip)
-        if self.sd_log_label.property("sd_status") != state:
-            self.sd_log_label.setProperty("sd_status", state)
-            self.sd_log_label.style().unpolish(self.sd_log_label)
-            self.sd_log_label.style().polish(self.sd_log_label)
+        self.sd_log_indicator.set_status(text, state, tooltip)
 
     def set_telemetry_status(self, status: str) -> None:
         labels = {
-            "waiting": ("Telemetry: WAITING", "No telemetry packet has been received"),
-            "receiving": ("Telemetry: RECEIVING", "Telemetry is arriving"),
-            "stale": ("Telemetry: STALE", "No telemetry packet has arrived recently"),
-            "error": ("Telemetry: ERROR", "Telemetry receiver reported an error"),
+            "waiting": ("WAITING", "No telemetry received"),
+            "receiving": ("RECEIVING", "Telemetry is arriving"),
+            "stale": ("STALE", "No telemetry packet has arrived recently"),
+            "error": ("ERROR", "Telemetry receiver reported an error"),
         }
         text, tooltip = labels.get(status, labels["error"])
-        self.telemetry_label.setText(text)
-        self.telemetry_label.setToolTip(tooltip)
-        if self.telemetry_label.property("telemetry_status") != status:
-            self.telemetry_label.setProperty("telemetry_status", status)
-            self.telemetry_label.style().unpolish(self.telemetry_label)
-            self.telemetry_label.style().polish(self.telemetry_label)
-
-        active = status == "receiving"
-        self.telemetry_state.setText("Telemetry receiving" if active else text)
-        if self.telemetry_state.property("active") != active:
-            self.telemetry_state.setProperty("active", active)
-            self.telemetry_state.style().unpolish(self.telemetry_state)
-            self.telemetry_state.style().polish(self.telemetry_state)
+        self.telemetry_indicator.set_status(text, status, tooltip)
 
     def format_temperature_summary(self, packet: TelemetryPacket) -> str:
         valid_count = sum(1 for index in range(len(packet.temperatures)) if packet.temperature_valid(index))
         return f"{valid_count}/{len(packet.temperatures)} valid"
 
     def format_adc_summary(self, packet: TelemetryPacket) -> str:
-        active_count = sum(1 for reading in packet.ad7177_readings if reading.word != 0)
+        active_count = sum(
+            1 for reading in packet.ad7177_readings if packet.os_adc_valid(reading.slot)
+        )
         first = packet.ad7177_reading(0)
         return (
-            f"{active_count}/{len(packet.os_adc_readings)} nonzero; "
+            f"{active_count}/{len(packet.os_adc_readings)} valid; "
             f"ADC0 CH0 raw24=0x{first.raw24:06x} status=0x{first.status:02x}"
         )
 
@@ -911,11 +972,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
         active = age < 2.5
         self.set_telemetry_status("receiving" if active else "stale")
-        if not active:
-            self.heater_temperature_safe = False
-            if self.heater_page is not None:
-                self.heater_page.set_temperature_safety(False)
-
     def log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_view.appendPlainText(f"[{timestamp}] {message}")

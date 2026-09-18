@@ -1,0 +1,167 @@
+import struct
+
+
+DEFAULT_DEVICE_HOST = "192.168.1.50"
+DEFAULT_COMMAND_PORT = 5006
+DEFAULT_TELEMETRY_PORT = 5005
+
+TELEMETRY_MAGIC = b"CCTM"
+TELEMETRY_VERSION_V1 = 1
+TELEMETRY_VERSION_V2 = 2
+TELEMETRY_VERSION_V3 = 3
+TELEMETRY_VERSION = TELEMETRY_VERSION_V3
+TELEMETRY_MESSAGE_TYPE = 1
+PID_TELEMETRY_MESSAGE_TYPE = 2
+COMBINED_TELEMETRY_MESSAGE_TYPE = 3
+TELEMETRY_PACKET_SIZE_V1 = 131
+TELEMETRY_PACKET_SIZE_V2 = 165
+TELEMETRY_PACKET_SIZE_V3 = 167
+TELEMETRY_PACKET_SIZE = TELEMETRY_PACKET_SIZE_V3
+PID_TELEMETRY_HEATER_COUNT = 12
+PID_TELEMETRY_RECORD_SIZE = 44
+PID_TELEMETRY_PACKET_SIZE = 560
+COMBINED_TELEMETRY_PACKET_SIZE = 707
+TELEMETRY_TEMP_COUNT = 13
+TELEMETRY_OS_ADC_COUNT = 12
+TELEMETRY_GEIGER_COUNT_V2 = 2
+AD7177_DEVICE_COUNT = 4
+AD7177_CHANNEL_COUNT = 3
+
+GEIGER_RECORD_STRUCT = struct.Struct(">BBHIdffIHHBB")
+
+AD7177_STATUS_RDY = 1 << 7
+AD7177_STATUS_ADC_ERROR = 1 << 6
+AD7177_STATUS_CRC_ERROR = 1 << 5
+AD7177_STATUS_REG_ERROR = 1 << 4
+AD7177_STATUS_CHANNEL_MASK = 0x03
+
+TELEMETRY_FLAG_ENABLED = 1 << 0
+TELEMETRY_FLAG_TCP_LISTENING = 1 << 1
+TELEMETRY_FLAG_SD_LOG_ACTIVE = 1 << 2
+TELEMETRY_FLAG_SD_LOG_ERROR = 1 << 3
+
+TELEMETRY_HEALTH_NAMES = {
+    0: "ok",
+    1: "tcp not listening",
+    2: "temperature sensor error",
+}
+
+GEIGER_ERROR_NAMES = {
+    0: "ok",
+    1: "HV error",
+    2: "GM counter error",
+    4: "technological parameters range error",
+    8: "technological parameters initialization error",
+    16: "INFO-flash writing error",
+    32: "history writing error",
+    64: "calibration: no statistics reset",
+    128: "calibration: no background deduction",
+}
+
+PID_SENSOR_UNMAPPED = 0xFF
+PID_FLAG_ENABLED = 1 << 0
+PID_FLAG_MANUAL = 1 << 1
+PID_FLAG_ALL_MANUAL = 1 << 2
+PID_FLAG_RESERVED_3 = 1 << 3
+PID_FLAG_INITIALIZED = 1 << 4
+PID_FLAG_SENSOR_MAPPED = 1 << 5
+PID_FLAG_SENSOR_VALID = 1 << 6
+PID_FLAG_OVERTEMPERATURE = 1 << 7
+PID_FLAG_HEATER_INITIALIZED = 1 << 8
+PID_FLAG_OUTPUT_SATURATED = 1 << 9
+
+PID_RESULT_NAMES = {
+    0: "disabled",
+    1: "ok",
+    2: "manual",
+    3: "all manual",
+    4: "reserved",
+    5: "unmapped sensor",
+    6: "invalid sensor",
+    7: "overtemperature",
+    8: "invalid argument",
+    9: "invalid timing",
+    10: "heater write failed",
+}
+
+COMMAND_PACKET_SIZE = 5
+RESPONSE_PACKET_SIZE = 6
+
+COMMAND_PING = 0x01
+COMMAND_TELEMETRY_SET = 0x02
+COMMAND_TELEMETRY_STATUS = 0x03
+COMMAND_GEIGER_RESET_ACCUMULATED_DOSE = 0x47
+COMMAND_GEIGER_CLEAR_HISTORY = 0x4F
+COMMAND_GEIGER_RESET_STATS = 0x58
+COMMAND_GEIGER_READ_XDER = 0x50
+
+COMMAND_HEATER_SET_TARGET = 0x10
+COMMAND_HEATER_GET_TARGET = 0x11
+COMMAND_HEATER_SET_KP = 0x12
+COMMAND_HEATER_GET_KP = 0x13
+COMMAND_HEATER_SET_KI = 0x14
+COMMAND_HEATER_GET_KI = 0x15
+COMMAND_HEATER_SET_KD = 0x16
+COMMAND_HEATER_GET_KD = 0x17
+COMMAND_HEATER_SET_MANUAL_DUTY = 0x18
+COMMAND_HEATER_RETURN_TO_PID = 0x19
+COMMAND_HEATER_GET_MANUAL_MODE = 0x1A
+COMMAND_HEATER_ALL_ON = 0x1B
+COMMAND_HEATER_ALL_OFF = 0x1C
+VALUE_OFF = 0x00
+VALUE_ON = 0x01
+
+STATUS_OK = 0x00
+STATUS_BAD_MAGIC = 0x01
+STATUS_BAD_COMMAND = 0x02
+STATUS_BAD_VALUE = 0x03
+STATUS_WRITE_FAILED = 0x04
+STATUS_GEIGER_FAILED = 0x05
+
+COMMAND_NAMES = {
+    COMMAND_PING: "ping",
+    COMMAND_TELEMETRY_SET: "telemetry set",
+    COMMAND_TELEMETRY_STATUS: "telemetry status",
+    COMMAND_GEIGER_RESET_ACCUMULATED_DOSE: "geiger reset accumulated dose",
+    COMMAND_GEIGER_CLEAR_HISTORY: "geiger clear history",
+    COMMAND_GEIGER_RESET_STATS: "geiger reset statistics",
+    COMMAND_GEIGER_READ_XDER: "geiger read xDER",
+    COMMAND_HEATER_SET_TARGET: "heater set target",
+    COMMAND_HEATER_GET_TARGET: "heater get target",
+    COMMAND_HEATER_SET_KP: "heater set Kp",
+    COMMAND_HEATER_GET_KP: "heater get Kp",
+    COMMAND_HEATER_SET_KI: "heater set Ki",
+    COMMAND_HEATER_GET_KI: "heater get Ki",
+    COMMAND_HEATER_SET_KD: "heater set Kd",
+    COMMAND_HEATER_GET_KD: "heater get Kd",
+    COMMAND_HEATER_SET_MANUAL_DUTY: "heater set manual duty",
+    COMMAND_HEATER_RETURN_TO_PID: "heater return to PID",
+    COMMAND_HEATER_GET_MANUAL_MODE: "heater get manual mode",
+    COMMAND_HEATER_ALL_ON: "all heaters on",
+    COMMAND_HEATER_ALL_OFF: "all heaters off",
+}
+
+STATUS_NAMES = {
+    STATUS_OK: "ok",
+    STATUS_BAD_MAGIC: "bad magic",
+    STATUS_BAD_COMMAND: "bad command",
+    STATUS_BAD_VALUE: "bad value",
+    STATUS_WRITE_FAILED: "write failed",
+    STATUS_GEIGER_FAILED: "geiger failed",
+}
+
+TCP_STATUS_NAMES = {
+    0: "uninit",
+    1: "tcp_new failed",
+    2: "bind failed",
+    3: "listen failed",
+    4: "listening",
+}
+
+HEATER_GAIN_SCALE = 1000.0
+HEATER_MANUAL_MAX_DUTY_PERMILLE = 20
+
+
+__all__ = [
+    name for name in globals() if name.isupper() or name == "GEIGER_RECORD_STRUCT"
+]
