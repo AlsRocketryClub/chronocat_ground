@@ -8,14 +8,12 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QHeaderView,
-    QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
-    QWidget,
 )
 
 from ..plot_widget import PlotWidget
@@ -52,6 +50,7 @@ class StatCard(QFrame):
 
         self.value_label = QLabel(value)
         self.value_label.setObjectName("kpiValue")
+        self.value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -82,7 +81,6 @@ class ValueTable(QTableWidget):
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.verticalHeader().setVisible(False)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.horizontalHeader().setStretchLastSection(True)
         for col in range(num_cols):
             self.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
@@ -104,9 +102,6 @@ class ValueTable(QTableWidget):
                         self._value_items[(label.text(), col)] = target
 
         self.resizeRowsToContents()
-        table_height = self.horizontalHeader().height() + 2 * self.frameWidth()
-        table_height += sum(self.rowHeight(row) for row in range(self.rowCount()))
-        self.setFixedHeight(table_height + 4)
 
     def set_value(self, name: str, value: str, col: int = 1) -> None:
         target = self._value_items.get((name, col))
@@ -126,58 +121,6 @@ class ValueTable(QTableWidget):
         background, foreground = colors.get(state, colors["unknown"])
         target.setBackground(QColor(background))
         target.setForeground(QColor(foreground))
-
-
-class HealthCard(QFrame):
-    """Large health summary that can reveal its detailed table on demand."""
-
-    def __init__(self, title: str) -> None:
-        super().__init__()
-        self.setObjectName("healthCard")
-        self._title = title
-        self._expanded = False
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
-
-        header = QHBoxLayout()
-        self.header_button = QPushButton()
-        self.header_button.setObjectName("healthCardHeader")
-        self.header_button.clicked.connect(self.toggle_details)
-        header.addWidget(self.header_button, 1)
-        layout.addLayout(header)
-
-        self.summary_label = QLabel("UNKNOWN")
-        self.summary_label.setObjectName("healthCardValue")
-        self.summary_label.setWordWrap(True)
-        layout.addWidget(self.summary_label)
-
-        self.detail_widget = QWidget()
-        self.detail_layout = QVBoxLayout(self.detail_widget)
-        self.detail_layout.setContentsMargins(0, 4, 0, 0)
-        self.detail_widget.setVisible(False)
-        layout.addWidget(self.detail_widget)
-        self._refresh_header()
-        self.set_status("UNKNOWN", "unknown")
-
-    def set_detail(self, widget: QWidget) -> None:
-        self.detail_layout.addWidget(widget)
-
-    def set_status(self, text: str, state: str) -> None:
-        self.summary_label.setText(text)
-        self.setProperty("state", state)
-        self.style().unpolish(self)
-        self.style().polish(self)
-
-    def toggle_details(self) -> None:
-        self._expanded = not self._expanded
-        self.detail_widget.setVisible(self._expanded)
-        self._refresh_header()
-
-    def _refresh_header(self) -> None:
-        action = "Hide details" if self._expanded else "Show details"
-        self.header_button.setText(f"{self._title}   [{action}]")
 
 
 class SampleCard(QFrame):

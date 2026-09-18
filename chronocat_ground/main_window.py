@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from datetime import datetime
 import time
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QLabel,
     QMainWindow,
     QPushButton,
 )
@@ -61,7 +62,7 @@ from .ui.styles import APPLICATION_STYLE
 from .ui.main_window_pages import MainWindowPagesMixin
 
 
-VIEW_DASHBOARD = "DASHBOARD"
+VIEW_MONITORING = "MONITORING"
 VIEW_RADIATION = "RADIATION"
 VIEW_SAMPLES = "SAMPLES"
 VIEW_TEMPERATURE = "HEATING"
@@ -128,15 +129,21 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.age_timer.start(1000)
 
         self.setCentralWidget(self.build_ui())
+        self._enable_text_selection()
         self.apply_style()
 
-        self.switch_view(VIEW_DASHBOARD)
+        self.switch_view(VIEW_MONITORING)
         self.update_connection_state()
         self.telemetry_receiver.start()
         self.log(f"Listening for UDP telemetry on port {DEFAULT_TELEMETRY_PORT}")
 
     def apply_style(self) -> None:
         QApplication.instance().setStyleSheet(APPLICATION_STYLE)
+
+    def _enable_text_selection(self) -> None:
+        flags = Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        for label in self.findChildren(QLabel):
+            label.setTextInteractionFlags(flags)
 
     def toggle_connection(self) -> None:
         if self.client.connected:
@@ -227,10 +234,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
         self.health_table.set_value("Command Connection", "Connected" if connected else "Disconnected")
         self.health_table.set_state("Command Connection", "healthy" if connected else "error")
-        self.health_cards["system"].set_status(
-            f"UPLINK {'CONNECTED' if connected else 'DISCONNECTED'}",
-            "healthy" if connected else "error",
-        )
 
         for button in (
             self.ping_button,
@@ -735,12 +738,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.tick_card.set_value(str(packet.timestamp))
         self.tcp_card.set_value(health)
         self.count_card.set_value(str(history.packet_count))
-        self.temperature_summary_card.set_value(temp_summary)
-        valid_adc_count = sum(
-            1 for reading in packet.ad7177_readings if packet.os_adc_valid(reading.slot)
-        )
-        self.adc_summary_card.set_value(f"{valid_adc_count}/{len(packet.ad7177_readings)} valid")
-        self.source_card.set_value(source)
         geiger_1 = packet.geiger_reading(0)
         geiger_2 = packet.geiger_reading(1)
         self.update_geiger_cards(
@@ -780,10 +777,11 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             ("Geiger 2", history.geiger_points[1]),
         )
         self.monitoring_geiger_plot.set_series(geiger_series)
-        self.radiation_geiger_plot.set_points(history.geiger_points[0])
-        self.radiation_geiger_2_plot.set_points(history.geiger_points[1])
-        self.radiation_plot_status.setText(f"{len(history.geiger_points[0])}/300 points")
-        self.radiation_2_plot_status.setText(f"{len(history.geiger_points[1])}/300 points")
+        self.radiation_geiger_plot.set_series(geiger_series)
+        self.radiation_plot_status.setText(
+            f"Geiger 1: {len(history.geiger_points[0])}/300   |   "
+            f"Geiger 2: {len(history.geiger_points[1])}/300 points"
+        )
 
         materials = ["TIPs-pentacene", "diF-TES-ADT", "Rubrene"]
         device_types = ["Device 1a", "Device 2a", "Device 1b", "Device 2b"]
@@ -816,14 +814,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         if combined_packet is not None:
             _, average_duty = heater_pid_averages(combined_packet.pid.heaters)
             heater_duty = "—" if average_duty is None else f"{average_duty:.1f}"
-            enabled_count = sum(1 for reading in combined_packet.pid.heaters if reading.pid_enabled)
-            valid_heater_count = sum(1 for reading in combined_packet.pid.heaters if reading.sensor_valid)
-            self.heater_summary_card.set_value(
-                f"{enabled_count}/{len(combined_packet.pid.heaters)} PID; "
-                f"{valid_heater_count} sensors"
-            )
-        else:
-            self.heater_summary_card.set_value(f"Duty {heater_duty}")
         self.telemetry_table.set_value("Heater Duty (permille)", str(heater_duty))
         self.telemetry_table.set_value("Subsystem Health Indicators", health)
         for number, reading in ((1, geiger_1), (2, geiger_2)):
@@ -939,13 +929,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             sd_text, sd_state = "off", "warning"
         self.health_table.set_value("SD Temperature Logger", sd_text)
         self.health_table.set_state("SD Temperature Logger", sd_state)
-        system_state = "error" if not firmware_healthy else "warning" if sd_error or not tcp_healthy else "healthy"
-        self.health_cards["system"].set_status(
-            f"UPLINK {'CONNECTED' if self.client.connected else 'DISCONNECTED'}  |  "
-            f"TCP {'LISTENING' if tcp_healthy else 'NOT LISTENING'}\n"
-            f"FIRMWARE {health.upper()}  |  SD {sd_text.upper()}",
-            system_state,
-        )
 
         valid_temperature_count = 0
         for index, raw_value in enumerate(packet.temperatures):
@@ -967,10 +950,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         )
         self.health_table.set_state(
             "Temperature Sensors",
-            "healthy" if valid_temperature_count == len(packet.temperatures) else "warning",
-        )
-        self.health_cards["temperature"].set_status(
-            f"{valid_temperature_count}/{len(packet.temperatures)} VALID",
             "healthy" if valid_temperature_count == len(packet.temperatures) else "warning",
         )
 
@@ -996,10 +975,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.health_table.set_state(
             "AD7177 Channels", "healthy" if valid_adc_count == len(packet.ad7177_readings) else "warning"
         )
-        self.health_cards["adc"].set_status(
-            f"{valid_adc_count}/{len(packet.ad7177_readings)} HEALTHY",
-            "healthy" if valid_adc_count == len(packet.ad7177_readings) else "warning",
-        )
 
         healthy_geigers = 0
         for counter_id in range(2):
@@ -1019,10 +994,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self.health_geiger_table.set_state(row, state, 3)
         self.health_table.set_value("Geiger Detectors", f"{healthy_geigers}/2 healthy")
         self.health_table.set_state("Geiger Detectors", "healthy" if healthy_geigers == 2 else "warning")
-        self.health_cards["radiation"].set_status(
-            f"{healthy_geigers}/2 DETECTORS HEALTHY",
-            "healthy" if healthy_geigers == 2 else "warning",
-        )
 
         heater_count = 0
         healthy_heaters = 0
@@ -1047,10 +1018,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.health_table.set_value("Heater / PID Records", heater_text)
         self.health_table.set_state(
             "Heater / PID Records",
-            "unknown" if combined_packet is None else "healthy" if healthy_heaters == heater_count else "warning",
-        )
-        self.health_cards["heaters"].set_status(
-            heater_text.upper(),
             "unknown" if combined_packet is None else "healthy" if healthy_heaters == heater_count else "warning",
         )
         self.health_table.setToolTip(
@@ -1090,7 +1057,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self.set_telemetry_status("waiting")
             self.health_table.set_value("Telemetry Receiver", f"waiting on UDP {DEFAULT_TELEMETRY_PORT}")
             self.health_table.set_state("Telemetry Receiver", "unknown")
-            self.health_cards["system"].set_status("DOWNLINK WAITING", "unknown")
             return
 
         age = time.monotonic() - self.last_telemetry_time
@@ -1100,8 +1066,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.health_table.set_state("Last Telemetry", "healthy" if age < 2.5 else "warning")
         self.health_table.set_value("Telemetry Receiver", "receiving" if age < 2.5 else "stale")
         self.health_table.set_state("Telemetry Receiver", "healthy" if age < 2.5 else "warning")
-        if age >= 2.5:
-            self.health_cards["system"].set_status(f"DOWNLINK STALE  |  {age_text}", "warning")
 
         active = age < 2.5
         self.set_telemetry_status("receiving" if active else "stale")
@@ -1114,7 +1078,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.set_telemetry_status("error")
         self.health_table.set_value("Telemetry Receiver", message)
         self.health_table.set_state("Telemetry Receiver", "error")
-        self.health_cards["system"].set_status("DOWNLINK ERROR", "error")
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._closing = True
