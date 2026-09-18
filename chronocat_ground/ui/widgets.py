@@ -132,7 +132,13 @@ class SampleCard(QFrame):
         self.meta_label = QLabel(f"ADC{adc_index} CH{channel_index}")
         self.meta_label.setObjectName("smallNote")
 
-        self.plot = PlotWidget("Raw24", "No data", hover_label="Raw24", on_click=lambda: self.graph_requested.emit(self.slot))
+        self.plot = PlotWidget(
+            "Raw24",
+            "No data",
+            hover_label="Raw24",
+            on_click=lambda: self.graph_requested.emit(self.slot),
+            monitor_mode=True,
+        )
         self.plot.on_double_click = lambda: self.graph_requested.emit(self.slot)
         self.plot.setMinimumHeight(140)
 

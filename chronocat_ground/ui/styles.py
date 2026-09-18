@@ -177,9 +177,6 @@ QPushButton:disabled {
 #pidHeader {
     border-left: 5px solid #3f6f9f;
 }
-#pidGlobalControls {
-    border-left: 5px solid #6d8c66;
-}
 #primaryButton {
     background: #d8ead8;
     border-color: #6e9f6e;

@@ -42,6 +42,7 @@ from ..telemetry_db import TelemetryDb
 from ..telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY
 from .widgets import Panel, SampleCard, StatCard, ValueTable
 from .status_widgets import StatusIndicator
+from .pid_widgets import SENSOR_NAMES
 
 
 VIEW_MONITORING = "MONITORING"
@@ -689,18 +690,60 @@ class MainWindowPagesMixin:
         self.health_table = ValueTable(
             [
                 ("Command Connection", "Disconnected"),
-                ("Telemetry Receiver", f"UDP {DEFAULT_TELEMETRY_PORT}"),
-                ("TCP Server", "—"),
-                ("Flags", "—"),
-                ("Health Code", "—"),
-                ("Packets Received", "0"),
+                ("Telemetry Receiver", f"waiting on UDP {DEFAULT_TELEMETRY_PORT}"),
                 ("Last Telemetry", "—"),
+                ("Firmware Health", "—"),
+                ("TCP Server", "—"),
+                ("SD Temperature Logger", "—"),
+                ("Temperature Sensors", "—"),
+                ("AD7177 Channels", "—"),
+                ("Geiger Detectors", "—"),
+                ("Heater / PID Records", "—"),
             ],
             ("Subsystem", "State"),
         )
-        panel = Panel("HEALTH")
-        panel.layout.addWidget(self.health_table)
-        layout.addWidget(panel)
+        summary_panel = Panel("SYSTEM HEALTH")
+        summary_panel.layout.addWidget(self.health_table)
+
+        self.health_geiger_table = ValueTable(
+            [("Geiger 1", "—", "—", "unknown"), ("Geiger 2", "—", "—", "unknown")],
+            ("Detector", "Dose rate", "HV", "State"),
+        )
+        geiger_panel = Panel("RADIATION SENSORS")
+        geiger_panel.layout.addWidget(self.health_geiger_table)
+
+        top = QGridLayout()
+        top.setSpacing(12)
+        top.addWidget(summary_panel, 0, 0)
+        top.addWidget(geiger_panel, 0, 1)
+        layout.addLayout(top)
+
+        self.health_temperature_table = ValueTable(
+            [(f"TMP117-{index + 1}", "—", "unknown") for index in range(13)],
+            ("Sensor", "Reading", "State"),
+        )
+        temperature_panel = Panel("TEMPERATURE SENSORS")
+        temperature_panel.layout.addWidget(self.health_temperature_table)
+        layout.addWidget(temperature_panel)
+
+        self.health_adc_table = ValueTable(
+            [
+                (f"ADC{index // 3} CH{index % 3}", "—", "unknown")
+                for index in range(12)
+            ],
+            ("Channel", "Reading", "State"),
+        )
+        adc_panel = Panel("AD7177 CHANNELS")
+        adc_panel.layout.addWidget(self.health_adc_table)
+        layout.addWidget(adc_panel)
+
+        self.health_heater_table = ValueTable(
+            [(f"H{index}", SENSOR_NAMES[index], "—", "unknown") for index in range(12)],
+            ("Heater", "Sensor", "Reading", "State"),
+        )
+        heater_panel = Panel("HEATER / PID HEALTH")
+        heater_panel.layout.addWidget(self.health_heater_table)
+        layout.addWidget(heater_panel)
         layout.addStretch(1)
         return page
 

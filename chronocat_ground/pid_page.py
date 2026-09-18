@@ -78,40 +78,46 @@ class PidPage(QWidget):
     def _build_header(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("pidGlobalControls")
-        layout = QGridLayout(panel)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setHorizontalSpacing(8)
-        layout.setVerticalSpacing(5)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(7)
 
-        layout.addWidget(QLabel("Setpoint"), 0, 0)
+        controls = QHBoxLayout()
+        controls.setSpacing(8)
+        controls.setAlignment(Qt.AlignVCenter)
+        controls.addWidget(QLabel("Setpoint"))
         self.global_target_spin = self._make_float_spin(0.0, 64.999, 20.0, 0.1)
         self.global_target_spin.setSuffix(" C")
-        layout.addWidget(self.global_target_spin, 0, 1)
+        controls.addWidget(self.global_target_spin)
 
-        layout.addWidget(QLabel("Profile"), 0, 2)
+        controls.addWidget(QLabel("Profile"))
         self.profile_combo = QComboBox()
         for profile in PID_PROFILES:
             self.profile_combo.addItem(profile.name)
         self.profile_combo.setMinimumWidth(130)
-        layout.addWidget(self.profile_combo, 0, 3)
+        controls.addWidget(self.profile_combo)
 
         self.all_pid_button = QPushButton("Enable PID")
         self.all_pid_button.setObjectName("primaryButton")
         self.all_pid_button.clicked.connect(self._toggle_all_pid)
-        layout.addWidget(self.all_pid_button, 0, 4)
+        controls.addWidget(self.all_pid_button)
 
         self.all_off_button = QPushButton("Turn all off")
         self.all_off_button.setObjectName("dangerButton")
         self.all_off_button.setMinimumWidth(105)
         self.all_off_button.clicked.connect(self.all_off_requested.emit)
-        layout.addWidget(self.all_off_button, 0, 5)
+        controls.addWidget(self.all_off_button)
+        controls.addStretch(1)
+        layout.addLayout(controls)
 
+        status_row = QHBoxLayout()
         self.summary_label = QLabel("No PID data")
         self.summary_label.setObjectName("pidSummary")
         self.global_status = QLabel("")
         self.global_status.setObjectName("smallNote")
-        layout.addWidget(self.global_status, 1, 0, 1, 4)
-        layout.addWidget(self.summary_label, 1, 4, 1, 2)
+        status_row.addWidget(self.global_status, 1)
+        status_row.addWidget(self.summary_label)
+        layout.addLayout(status_row)
         return panel
 
     def _build_overview(self) -> QFrame:
