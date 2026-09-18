@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -106,6 +107,20 @@ class ValueTable(QTableWidget):
         target = self._value_items.get((name, col))
         if target is not None and target.text() != value:
             target.setText(value)
+
+    def set_state(self, name: str, state: str, col: int = 1) -> None:
+        target = self._value_items.get((name, col))
+        if target is None:
+            return
+        colors = {
+            "healthy": ("#d8ead8", "#245824"),
+            "warning": ("#fff0c7", "#674900"),
+            "error": ("#f5d8d8", "#702525"),
+            "unknown": ("#eeeeee", "#555555"),
+        }
+        background, foreground = colors.get(state, colors["unknown"])
+        target.setBackground(QColor(background))
+        target.setForeground(QColor(foreground))
 
 
 class SampleCard(QFrame):
