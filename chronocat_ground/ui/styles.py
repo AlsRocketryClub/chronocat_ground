@@ -154,6 +154,40 @@ QPushButton:disabled {
 #statusIndicator[status="off"] {
     color: #555555;
 }
+#healthSection {
+    background: #f3f3f3;
+    border: 2px solid #999999;
+}
+#healthSection[state="healthy"] {
+    background: #eef6ee;
+    border-color: #6e9f6e;
+}
+#healthSection[state="warning"] {
+    background: #fff8df;
+    border-color: #c49a37;
+}
+#healthSection[state="error"] {
+    background: #fbeaea;
+    border-color: #b36a6a;
+}
+#healthSectionTitle {
+    color: #444444;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+#healthSectionStatus {
+    color: #111111;
+    font-size: 20px;
+    font-weight: 700;
+    min-height: 34px;
+}
+#healthDetailsButton {
+    background: transparent;
+    padding: 4px 8px;
+    min-width: 92px;
+    font-size: 11px;
+}
 #telemetryState {
     padding: 10px;
     font-weight: 700;

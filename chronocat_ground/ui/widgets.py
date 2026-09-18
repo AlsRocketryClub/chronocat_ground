@@ -8,12 +8,14 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QHeaderView,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from ..plot_widget import PlotWidget
@@ -50,7 +52,6 @@ class StatCard(QFrame):
 
         self.value_label = QLabel(value)
         self.value_label.setObjectName("kpiValue")
-        self.value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -121,6 +122,58 @@ class ValueTable(QTableWidget):
         background, foreground = colors.get(state, colors["unknown"])
         target.setBackground(QColor(background))
         target.setForeground(QColor(foreground))
+
+    def expand_to_contents(self) -> None:
+        self.resizeRowsToContents()
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        header_height = self.horizontalHeader().height() if self.horizontalHeader().isVisible() else 0
+        rows_height = sum(self.rowHeight(row) for row in range(self.rowCount()))
+        self.setFixedHeight(header_height + rows_height + 2 * self.frameWidth() + 4)
+
+
+class HealthSection(QFrame):
+    """A prominent subsystem status with independently expandable details."""
+
+    def __init__(self, title: str, detail: QWidget) -> None:
+        super().__init__()
+        self.setObjectName("healthSection")
+        self._title = title
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        title_label = QLabel(title)
+        title_label.setObjectName("healthSectionTitle")
+        header.addWidget(title_label)
+        header.addStretch(1)
+        self.toggle_button = QPushButton("Show details")
+        self.toggle_button.setObjectName("healthDetailsButton")
+        self.toggle_button.clicked.connect(self.toggle_details)
+        header.addWidget(self.toggle_button)
+        layout.addLayout(header)
+
+        self.status_label = QLabel("WAITING")
+        self.status_label.setObjectName("healthSectionStatus")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.detail = detail
+        self.detail.setVisible(False)
+        layout.addWidget(self.detail)
+        self.set_status("WAITING", "unknown")
+
+    def set_status(self, text: str, state: str) -> None:
+        self.status_label.setText(text)
+        self.setProperty("state", state)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def toggle_details(self) -> None:
+        expanded = not self.detail.isVisible()
+        self.detail.setVisible(expanded)
+        self.toggle_button.setText("Hide details" if expanded else "Show details")
 
 
 class SampleCard(QFrame):
