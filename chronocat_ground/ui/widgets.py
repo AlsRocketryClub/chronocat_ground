@@ -71,6 +71,8 @@ class StatCard(QFrame):
 class ValueTable(QTableWidget):
     """Read-only two-column table with stable label-based updates."""
 
+    content_height_changed = Signal(int)
+
     def __init__(self, rows: list[tuple[str, ...]], headers: tuple[str, ...] | None = None) -> None:
         num_cols = len(rows[0]) if rows else 2
         super().__init__(len(rows), num_cols)
@@ -158,6 +160,7 @@ class ValueTable(QTableWidget):
         )
         if self.height() != target_height:
             self.setFixedHeight(target_height)
+            self.content_height_changed.emit(target_height)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -202,7 +205,10 @@ class HealthSection(QFrame):
         self.detail = detail
         self.detail.setVisible(False)
         layout.addWidget(self.detail)
+        if isinstance(detail, ValueTable):
+            detail.content_height_changed.connect(self._sync_minimum_height)
         self.set_status("WAITING", "unknown")
+        self._sync_minimum_height()
 
     def set_status(self, text: str, state: str) -> None:
         self.status_label.setText(text)
@@ -214,7 +220,12 @@ class HealthSection(QFrame):
         self._expanded = not self._expanded
         self.detail.setVisible(self._expanded)
         self.toggle_button.setText("Hide details" if self._expanded else "Show details")
+        self._sync_minimum_height()
         self.expanded_changed.emit(self._expanded)
+
+    def _sync_minimum_height(self, _height: int = 0) -> None:
+        self.setMinimumHeight(self.sizeHint().height() if self._expanded else 0)
+        self.updateGeometry()
 
     @property
     def expanded(self) -> bool:

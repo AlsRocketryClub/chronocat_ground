@@ -687,6 +687,7 @@ class MainWindowPagesMixin:
 
     def build_health_page(self) -> QWidget:
         page = QWidget()
+        self.health_page = page
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -789,6 +790,7 @@ class MainWindowPagesMixin:
 
         if pending is not None:
             self.health_grid.addWidget(pending, row, 0, 1, 2)
+        self.health_page.setMinimumHeight(self.health_page.layout().sizeHint().height())
 
     def build_settings_page(self) -> QWidget:
         page = QWidget()
