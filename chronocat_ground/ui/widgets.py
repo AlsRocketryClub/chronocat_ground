@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -75,6 +75,8 @@ class ValueTable(QTableWidget):
         num_cols = len(rows[0]) if rows else 2
         super().__init__(len(rows), num_cols)
         self._value_items: dict[tuple[str, int], QTableWidgetItem] = {}
+        self._expand_height_to_contents = False
+        self._fit_height_pending = False
         self.setObjectName("dataTable")
         self.setShowGrid(True)
         self.setAlternatingRowColors(False)
@@ -108,6 +110,7 @@ class ValueTable(QTableWidget):
         target = self._value_items.get((name, col))
         if target is not None and target.text() != value:
             target.setText(value)
+            self._schedule_content_height_update()
 
     def set_state(self, name: str, state: str, col: int = 1) -> None:
         target = self._value_items.get((name, col))
@@ -128,11 +131,41 @@ class ValueTable(QTableWidget):
                 item.setForeground(foreground)
 
     def expand_to_contents(self) -> None:
-        self.resizeRowsToContents()
+        self._expand_height_to_contents = True
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._update_content_height()
+
+    def _schedule_content_height_update(self) -> None:
+        if not self._expand_height_to_contents or self._fit_height_pending:
+            return
+        self._fit_height_pending = True
+        QTimer.singleShot(0, self._update_content_height)
+
+    def _update_content_height(self) -> None:
+        self._fit_height_pending = False
+        if not self._expand_height_to_contents:
+            return
+        self.resizeRowsToContents()
         header_height = self.horizontalHeader().height() if self.horizontalHeader().isVisible() else 0
         rows_height = sum(self.rowHeight(row) for row in range(self.rowCount()))
-        self.setFixedHeight(header_height + rows_height + 2 * self.frameWidth() + 4)
+        scrollbar_height = (
+            self.horizontalScrollBar().sizeHint().height()
+            if self.horizontalScrollBar().isVisible()
+            else 0
+        )
+        target_height = (
+            header_height + rows_height + scrollbar_height + 2 * self.frameWidth() + 12
+        )
+        if self.height() != target_height:
+            self.setFixedHeight(target_height)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._schedule_content_height_update()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._schedule_content_height_update()
 
 
 class HealthSection(QFrame):
