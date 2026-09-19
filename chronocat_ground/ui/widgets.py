@@ -114,14 +114,18 @@ class ValueTable(QTableWidget):
         if target is None:
             return
         colors = {
-            "healthy": ("#d8ead8", "#245824"),
-            "warning": ("#fff0c7", "#674900"),
-            "error": ("#f5d8d8", "#702525"),
-            "unknown": ("#eeeeee", "#555555"),
+            "healthy": "#d8ead8",
+            "warning": "#fff0c7",
+            "error": "#f5d8d8",
+            "unknown": "#eeeeee",
         }
-        background, foreground = colors.get(state, colors["unknown"])
-        target.setBackground(QColor(background))
-        target.setForeground(QColor(foreground))
+        background = QColor(colors.get(state, colors["unknown"]))
+        foreground = QColor("#111111")
+        for column in range(self.columnCount()):
+            item = self.item(target.row(), column)
+            if item is not None:
+                item.setBackground(background)
+                item.setForeground(foreground)
 
     def expand_to_contents(self) -> None:
         self.resizeRowsToContents()
@@ -134,14 +138,17 @@ class ValueTable(QTableWidget):
 class HealthSection(QFrame):
     """A prominent subsystem status with independently expandable details."""
 
+    expanded_changed = Signal(bool)
+
     def __init__(self, title: str, detail: QWidget) -> None:
         super().__init__()
         self.setObjectName("healthSection")
         self._title = title
+        self._expanded = False
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(5)
 
         header = QHBoxLayout()
         title_label = QLabel(title)
@@ -171,9 +178,14 @@ class HealthSection(QFrame):
         self.style().polish(self)
 
     def toggle_details(self) -> None:
-        expanded = not self.detail.isVisible()
-        self.detail.setVisible(expanded)
-        self.toggle_button.setText("Hide details" if expanded else "Show details")
+        self._expanded = not self._expanded
+        self.detail.setVisible(self._expanded)
+        self.toggle_button.setText("Hide details" if self._expanded else "Show details")
+        self.expanded_changed.emit(self._expanded)
+
+    @property
+    def expanded(self) -> bool:
+        return self._expanded
 
 
 class SampleCard(QFrame):

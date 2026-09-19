@@ -745,16 +745,50 @@ class MainWindowPagesMixin:
         self.heater_health_section = HealthSection(
             "HEATER / PID", self.health_heater_table
         )
-        for section in (
+        self.health_sections = (
             self.system_health_section,
             self.temperature_health_section,
             self.adc_health_section,
             self.radiation_health_section,
             self.heater_health_section,
-        ):
-            layout.addWidget(section)
+        )
+        self.health_grid = QGridLayout()
+        self.health_grid.setSpacing(10)
+        self.health_grid.setColumnStretch(0, 1)
+        self.health_grid.setColumnStretch(1, 1)
+        for section in self.health_sections:
+            section.expanded_changed.connect(self._layout_health_sections)
+        layout.addLayout(self.health_grid)
+        self._layout_health_sections()
         layout.addStretch(1)
         return page
+
+    def _layout_health_sections(self, _expanded: bool | None = None) -> None:
+        while self.health_grid.count():
+            self.health_grid.takeAt(0)
+
+        row = 0
+        pending: HealthSection | None = None
+        for section in self.health_sections:
+            if section.expanded:
+                if pending is not None:
+                    self.health_grid.addWidget(pending, row, 0, 1, 2)
+                    row += 1
+                    pending = None
+                self.health_grid.addWidget(section, row, 0, 1, 2)
+                row += 1
+                continue
+
+            if pending is None:
+                pending = section
+                continue
+            self.health_grid.addWidget(pending, row, 0)
+            self.health_grid.addWidget(section, row, 1)
+            pending = None
+            row += 1
+
+        if pending is not None:
+            self.health_grid.addWidget(pending, row, 0, 1, 2)
 
     def build_settings_page(self) -> QWidget:
         page = QWidget()

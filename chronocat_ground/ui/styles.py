@@ -172,20 +172,20 @@ QPushButton:disabled {
 }
 #healthSectionTitle {
     color: #444444;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
     letter-spacing: 1px;
 }
 #healthSectionStatus {
     color: #111111;
-    font-size: 20px;
+    font-size: 16px;
     font-weight: 700;
-    min-height: 34px;
+    min-height: 24px;
 }
 #healthDetailsButton {
     background: transparent;
-    padding: 4px 8px;
-    min-width: 92px;
+    padding: 2px 6px;
+    min-width: 82px;
     font-size: 11px;
 }
 #telemetryState {
@@ -314,7 +314,6 @@ QPushButton:disabled {
     background: #e9c3c3;
 }
 QTableWidget::item {
-    background: #ffffff;
     padding: 4px 6px;
 }
 QHeaderView::section {
