@@ -21,7 +21,7 @@ source .venv/bin/activate
 uv pip install -e '.[gui]'
 ```
 
-Use Python 3.12 for now. Python 3.14 is too new for reliable PySide6 wheel support, and the local Homebrew Python install may fail while bootstrapping `pip`.
+Use Python 3.12 for now. Python 3.14 is too new for reliable PySide6 wheel support, and the local Homebrew Python install may fail while bootstrapping `pip`. PySide6 is capped below 6.11 because its macOS Cocoa platform plugin fails to initialize on the current ground-station environment.
 
 ## Run
 
