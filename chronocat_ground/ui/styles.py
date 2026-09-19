@@ -154,21 +154,24 @@ QPushButton:disabled {
 #statusIndicator[status="off"] {
     color: #555555;
 }
-#healthSection {
+#healthSummary {
     background: #f3f3f3;
     border: 2px solid #999999;
 }
-#healthSection[state="healthy"] {
+#healthSummary[state="healthy"] {
     background: #eef6ee;
     border-color: #6e9f6e;
 }
-#healthSection[state="warning"] {
+#healthSummary[state="warning"] {
     background: #fff8df;
     border-color: #c49a37;
 }
-#healthSection[state="error"] {
+#healthSummary[state="error"] {
     background: #fbeaea;
     border-color: #b36a6a;
+}
+#healthSummary[selected="true"] {
+    border: 3px solid #3f6f9f;
 }
 #healthSectionTitle {
     color: #444444;
@@ -187,6 +190,17 @@ QPushButton:disabled {
     padding: 2px 6px;
     min-width: 82px;
     font-size: 11px;
+}
+#healthDetailLabel {
+    color: #666666;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+#healthDetailTitle {
+    color: #111111;
+    font-size: 16px;
+    font-weight: 700;
 }
 #telemetryState {
     padding: 10px;

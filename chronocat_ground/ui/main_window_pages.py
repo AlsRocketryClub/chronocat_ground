@@ -40,7 +40,7 @@ from ..protocol import (
 )
 from ..telemetry_db import TelemetryDb
 from ..telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY
-from .widgets import HealthSection, Panel, SampleCard, StatCard, ValueTable
+from .widgets import HealthSummaryCard, Panel, SampleCard, StatCard, ValueTable
 from .status_widgets import StatusIndicator
 from .pid_widgets import SENSOR_NAMES
 
@@ -735,62 +735,62 @@ class MainWindowPagesMixin:
         )
         self.health_heater_table.expand_to_contents()
 
-        self.system_health_section = HealthSection("SYSTEM", self.health_table)
-        self.temperature_health_section = HealthSection(
-            "TEMPERATURE SENSORS", self.health_temperature_table
-        )
-        self.adc_health_section = HealthSection("SAMPLE CHANNELS", self.health_adc_table)
-        self.radiation_health_section = HealthSection(
-            "RADIATION DETECTORS", self.health_geiger_table
-        )
-        self.heater_health_section = HealthSection(
-            "HEATER / PID", self.health_heater_table
-        )
-        self.health_sections = (
-            self.system_health_section,
-            self.temperature_health_section,
-            self.adc_health_section,
-            self.radiation_health_section,
-            self.heater_health_section,
-        )
-        self.health_grid = QGridLayout()
-        self.health_grid.setSpacing(10)
-        self.health_grid.setColumnStretch(0, 1)
-        self.health_grid.setColumnStretch(1, 1)
-        for section in self.health_sections:
-            section.expanded_changed.connect(self._layout_health_sections)
-        layout.addLayout(self.health_grid)
-        self._layout_health_sections()
+        self.system_health_section = HealthSummaryCard("SYSTEM")
+        self.temperature_health_section = HealthSummaryCard("TEMPERATURE SENSORS")
+        self.adc_health_section = HealthSummaryCard("SAMPLE CHANNELS")
+        self.radiation_health_section = HealthSummaryCard("RADIATION DETECTORS")
+        self.heater_health_section = HealthSummaryCard("HEATER / PID")
+        self.health_details = {
+            "System": (self.system_health_section, self.health_table),
+            "Temperature Sensors": (
+                self.temperature_health_section,
+                self.health_temperature_table,
+            ),
+            "Sample Channels": (self.adc_health_section, self.health_adc_table),
+            "Radiation Detectors": (
+                self.radiation_health_section,
+                self.health_geiger_table,
+            ),
+            "Heater / PID": (self.heater_health_section, self.health_heater_table),
+        }
+
+        health_grid = QGridLayout()
+        health_grid.setSpacing(10)
+        health_grid.setColumnStretch(0, 1)
+        health_grid.setColumnStretch(1, 1)
+        for index, (title, (card, _table)) in enumerate(self.health_details.items()):
+            card.details_requested.connect(
+                lambda title=title: self._show_health_details(title)
+            )
+            health_grid.addWidget(card, index // 2, index % 2)
+        layout.addLayout(health_grid)
+
+        self.health_detail_panel = Panel()
+        detail_header = QHBoxLayout()
+        detail_label = QLabel("DETAILS")
+        detail_label.setObjectName("healthDetailLabel")
+        self.health_detail_title = QLabel()
+        self.health_detail_title.setObjectName("healthDetailTitle")
+        detail_header.addWidget(detail_label)
+        detail_header.addWidget(self.health_detail_title)
+        detail_header.addStretch(1)
+        self.health_detail_panel.layout.addLayout(detail_header)
+
+        self.health_detail_stack = QStackedWidget()
+        for _card, table in self.health_details.values():
+            self.health_detail_stack.addWidget(table)
+        self.health_detail_panel.layout.addWidget(self.health_detail_stack)
+        layout.addWidget(self.health_detail_panel)
+        self._show_health_details("System")
         layout.addStretch(1)
         return page
 
-    def _layout_health_sections(self, _expanded: bool | None = None) -> None:
-        while self.health_grid.count():
-            self.health_grid.takeAt(0)
-
-        row = 0
-        pending: HealthSection | None = None
-        for section in self.health_sections:
-            if section.expanded:
-                if pending is not None:
-                    self.health_grid.addWidget(pending, row, 0, 1, 2)
-                    row += 1
-                    pending = None
-                self.health_grid.addWidget(section, row, 0, 1, 2)
-                row += 1
-                continue
-
-            if pending is None:
-                pending = section
-                continue
-            self.health_grid.addWidget(pending, row, 0)
-            self.health_grid.addWidget(section, row, 1)
-            pending = None
-            row += 1
-
-        if pending is not None:
-            self.health_grid.addWidget(pending, row, 0, 1, 2)
-        self.health_page.setMinimumHeight(self.health_page.layout().sizeHint().height())
+    def _show_health_details(self, title: str) -> None:
+        selected_card, selected_table = self.health_details[title]
+        self.health_detail_title.setText(title.upper())
+        self.health_detail_stack.setCurrentWidget(selected_table)
+        for card, _table in self.health_details.values():
+            card.set_selected(card is selected_card)
 
     def build_settings_page(self) -> QWidget:
         page = QWidget()

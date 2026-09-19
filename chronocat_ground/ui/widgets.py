@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
-    QWidget,
 )
 
 from ..plot_widget import PlotWidget
@@ -70,8 +69,6 @@ class StatCard(QFrame):
 
 class ValueTable(QTableWidget):
     """Read-only two-column table with stable label-based updates."""
-
-    content_height_changed = Signal(int)
 
     def __init__(self, rows: list[tuple[str, ...]], headers: tuple[str, ...] | None = None) -> None:
         num_cols = len(rows[0]) if rows else 2
@@ -160,7 +157,6 @@ class ValueTable(QTableWidget):
         )
         if self.height() != target_height:
             self.setFixedHeight(target_height)
-            self.content_height_changed.emit(target_height)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -171,16 +167,17 @@ class ValueTable(QTableWidget):
         self._schedule_content_height_update()
 
 
-class HealthSection(QFrame):
-    """A prominent subsystem status with independently expandable details."""
+class HealthSummaryCard(QFrame):
+    """A fixed-height subsystem summary that selects a shared detail view."""
 
-    expanded_changed = Signal(bool)
+    details_requested = Signal()
 
-    def __init__(self, title: str, detail: QWidget) -> None:
+    def __init__(self, title: str) -> None:
         super().__init__()
-        self.setObjectName("healthSection")
-        self._title = title
-        self._expanded = False
+        self.setObjectName("healthSummary")
+        self.setFixedHeight(96)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setCursor(Qt.PointingHandCursor)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
@@ -191,10 +188,12 @@ class HealthSection(QFrame):
         title_label.setObjectName("healthSectionTitle")
         header.addWidget(title_label)
         header.addStretch(1)
-        self.toggle_button = QPushButton("Show details")
-        self.toggle_button.setObjectName("healthDetailsButton")
-        self.toggle_button.clicked.connect(self.toggle_details)
-        header.addWidget(self.toggle_button)
+        self.details_button = QPushButton("Details")
+        self.details_button.setObjectName("healthDetailsButton")
+        self.details_button.clicked.connect(
+            lambda _checked=False: self.details_requested.emit()
+        )
+        header.addWidget(self.details_button)
         layout.addLayout(header)
 
         self.status_label = QLabel("WAITING")
@@ -202,13 +201,7 @@ class HealthSection(QFrame):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-        self.detail = detail
-        self.detail.setVisible(False)
-        layout.addWidget(self.detail)
-        if isinstance(detail, ValueTable):
-            detail.content_height_changed.connect(self._sync_minimum_height)
         self.set_status("WAITING", "unknown")
-        self._sync_minimum_height()
 
     def set_status(self, text: str, state: str) -> None:
         self.status_label.setText(text)
@@ -216,20 +209,15 @@ class HealthSection(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
 
-    def toggle_details(self) -> None:
-        self._expanded = not self._expanded
-        self.detail.setVisible(self._expanded)
-        self.toggle_button.setText("Hide details" if self._expanded else "Show details")
-        self._sync_minimum_height()
-        self.expanded_changed.emit(self._expanded)
+    def set_selected(self, selected: bool) -> None:
+        self.setProperty("selected", selected)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
-    def _sync_minimum_height(self, _height: int = 0) -> None:
-        self.setMinimumHeight(self.sizeHint().height() if self._expanded else 0)
-        self.updateGeometry()
-
-    @property
-    def expanded(self) -> bool:
-        return self._expanded
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self.details_requested.emit()
+        super().mouseReleaseEvent(event)
 
 
 class SampleCard(QFrame):
