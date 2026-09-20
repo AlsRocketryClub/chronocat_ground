@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
 import os
+import sqlite3
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QPixmap
@@ -25,7 +25,9 @@ from PySide6.QtWidgets import (
 from ..pid_page import PidPage
 from ..plot_widget import PlotWidget
 from ..protocol import (
+    AD7177_BIPOLAR_MIDSCALE,
     AD7177_CHANNEL_COUNT,
+    AD7177_VREF_VOLTS,
     COMMAND_GEIGER_CLEAR_HISTORY,
     COMMAND_GEIGER_RESET_ACCUMULATED_DOSE,
     COMMAND_GEIGER_RESET_STATS,
@@ -38,11 +40,16 @@ from ..protocol import (
     VALUE_OFF,
     VALUE_ON,
 )
-from ..telemetry_db import TelemetryDb
+from ..telemetry_db import TelemetryDb, archive_database
+from ..telemetry_history import adc_point_for_mode
 from ..telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY
 from .widgets import HealthSummaryCard, Panel, SampleCard, StatCard, ValueTable
 from .status_widgets import StatusIndicator
 from .pid_widgets import SENSOR_NAMES
+
+
+def raw24_to_volts(raw24: int) -> float:
+    return (raw24 - AD7177_BIPOLAR_MIDSCALE) / AD7177_BIPOLAR_MIDSCALE * AD7177_VREF_VOLTS
 
 
 VIEW_DASHBOARD = "DASHBOARD"
@@ -207,15 +214,19 @@ class MainWindowPagesMixin:
         self.geiger_dose_rate_card = StatCard("GEIGER 1 DOSE RATE (CPS)")
         self.geiger_2_dose_rate_card = StatCard("GEIGER 2 DOSE RATE (CPS)")
         self.heater_summary_card = StatCard("HEATER / PID")
+        self.board_frame_index_card = StatCard("BOARD FRAME INDEX")
+        self.session_frame_count_card = StatCard("GS FRAMES RECEIVED", value="0")
 
         cards = QGridLayout()
         cards.setSpacing(8)
         cards.addWidget(self.tcp_card, 0, 0)
         cards.addWidget(self.temperature_summary_card, 0, 1)
         cards.addWidget(self.adc_summary_card, 0, 2)
+        cards.addWidget(self.board_frame_index_card, 0, 3)
         cards.addWidget(self.geiger_dose_rate_card, 1, 0)
         cards.addWidget(self.geiger_2_dose_rate_card, 1, 1)
         cards.addWidget(self.heater_summary_card, 1, 2)
+        cards.addWidget(self.session_frame_count_card, 1, 3)
         layout.addLayout(cards)
 
         layout.addWidget(self.build_chart_panel())
@@ -233,14 +244,16 @@ class MainWindowPagesMixin:
         chart_header.addStretch(1)
         chart_header.addWidget(self.timestamp_label)
         chart_panel.layout.addLayout(chart_header)
-        self.monitoring_geiger_plot = PlotWidget("Dose rate (CPS)", "No data", hover_label="CPS")
+        self.monitoring_geiger_plot = PlotWidget(
+            "Dose rate (CPS)", "No data", hover_label="CPS", interactive=False
+        )
         self.monitoring_geiger_plot.on_double_click = lambda: self.show_geiger_dialog(0)
         chart_panel.layout.addWidget(self.monitoring_geiger_plot)
         average_title = QLabel("ADC CHANNEL AVERAGE")
         average_title.setObjectName("panelTitle")
         chart_panel.layout.addWidget(average_title)
         self.monitoring_adc_average_plot = PlotWidget(
-            "Raw24", "No data", hover_label="Raw24"
+            "Volts (V)", "No data", hover_label="Volts", interactive=False
         )
         chart_panel.layout.addWidget(self.monitoring_adc_average_plot)
         return chart_panel
@@ -273,7 +286,7 @@ class MainWindowPagesMixin:
 
         layout.addWidget(self.build_geiger_controls_panel())
 
-        plots = QGridLayout()
+        plots = QVBoxLayout()
         plots.setSpacing(12)
 
         geiger_1_panel = Panel("GEIGER 1 DOSE RATE")
@@ -283,11 +296,13 @@ class MainWindowPagesMixin:
         geiger_1_header.addStretch(1)
         geiger_1_header.addWidget(self.radiation_plot_status)
         geiger_1_panel.layout.addLayout(geiger_1_header)
-        self.radiation_geiger_plot = PlotWidget("Dose rate (CPS)", "No data", hover_label="CPS")
+        self.radiation_geiger_plot = PlotWidget(
+            "Dose rate (CPS)", "No data", hover_label="CPS", interactive=False
+        )
         self.radiation_geiger_plot.on_double_click = lambda: self.show_geiger_dialog(0)
         self.radiation_geiger_plot.setMinimumHeight(280)
         geiger_1_panel.layout.addWidget(self.radiation_geiger_plot)
-        plots.addWidget(geiger_1_panel, 0, 0)
+        plots.addWidget(geiger_1_panel)
 
         geiger_2_panel = Panel("GEIGER 2 DOSE RATE")
         geiger_2_header = QHBoxLayout()
@@ -297,12 +312,12 @@ class MainWindowPagesMixin:
         geiger_2_header.addWidget(self.radiation_2_plot_status)
         geiger_2_panel.layout.addLayout(geiger_2_header)
         self.radiation_geiger_2_plot = PlotWidget(
-            "Dose rate (CPS)", "No data", hover_label="CPS"
+            "Dose rate (CPS)", "No data", hover_label="CPS", interactive=False
         )
         self.radiation_geiger_2_plot.on_double_click = lambda: self.show_geiger_dialog(1)
         self.radiation_geiger_2_plot.setMinimumHeight(280)
         geiger_2_panel.layout.addWidget(self.radiation_geiger_2_plot)
-        plots.addWidget(geiger_2_panel, 0, 1)
+        plots.addWidget(geiger_2_panel)
         layout.addLayout(plots)
 
         geiger_detail_rows = [
@@ -524,6 +539,13 @@ class MainWindowPagesMixin:
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
+        toggle_row = QHBoxLayout()
+        toggle_row.addStretch(1)
+        self.samples_display_toggle = QPushButton("Showing: Voltage")
+        self.samples_display_toggle.clicked.connect(self.toggle_samples_display_mode)
+        toggle_row.addWidget(self.samples_display_toggle)
+        layout.addLayout(toggle_row)
+
         materials = [
             ("TIPs-pentacene", 0),
             ("diF-TES-ADT", 1),
@@ -568,11 +590,20 @@ class MainWindowPagesMixin:
             adc_index = slot // AD7177_CHANNEL_COUNT
             channel_index = slot % AD7177_CHANNEL_COUNT
             title = f"{card.toggle_button.text()} / ADC{adc_index} CH{channel_index}"
+            raw_mode = self.samples_display_mode == "raw"
+
+            def points_fn(s=slot, raw_mode=raw_mode):
+                rows = self.adc_db.query_adc(s, limit=5000)
+                if raw_mode:
+                    return [(received_wall, float(raw24)) for received_wall, raw24 in rows]
+                return [(received_wall, raw24_to_volts(raw24)) for received_wall, raw24 in rows]
+
             self.show_plot_dialog(
                 plot_id=f"adc_{slot}",
                 title=title,
-                y_label="Raw24",
-                points_fn=lambda s=slot: list(self.adc_db.query_adc(s, limit=5000)),
+                y_label="Raw24" if raw_mode else "Volts (V)",
+                hover_label="Raw24" if raw_mode else "Volts",
+                points_fn=points_fn,
                 latest_fn=lambda s=slot: f"{self.sample_cards[s].reading_label.text()} / {self.sample_cards[s].temperature_label.text()}",
             )
         except Exception as exc:
@@ -666,7 +697,10 @@ class MainWindowPagesMixin:
                 latest.setText(latest_fn())
 
             if plot_id.startswith("adc_"):
-                points = self.telemetry_history.adc_points(int(plot_id.removeprefix("adc_")))
+                raw_entries = self.telemetry_history.adc_points(int(plot_id.removeprefix("adc_")))
+                points = [
+                    adc_point_for_mode(entry, self.samples_display_mode) for entry in raw_entries
+                ]
             elif plot_id.startswith("geiger_"):
                 points = self.telemetry_history.geiger_points(
                     int(plot_id.removeprefix("geiger_"))
@@ -799,8 +833,7 @@ class MainWindowPagesMixin:
         layout.setSpacing(12)
 
         db_panel = Panel("ADC DATABASE")
-        db_path = "chronocat_adc.db"
-        db_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+        db_size = self.database_path.stat().st_size if self.database_path.exists() else 0
         self._db_info_label = QLabel(self._format_db_info(db_size, 0))
         self._db_info_label.setObjectName("smallNote")
         self._db_info_label.setWordWrap(True)
@@ -844,11 +877,10 @@ class MainWindowPagesMixin:
             size_str = f"{db_size:,} bytes"
         else:
             size_str = "N/A"
-        return f"File: chronocat_adc.db\nRecords: {db_count:,}\nSize: {size_str}"
+        return f"File: {self.database_path}\nRecords: {db_count:,}\nSize: {size_str}"
 
     def _refresh_db_info(self) -> None:
-        db_path = "chronocat_adc.db"
-        db_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+        db_size = self.database_path.stat().st_size if self.database_path.exists() else 0
         db_count = 0
         try:
             if self.adc_db.conn:
@@ -866,14 +898,18 @@ class MainWindowPagesMixin:
         )
         if ret == QMessageBox.Yes:
             self.adc_db.close()
-            archive_base = f"chronocat_adc_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            archive = f"{archive_base}.db"
-            suffix = 1
-            while os.path.exists(archive):
-                archive = f"{archive_base}_{suffix}.db"
-                suffix += 1
-            os.replace("chronocat_adc.db", archive)
-            self.adc_db = TelemetryDb("chronocat_adc.db", async_writes=True)
+            try:
+                archive = archive_database(self.database_path)
+            except (OSError, RuntimeError, sqlite3.Error) as exc:
+                QMessageBox.critical(
+                    self,
+                    "Database Archive Failed",
+                    f"The existing database was not replaced.\n\n{exc}",
+                )
+                self.adc_db = TelemetryDb(self.database_path, async_writes=True)
+                self.telemetry_history.set_database(self.adc_db)
+                return
+            self.adc_db = TelemetryDb(self.database_path, async_writes=True)
             self.telemetry_history.set_database(self.adc_db)
             self._refresh_db_info()
             self.log(f"Database archived to {archive}, new database created")

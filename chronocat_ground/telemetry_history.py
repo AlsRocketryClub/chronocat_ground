@@ -11,13 +11,21 @@ from .telemetry_db import TelemetryDb
 HISTORY_LENGTH = 300
 
 
+def adc_point_for_mode(
+    entry: tuple[float, float, float, int], mode: str
+) -> tuple[float, float, float]:
+    """Project a stored (mono, wall, voltage, raw24) sample to the active display mode."""
+    monotonic, wall, voltage, raw24 = entry
+    return (monotonic, wall, float(raw24) if mode == "raw" else voltage)
+
+
 @dataclass(frozen=True)
 class TelemetryHistorySnapshot:
     """Rolling data needed by the presentation layer after one packet."""
 
     packet_count: int
     geiger_points: tuple[Sequence[tuple[float, float, float]], ...]
-    adc_points: tuple[Sequence[tuple[float, float, float]], ...]
+    adc_points: tuple[Sequence[tuple[float, float, float, int]], ...]
     adc_average_points: Sequence[tuple[float, float, float]]
 
 
@@ -68,12 +76,12 @@ class TelemetryHistory:
             if not packet.os_adc_valid(reading.slot):
                 continue
             self._adc_points[reading.slot].append(
-                (received_monotonic, received_wall, float(reading.raw24))
+                (received_monotonic, received_wall, reading.voltage, reading.raw24)
             )
             adc_rows.append((packet.timestamp, reading.slot, reading.raw24, received_wall))
 
         valid_adc_values = [
-            reading.raw24
+            reading.voltage
             for reading in adc_readings
             if packet.os_adc_valid(reading.slot) and reading.word != 0 and not reading.has_error
         ]

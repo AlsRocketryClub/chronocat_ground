@@ -35,6 +35,11 @@ AD7177_STATUS_CRC_ERROR = 1 << 5
 AD7177_STATUS_REG_ERROR = 1 << 4
 AD7177_STATUS_CHANNEL_MASK = 0x03
 
+# External 2.5 V reference wired to REF+/REF-; the AD7177 setup registers are
+# configured for bipolar (offset binary) coding, so 0x800000 is 0 V.
+AD7177_VREF_VOLTS = 2.5
+AD7177_BIPOLAR_MIDSCALE = 0x800000
+
 TELEMETRY_FLAG_ENABLED = 1 << 0
 TELEMETRY_FLAG_TCP_LISTENING = 1 << 1
 TELEMETRY_FLAG_SD_LOG_ACTIVE = 1 << 2

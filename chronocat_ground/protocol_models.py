@@ -4,12 +4,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .protocol_constants import (
+    AD7177_BIPOLAR_MIDSCALE,
     AD7177_CHANNEL_COUNT,
     AD7177_STATUS_ADC_ERROR,
     AD7177_STATUS_CHANNEL_MASK,
     AD7177_STATUS_CRC_ERROR,
     AD7177_STATUS_RDY,
     AD7177_STATUS_REG_ERROR,
+    AD7177_VREF_VOLTS,
     PID_FLAG_ENABLED,
     PID_FLAG_MANUAL,
     PID_FLAG_SENSOR_MAPPED,
@@ -51,6 +53,11 @@ class Ad7177Reading:
     @property
     def has_error(self) -> bool:
         return self.adc_error or self.crc_error or self.reg_error
+
+    @property
+    def voltage(self) -> float:
+        """Decode the bipolar (offset binary) code against the external VREF."""
+        return (self.raw24 - AD7177_BIPOLAR_MIDSCALE) / AD7177_BIPOLAR_MIDSCALE * AD7177_VREF_VOLTS
 
 
 @dataclass(frozen=True)

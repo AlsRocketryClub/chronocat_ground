@@ -245,9 +245,9 @@ class SampleCard(QFrame):
         self.meta_label.setObjectName("smallNote")
 
         self.plot = PlotWidget(
-            "Raw24",
+            "Volts (V)",
             "No data",
-            hover_label="Raw24",
+            hover_label="Volts",
             on_click=lambda: self.graph_requested.emit(self.slot),
             monitor_mode=True,
         )
@@ -273,3 +273,6 @@ class SampleCard(QFrame):
 
     def set_points(self, points: Sequence[tuple[float, float]]) -> None:
         self.plot.set_points(points)
+
+    def set_value_axis(self, y_label: str, hover_label: str) -> None:
+        self.plot.set_y_label(y_label, hover_label)

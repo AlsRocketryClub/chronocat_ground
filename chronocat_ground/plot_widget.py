@@ -27,15 +27,21 @@ class WallClockAxis(pg.AxisItem):
 
     def tickStrings(self, values, scale, spacing):  # noqa: N802
         strings = []
+        seen: set[str] = set()
         for v in values:
             if self._relative:
-                strings.append("now" if abs(v) < 0.5 else f"{v:.0f} s")
-                continue
-            wall = self._wall_ref + v
-            if wall > 0:
-                strings.append(datetime.fromtimestamp(wall).strftime("%H:%M:%S"))
+                label = "now" if abs(v) < 0.5 else f"{v:.0f} s"
             else:
-                strings.append("")
+                wall = self._wall_ref + v
+                label = datetime.fromtimestamp(wall).strftime("%H:%M:%S") if wall > 0 else ""
+            # Dense tick spacing on small plots can round two neighboring ticks
+            # to the same label (e.g. "-0.6 s" and "-1.0 s" both showing "-1 s");
+            # blank the repeat instead of drawing a confusing duplicate.
+            if label and label in seen:
+                label = ""
+            else:
+                seen.add(label)
+            strings.append(label)
         return strings
 
 
@@ -56,6 +62,7 @@ class PlotWidget(pg.PlotWidget):
         min_x_range: float | None = None,
         monitor_mode: bool = False,
         hover_label: str | None = None,
+        interactive: bool = True,
     ) -> None:
         self._wall_clock_axis = WallClockAxis(orientation="bottom")
         super().__init__(axisItems={"bottom": self._wall_clock_axis})
@@ -92,8 +99,11 @@ class PlotWidget(pg.PlotWidget):
         self.getAxis("left").setPen(pen)
         self.getAxis("bottom").setPen(pen)
 
-        # Monitor mode: disable zoom, pan, context menu, and auto-range buttons
-        if self._monitor_mode:
+        # Embedded/monitor plots: disable zoom, pan, context menu, and
+        # auto-range buttons so mouse wheel/drag over them scrolls the page
+        # instead of fighting it. Popped-out dialog plots stay interactive.
+        self._interactive = interactive and not monitor_mode
+        if not self._interactive:
             vb = self.plotItem.vb
             vb.setMenuEnabled(False)
             vb.setMouseEnabled(x=False, y=False)
@@ -153,6 +163,11 @@ class PlotWidget(pg.PlotWidget):
     @on_double_click.setter
     def on_double_click(self, callback):
         self._on_double_click = callback
+
+    def set_y_label(self, y_label: str, hover_label: str | None = None) -> None:
+        self.y_label = y_label
+        self.hover_label = hover_label or y_label
+        self.setLabel("left", y_label)
 
     def set_points(self, points: Sequence[tuple]) -> None:
         self.set_series((('', points),))

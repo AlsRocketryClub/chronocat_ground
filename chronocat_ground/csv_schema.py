@@ -75,6 +75,7 @@ def csv_fieldnames() -> list[str]:
         prefix = f"ad7177_adc_{adc_index}_ch_{channel_index}"
         fields.append(f"{prefix}_word")
         fields.append(f"{prefix}_raw24")
+        fields.append(f"{prefix}_volts")
         fields.append(f"{prefix}_status")
         fields.append(f"{prefix}_status_names")
 
@@ -128,6 +129,7 @@ def packet_to_row(
         prefix = f"ad7177_adc_{reading.adc_index}_ch_{reading.channel_index}"
         row[f"{prefix}_word"] = f"0x{reading.word:08x}"
         row[f"{prefix}_raw24"] = reading.raw24
+        row[f"{prefix}_volts"] = f"{reading.voltage:.6f}"
         row[f"{prefix}_status"] = f"0x{reading.status:02x}"
         row[f"{prefix}_status_names"] = ad7177_status_names(reading.status)
 

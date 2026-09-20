@@ -1,10 +1,49 @@
 from __future__ import annotations
 
+from datetime import datetime
 import sqlite3
 from pathlib import Path
 import queue
 import threading
 from typing import List, Tuple
+
+
+DEFAULT_DATABASE_PATH = Path("chronocat_adc.db")
+
+
+def archive_database(path: str | Path, timestamp: datetime | None = None) -> Path:
+    """Checkpoint and archive a SQLite database without discarding WAL data."""
+    source = Path(path)
+    if not source.is_file():
+        raise FileNotFoundError(f"Database not found: {source}")
+
+    stamp = (timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    archive_base = source.with_name(f"{source.stem}_{stamp}")
+    archive = archive_base.with_suffix(source.suffix)
+    suffix = 1
+    while any(
+        Path(f"{archive}{sidecar_suffix}").exists()
+        for sidecar_suffix in ("", "-wal", "-shm")
+    ):
+        archive = archive_base.with_name(f"{archive_base.name}_{suffix}").with_suffix(
+            source.suffix
+        )
+        suffix += 1
+
+    connection = sqlite3.connect(source)
+    try:
+        checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint is not None and checkpoint[0] != 0:
+            raise RuntimeError(f"Could not checkpoint database before archiving: {source}")
+    finally:
+        connection.close()
+
+    source.replace(archive)
+    for sidecar_suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{source}{sidecar_suffix}")
+        if sidecar.exists():
+            sidecar.replace(Path(f"{archive}{sidecar_suffix}"))
+    return archive
 
 
 class TelemetryDb:

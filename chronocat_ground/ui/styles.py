@@ -9,6 +9,17 @@ QWidget {
 QLabel {
     background: transparent;
 }
+QDialog, QMessageBox {
+    background: #f4f4f4;
+    color: #111111;
+}
+QMessageBox QLabel {
+    color: #111111;
+}
+QMessageBox QPushButton {
+    background: #ececec;
+    color: #111111;
+}
 #appShell, #pages, #pageScroll, QScrollArea > QWidget > QWidget {
     background: #dcdcdc;
 }

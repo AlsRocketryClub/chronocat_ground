@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 import time
 
 from PySide6.QtCore import QTimer
@@ -53,8 +54,8 @@ from .protocol import (
 from .pid_page import PidPage
 from .pid_profiles import PidProfile, profile_by_name
 from .telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY, TelemetryCsvLogger
-from .telemetry_db import TelemetryDb
-from .telemetry_history import TelemetryHistory
+from .telemetry_db import DEFAULT_DATABASE_PATH, TelemetryDb
+from .telemetry_history import TelemetryHistory, adc_point_for_mode
 from .telemetry_receiver import TelemetryReceiver
 from .ui.widgets import SampleCard, StatCard, ValueTable
 from .ui.styles import APPLICATION_STYLE
@@ -91,7 +92,7 @@ class PendingPidOperation:
 
 
 class MainWindow(MainWindowPagesMixin, QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, database_path: str | Path = DEFAULT_DATABASE_PATH) -> None:
         super().__init__()
         self.setWindowTitle("CHRONO-CAT Ground Station")
         self.resize(1180, 760)
@@ -108,9 +109,13 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.connection_pending = False
         self.last_telemetry_time: float | None = None
         self.view_buttons: dict[str, QPushButton] = {}
-        self.adc_db = TelemetryDb("chronocat_adc.db", async_writes=True)
+        self.database_path = Path(database_path)
+        self.adc_db = TelemetryDb(self.database_path, async_writes=True)
         self.telemetry_history = TelemetryHistory(self.adc_db)
         self.sample_cards: list[SampleCard] = []
+        self.samples_display_mode = "voltage"
+        self._last_adc_packet: TelemetryPacket | None = None
+        self._last_adc_history = None
         self.plot_dialogs: dict[str, QDialog] = {}
         self.plot_dialog_refs: dict[str, dict[str, object]] = {}
         self.csv_logger: TelemetryCsvLogger | None = None
@@ -749,6 +754,8 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.adc_summary_card.set_value(
             f"{valid_adc_count}/{len(packet.ad7177_readings)} valid"
         )
+        self.board_frame_index_card.set_value(f"{packet.counter:,}")
+        self.session_frame_count_card.set_value(f"{history.packet_count:,}")
         geiger_1 = packet.geiger_reading(0)
         geiger_2 = packet.geiger_reading(1)
         self.update_geiger_rate_card(geiger_1, self.geiger_dose_rate_card)
@@ -781,27 +788,9 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.radiation_plot_status.setText(f"{len(history.geiger_points[0])}/300 points")
         self.radiation_2_plot_status.setText(f"{len(history.geiger_points[1])}/300 points")
 
-        materials = ["TIPs-pentacene", "diF-TES-ADT", "Rubrene"]
-        device_types = ["Device 1a", "Device 2a", "Device 1b", "Device 2b"]
-        for reading in packet.ad7177_readings:
-            if reading.slot < len(self.sample_cards):
-                points = history.adc_points[reading.slot]
-                self.sample_cards[reading.slot].set_points(points)
-                self.sample_cards[reading.slot].set_reading(
-                    f"0x{reading.raw24:06x} ({reading.raw24})",
-                    f"0x{reading.status:02x} ({ad7177_status_names(reading.status)})",
-                    packet.os_adc_valid(reading.slot),
-                )
-            ch = reading.slot % 3
-            dev_off = reading.slot // 3
-            self.samples_summary_table.set_value(
-                f"{materials[ch]} {device_types[dev_off]}",
-                (
-                    f"0x{reading.raw24:06x} ({reading.raw24})"
-                    if packet.os_adc_valid(reading.slot)
-                    else f"INVALID/STALE (last 0x{reading.raw24:06x})"
-                ),
-            )
+        self._last_adc_packet = packet
+        self._last_adc_history = history
+        self.refresh_sample_cards()
         if history.adc_average_points:
             self.monitoring_adc_average_plot.set_points(history.adc_average_points)
         self.update_plot_dialogs()
@@ -977,13 +966,13 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             if valid and not has_error:
                 valid_adc_count += 1
                 state = "healthy"
-                value = f"0x{reading.raw24:06x}"
+                value = f"{reading.voltage:.6f} V"
             elif has_error:
                 state = "error"
-                value = f"0x{reading.raw24:06x} ({ad7177_status_names(reading.status)})"
+                value = f"{reading.voltage:.6f} V ({ad7177_status_names(reading.status)})"
             else:
                 state = "warning"
-                value = f"stale 0x{reading.raw24:06x}"
+                value = f"stale {reading.voltage:.6f} V"
             name = f"ADC{reading.adc_index} CH{reading.channel_index}"
             self.health_adc_table.set_value(name, value, 1)
             self.health_adc_table.set_value(name, "OK" if state == "healthy" else state, 2)
@@ -1074,8 +1063,49 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         first = packet.ad7177_reading(0)
         return (
             f"{active_count}/{len(packet.os_adc_readings)} valid; "
-            f"ADC0 CH0 raw24=0x{first.raw24:06x} status=0x{first.status:02x}"
+            f"ADC0 CH0 {first.voltage:.6f} V (raw24=0x{first.raw24:06x}) status=0x{first.status:02x}"
         )
+
+    def toggle_samples_display_mode(self) -> None:
+        self.samples_display_mode = (
+            "raw" if self.samples_display_mode == "voltage" else "voltage"
+        )
+        self.samples_display_toggle.setText(
+            "Showing: Raw24" if self.samples_display_mode == "raw" else "Showing: Voltage"
+        )
+        self.refresh_sample_cards()
+
+    def refresh_sample_cards(self) -> None:
+        packet = self._last_adc_packet
+        history = self._last_adc_history
+        if packet is None or history is None:
+            return
+        mode = self.samples_display_mode
+        axis_label, axis_hover = ("Raw24", "Raw24") if mode == "raw" else ("Volts (V)", "Volts")
+        materials = ["TIPs-pentacene", "diF-TES-ADT", "Rubrene"]
+        device_types = ["Device 1a", "Device 2a", "Device 1b", "Device 2b"]
+        for reading in packet.ad7177_readings:
+            value_text = (
+                f"0x{reading.raw24:06x}" if mode == "raw" else f"{reading.voltage:.6f} V"
+            )
+            if reading.slot < len(self.sample_cards):
+                points = [
+                    adc_point_for_mode(entry, mode)
+                    for entry in history.adc_points[reading.slot]
+                ]
+                self.sample_cards[reading.slot].set_value_axis(axis_label, axis_hover)
+                self.sample_cards[reading.slot].set_points(points)
+                self.sample_cards[reading.slot].set_reading(
+                    value_text,
+                    f"0x{reading.status:02x} ({ad7177_status_names(reading.status)})",
+                    packet.os_adc_valid(reading.slot),
+                )
+            ch = reading.slot % 3
+            dev_off = reading.slot // 3
+            self.samples_summary_table.set_value(
+                f"{materials[ch]} {device_types[dev_off]}",
+                value_text if packet.os_adc_valid(reading.slot) else f"INVALID/STALE (last {value_text})",
+            )
 
     def update_telemetry_age(self) -> None:
         if self.client.connected and not self.client.check_connection():

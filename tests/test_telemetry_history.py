@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 import csv
 from pathlib import Path
 import tempfile
 import unittest
 
-from chronocat_ground.protocol import GeigerReading, TelemetryPacket
+from chronocat_ground.protocol import (
+    AD7177_BIPOLAR_MIDSCALE,
+    AD7177_VREF_VOLTS,
+    GeigerReading,
+    TelemetryPacket,
+)
 from chronocat_ground.heater_safety import all_heaters_safe
 from chronocat_ground.telemetry_csv import (
     CSV_MODE_GEIGER_ONLY,
     TelemetryCsvLogger,
     packet_to_row,
 )
-from chronocat_ground.telemetry_db import TelemetryDb
+from chronocat_ground.telemetry_db import TelemetryDb, archive_database
 from chronocat_ground.telemetry_history import TelemetryHistory
 from chronocat_ground.protocol_models import CombinedTelemetryPacket, PidTelemetryPacket
 
@@ -65,7 +71,12 @@ class TelemetryHistoryTests(unittest.TestCase):
 
             self.assertEqual(snapshot.packet_count, 1)
             self.assertEqual(snapshot.geiger_points[0][-1], (10.0, 20.0, 2.0))
-            self.assertEqual(snapshot.adc_average_points[-1], (10.0, 20.0, 20.0))
+            expected_average_volts = (
+                (20 - AD7177_BIPOLAR_MIDSCALE) / AD7177_BIPOLAR_MIDSCALE * AD7177_VREF_VOLTS
+            )
+            self.assertEqual(
+                snapshot.adc_average_points[-1], (10.0, 20.0, expected_average_volts)
+            )
             self.assertEqual(database.query_temperature(0), [(20.0, 25.0)])
             self.assertEqual(database.query_temperature(2), [(20.0, 30.0)])
             self.assertEqual(database.query_temperature(1), [])
@@ -81,6 +92,17 @@ class TelemetryHistoryTests(unittest.TestCase):
             database.query_adc(0, limit=3),
             [(7.0, 7), (8.0, 8), (9.0, 9)],
         )
+        database.close()
+
+    def test_session_packet_count_continues_when_board_counter_restarts(self) -> None:
+        database = TelemetryDb()
+        history = TelemetryHistory(database)
+
+        first = history.record(replace(sample_packet(), counter=99), 10.0, 20.0)
+        second = history.record(replace(sample_packet(), counter=0), 11.0, 21.0)
+
+        self.assertEqual(first.packet_count, 1)
+        self.assertEqual(second.packet_count, 2)
         database.close()
 
     def test_async_file_writer_flushes_before_queries_and_shutdown(self) -> None:
@@ -110,6 +132,30 @@ class TelemetryHistoryTests(unittest.TestCase):
                 }
                 self.assertIn("received_wall", columns)
             database.close()
+
+    def test_archive_database_preserves_records_and_uses_unique_names(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "telemetry.db"
+            timestamp = datetime(2026, 9, 19, 12, 34, 56)
+
+            database = TelemetryDb(path, async_writes=True)
+            database.insert_packet([(1, 0, 42, 2.0)], [], [])
+            database.close()
+            first_archive = archive_database(path, timestamp)
+
+            self.assertEqual(first_archive.name, "telemetry_20260919_123456.db")
+            self.assertFalse(path.exists())
+            archived_database = TelemetryDb(first_archive)
+            self.assertEqual(archived_database.query_adc(0), [(2.0, 42)])
+            archived_database.close()
+
+            database = TelemetryDb(path)
+            database.close()
+            second_archive = archive_database(path, timestamp)
+
+            self.assertEqual(second_archive.name, "telemetry_20260919_123456_1.db")
+            self.assertTrue(first_archive.exists())
+            self.assertTrue(second_archive.exists())
 
 
 class GeigerCsvDurabilityTests(unittest.TestCase):
