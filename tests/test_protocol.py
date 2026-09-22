@@ -611,25 +611,25 @@ class TelemetryProtocolTests(unittest.TestCase):
         cmd = build_command(COMMAND_HEATER_SET_KD, 0, 0)
         self.assertEqual(cmd, bytes([0x16, 0x00, 0x00, 0x00, 0x00]))
 
-        cmd = build_command(COMMAND_HEATER_SET_MANUAL_DUTY, 0, 20)
-        self.assertEqual(cmd, bytes([0x18, 0x00, 0x00, 0x00, 0x14]))
+        cmd = build_command(COMMAND_HEATER_SET_MANUAL_DUTY, 0, 250)
+        self.assertEqual(cmd, bytes([0x18, 0x00, 0x00, 0x00, 0xFA]))
 
         cmd = build_command(COMMAND_HEATER_RETURN_TO_PID, 0, 0)
         self.assertEqual(cmd, bytes([0x19, 0x00, 0x00, 0x00, 0x00]))
 
-        cmd = build_command(COMMAND_HEATER_ALL_ON, 0, 20)
-        self.assertEqual(cmd, bytes([0x1B, 0x00, 0x00, 0x00, 0x14]))
+        cmd = build_command(COMMAND_HEATER_ALL_ON, 0, 250)
+        self.assertEqual(cmd, bytes([0x1B, 0x00, 0x00, 0x00, 0xFA]))
 
         cmd = build_command(COMMAND_HEATER_ALL_OFF, 0, 0)
         self.assertEqual(cmd, bytes([0x1C, 0x00, 0x00, 0x00, 0x00]))
 
     def test_encode_heater_duty_permille(self) -> None:
         self.assertEqual(encode_heater_duty_permille(0), 0)
-        self.assertEqual(encode_heater_duty_permille(20), 20)
+        self.assertEqual(encode_heater_duty_permille(250), 250)
         with self.assertRaises(ValueError):
             encode_heater_duty_permille(-1)
         with self.assertRaises(ValueError):
-            encode_heater_duty_permille(21)
+            encode_heater_duty_permille(251)
 
     def test_heater_response_parse(self) -> None:
         resp = parse_command_response(bytes([0x00, 0x10, 0x00, 0x00, 0xEA, 0x60]))
@@ -638,10 +638,10 @@ class TelemetryProtocolTests(unittest.TestCase):
         self.assertEqual(resp.arg1, 0)
         self.assertEqual(resp.arg2, 60000)
 
-        resp = parse_command_response(bytes([0x00, 0x1B, 0x00, 0x00, 0x00, 0x14]))
+        resp = parse_command_response(bytes([0x00, 0x1B, 0x00, 0x00, 0x00, 0xFA]))
         self.assertEqual(resp.command, COMMAND_HEATER_ALL_ON)
         self.assertEqual(resp.arg1, 0)
-        self.assertEqual(resp.arg2, 20)
+        self.assertEqual(resp.arg2, 250)
 
 
 if __name__ == "__main__":

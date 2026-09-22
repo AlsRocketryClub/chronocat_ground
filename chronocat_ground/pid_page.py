@@ -199,7 +199,7 @@ class PidPage(QWidget):
         )
         self.output_plot = PlotWidget(
             "Duty (‰)", "No data", hover_label="‰",
-            y_range=(0.0, 20.0), min_y_range=5.0, monitor_mode=True,
+            y_range=(0.0, 250.0), min_y_range=5.0, monitor_mode=True,
         )
         self.temperature_plot.setMinimumHeight(215)
         self.output_plot.setMinimumHeight(215)
@@ -226,7 +226,7 @@ class PidPage(QWidget):
             "Duty (‰)",
             "No data",
             hover_label="‰",
-            y_range=(0.0, 20.0),
+            y_range=(0.0, 250.0),
             min_y_range=5.0,
             monitor_mode=True,
         )

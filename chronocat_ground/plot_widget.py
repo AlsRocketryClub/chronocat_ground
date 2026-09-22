@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime
 from collections.abc import Sequence
@@ -25,12 +26,22 @@ class WallClockAxis(pg.AxisItem):
     def setRelative(self, relative: bool) -> None:  # noqa: N802
         self._relative = relative
 
+    def tickValues(self, minVal, maxVal, size):  # noqa: N802
+        levels = super().tickValues(minVal, maxVal, size)
+        # Relative labels are rounded seconds, so minor tick levels can
+        # produce multiple ticks with the same visible label.
+        return levels[:1] if self._relative else levels
+
     def tickStrings(self, values, scale, spacing):  # noqa: N802
         strings = []
         seen: set[str] = set()
         for v in values:
             if self._relative:
-                label = "now" if abs(v) < 0.5 else f"{v:.0f} s"
+                if abs(v) < max(abs(spacing) * 1e-6, 1e-9):
+                    label = "now"
+                else:
+                    decimals = max(0, math.ceil(-math.log10(abs(spacing))))
+                    label = f"{v:.{decimals}f} s"
             else:
                 wall = self._wall_ref + v
                 label = datetime.fromtimestamp(wall).strftime("%H:%M:%S") if wall > 0 else ""
@@ -271,8 +282,7 @@ class PlotWidget(pg.PlotWidget):
                 self.setYRange(self._y_range[0], self._y_range[1], padding=0)
                 self.plotItem.vb.setLimits(yMin=self._y_range[0], yMax=self._y_range[1])
             elif not self._abs_time:
-                self.enableAutoRange(x=False, y=True)
-                self.setXRange(x.min(), 0, padding=0)
+                self.enableAutoRange(x=True, y=True)
             else:
                 self.enableAutoRange(x=True, y=True)
 

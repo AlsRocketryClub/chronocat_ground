@@ -312,7 +312,7 @@ The current GUI controls intentionally target Geiger 1 only.
 The legacy manual global heater controls remain protocol-compatible:
 
 ```text
-0x1B all on:  arg1 = 0, arg2 = duty permille (1..20)
+0x1B all on:  arg1 = 0, arg2 = duty permille (1..250)
 0x1C all off: arg1 = 0, arg2 = 0
 ```
 
