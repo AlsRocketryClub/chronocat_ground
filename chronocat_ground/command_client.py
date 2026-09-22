@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import select
 import socket
 import threading
 
@@ -11,6 +12,27 @@ from .protocol import (
     build_command,
     parse_command_response,
 )
+
+
+def _enable_aggressive_keepalive(sock: socket.socket) -> None:
+    """Make a dead peer (e.g. an unplugged cable) surface as a socket error
+    within seconds instead of TCP's default ~2 hour keepalive idle time."""
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    idle_seconds = 3
+    interval_seconds = 2
+    probe_count = 3
+    for option_name, value in (
+        ("TCP_KEEPIDLE", idle_seconds),  # Linux
+        ("TCP_KEEPALIVE", idle_seconds),  # macOS
+        ("TCP_KEEPINTVL", interval_seconds),
+        ("TCP_KEEPCNT", probe_count),
+    ):
+        option = getattr(socket, option_name, None)
+        if option is not None:
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, option, value)
+            except OSError:
+                pass
 
 
 class CommandClient:
@@ -31,6 +53,7 @@ class CommandClient:
 
             sock = socket.create_connection((host, port), timeout=timeout)
             sock.settimeout(timeout)
+            _enable_aggressive_keepalive(sock)
             self._socket = sock
             self.host = host
             self.port = port
@@ -46,15 +69,48 @@ class CommandClient:
                 self._socket = None
 
     def check_connection(self) -> bool:
+        """Actively probe the TCP session rather than trusting a cached flag.
+
+        getpeername() alone only reflects local socket state and stays
+        "connected" even after the physical link (e.g. Ethernet) is cut,
+        until the OS notices via keepalive or an actual I/O attempt. Combine
+        keepalive (see _enable_aggressive_keepalive) with a non-blocking
+        peek so a dead peer is caught within a few seconds instead of never.
+        """
         with self._lock:
             if self._socket is None:
                 return False
             try:
                 self._socket.getpeername()
-                return True
             except OSError:
                 self.disconnect()
                 return False
+
+            try:
+                readable, _, errored = select.select(
+                    [self._socket], [], [self._socket], 0
+                )
+            except OSError:
+                self.disconnect()
+                return False
+            if errored:
+                self.disconnect()
+                return False
+            if readable:
+                try:
+                    peeked = self._socket.recv(1, socket.MSG_PEEK)
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    self.disconnect()
+                    return False
+                else:
+                    if peeked == b"":
+                        # Peer closed the connection (FIN) or a keepalive
+                        # probe timed out and the kernel gave up on it.
+                        self.disconnect()
+                        return False
+            return True
 
     def send_command(
         self,

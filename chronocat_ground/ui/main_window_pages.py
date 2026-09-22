@@ -37,6 +37,7 @@ from ..protocol import (
     DEFAULT_COMMAND_PORT,
     DEFAULT_DEVICE_HOST,
     DEFAULT_TELEMETRY_PORT,
+    TELEMETRY_TEMP_COUNT,
     VALUE_OFF,
     VALUE_ON,
 )
@@ -727,8 +728,8 @@ class MainWindowPagesMixin:
         layout.setSpacing(12)
         self.health_table = ValueTable(
             [
-                ("Command Connection", "Disconnected"),
-                ("Telemetry Receiver", f"waiting on UDP {DEFAULT_TELEMETRY_PORT}"),
+                ("Uplink", "Disconnected"),
+                ("Downlink", f"waiting on UDP {DEFAULT_TELEMETRY_PORT}"),
                 ("Last Telemetry", "—"),
                 ("Firmware Health", "—"),
                 ("TCP Server", "—"),
@@ -749,7 +750,7 @@ class MainWindowPagesMixin:
         self.health_geiger_table.expand_to_contents()
 
         self.health_temperature_table = ValueTable(
-            [(f"TMP117-{index + 1}", "—", "unknown") for index in range(13)],
+            [(f"TMP117-{index + 1}", "—", "unknown") for index in range(TELEMETRY_TEMP_COUNT)],
             ("Sensor", "Reading", "State"),
         )
         self.health_temperature_table.expand_to_contents()

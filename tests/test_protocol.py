@@ -16,6 +16,7 @@ from chronocat_ground.protocol import (
     PID_TELEMETRY_RECORD_SIZE,
     TELEMETRY_PACKET_SIZE_V1,
     TELEMETRY_PACKET_SIZE_V2,
+    TELEMETRY_TEMP_COUNT,
     encode_heater_gain,
     encode_heater_target_c,
     encode_heater_duty_permille,
@@ -85,7 +86,9 @@ def telemetry_packet(
     prefix.extend(struct.pack(">HHII", 0x0003, size, 1234, 99))
     prefix.append(0)
     prefix.extend(struct.pack(">H", 0x0003))
-    prefix.extend(struct.pack(">13h", *range(-6, 7)))
+    prefix.extend(
+        struct.pack(f">{TELEMETRY_TEMP_COUNT}h", *range(-6, -6 + TELEMETRY_TEMP_COUNT))
+    )
     prefix.extend(struct.pack(">H", adc_valid_mask))
     prefix.extend(
         struct.pack(">12I", *(range(12) if adc_words is None else adc_words))
@@ -212,7 +215,7 @@ class TelemetryProtocolTests(unittest.TestCase):
 
         packet = parse_telemetry_packet(data)
 
-        self.assertEqual(len(data), 131)
+        self.assertEqual(len(data), TELEMETRY_PACKET_SIZE_V1)
         self.assertEqual(packet.version, 1)
         self.assertEqual(len(packet.geiger_readings), 1)
         self.assertEqual(packet.geiger_reading(0).event_id, 100)
@@ -230,7 +233,7 @@ class TelemetryProtocolTests(unittest.TestCase):
 
         packet = parse_telemetry_packet(data)
 
-        self.assertEqual(len(data), 165)
+        self.assertEqual(len(data), TELEMETRY_PACKET_SIZE_V2)
         self.assertEqual(packet.version, 2)
         self.assertEqual(packet.geiger_reading(0).event_id, 200)
         self.assertEqual(packet.geiger_reading(1).event_id, 201)
@@ -239,7 +242,7 @@ class TelemetryProtocolTests(unittest.TestCase):
 
     def test_rejects_wrong_size_and_declared_length(self) -> None:
         data = telemetry_packet(2, [geiger_record(0, 1, 1.0), geiger_record(1, 2, 2.0)])
-        with self.assertRaisesRegex(ValueError, "expected 165"):
+        with self.assertRaisesRegex(ValueError, f"expected {TELEMETRY_PACKET_SIZE_V2}"):
             parse_telemetry_packet(data[:-1])
 
         bad_length = bytearray(data)
@@ -540,7 +543,7 @@ class TelemetryProtocolTests(unittest.TestCase):
         data = telemetry_packet(2, [valid, invalid])
         packet = parse_telemetry_packet(data)
 
-        self.assertEqual(len(data), 165)
+        self.assertEqual(len(data), TELEMETRY_PACKET_SIZE_V2)
         self.assertTrue(packet.geiger_reading(0).valid)
         self.assertFalse(packet.geiger_reading(1).valid)
         self.assertEqual(packet.geiger_reading(1).counter_id, 1)

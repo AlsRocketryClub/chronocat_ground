@@ -10,6 +10,7 @@ import unittest
 from chronocat_ground.protocol import (
     AD7177_BIPOLAR_MIDSCALE,
     AD7177_VREF_VOLTS,
+    TELEMETRY_TEMP_COUNT,
     GeigerReading,
     TelemetryPacket,
 )
@@ -25,7 +26,7 @@ from chronocat_ground.protocol_models import CombinedTelemetryPacket, PidTelemet
 
 
 def sample_packet() -> TelemetryPacket:
-    temperatures = (2500, 0, 3000) + (0,) * 10
+    temperatures = (2500, 0, 3000) + (0,) * (TELEMETRY_TEMP_COUNT - 3)
     adc_words = ((10 << 8), 0, (30 << 8)) + (0,) * 9
     geiger = GeigerReading(
         valid=1,

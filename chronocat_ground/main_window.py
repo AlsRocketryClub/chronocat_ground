@@ -91,6 +91,17 @@ class PendingPidOperation:
     step: int = 0
 
 
+def tri_state(healthy_count: int, total_count: int) -> str:
+    """Red when nothing is healthy, yellow when some but not all is, green when all is."""
+    if total_count <= 0:
+        return "unknown"
+    if healthy_count <= 0:
+        return "error"
+    if healthy_count >= total_count:
+        return "healthy"
+    return "warning"
+
+
 class MainWindow(MainWindowPagesMixin, QMainWindow):
     def __init__(self, database_path: str | Path = DEFAULT_DATABASE_PATH) -> None:
         super().__init__()
@@ -230,8 +241,8 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.host_input.setEnabled(not command_in_progress)
         self.port_input.setEnabled(not command_in_progress)
 
-        self.health_table.set_value("Command Connection", "Connected" if connected else "Disconnected")
-        self.health_table.set_state("Command Connection", "healthy" if connected else "error")
+        self.health_table.set_value("Uplink", "Connected" if connected else "Disconnected")
+        self.health_table.set_state("Uplink", "healthy" if connected else "error")
         if self.last_telemetry_time is None:
             self.system_health_section.set_status(
                 f"WAITING FOR DOWNLINK  ·  UPLINK {'CONNECTED' if connected else 'DISCONNECTED'}",
@@ -906,8 +917,8 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         sd_error = bool(packet.flags & TELEMETRY_FLAG_SD_LOG_ERROR)
         sd_active = bool(packet.flags & TELEMETRY_FLAG_SD_LOG_ACTIVE)
 
-        self.health_table.set_value("Telemetry Receiver", "receiving")
-        self.health_table.set_state("Telemetry Receiver", "healthy")
+        self.health_table.set_value("Downlink", "receiving")
+        self.health_table.set_state("Downlink", "healthy")
         self.health_table.set_value("Last Telemetry", "now")
         self.health_table.set_state("Last Telemetry", "healthy")
         self.health_table.set_value("Firmware Health", health)
@@ -977,13 +988,12 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self.health_adc_table.set_value(name, value, 1)
             self.health_adc_table.set_value(name, "OK" if state == "healthy" else state, 2)
             self.health_adc_table.set_state(name, state, 2)
+        adc_state = tri_state(valid_adc_count, len(packet.ad7177_readings))
         self.health_table.set_value("AD7177 Channels", f"{valid_adc_count}/{len(packet.ad7177_readings)} healthy")
-        self.health_table.set_state(
-            "AD7177 Channels", "healthy" if valid_adc_count == len(packet.ad7177_readings) else "warning"
-        )
+        self.health_table.set_state("AD7177 Channels", adc_state)
         self.adc_health_section.set_status(
             f"{valid_adc_count} OF {len(packet.ad7177_readings)} CHANNELS HEALTHY",
-            "healthy" if valid_adc_count == len(packet.ad7177_readings) else "warning",
+            adc_state,
         )
 
         healthy_geigers = 0
@@ -1002,11 +1012,12 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self.health_geiger_table.set_value(row, hv, 2)
             self.health_geiger_table.set_value(row, "OK" if state == "healthy" else state, 3)
             self.health_geiger_table.set_state(row, state, 3)
+        geiger_state = tri_state(healthy_geigers, 2)
         self.health_table.set_value("Geiger Detectors", f"{healthy_geigers}/2 healthy")
-        self.health_table.set_state("Geiger Detectors", "healthy" if healthy_geigers == 2 else "warning")
+        self.health_table.set_state("Geiger Detectors", geiger_state)
         self.radiation_health_section.set_status(
             f"{healthy_geigers} OF 2 DETECTORS HEALTHY",
-            "healthy" if healthy_geigers == 2 else "warning",
+            geiger_state,
         )
 
         heater_count = 0
@@ -1029,14 +1040,12 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                 self.health_heater_table.set_value(row, "OK" if state == "healthy" else state, 3)
                 self.health_heater_table.set_state(row, state, 3)
         heater_text = "not present" if combined_packet is None else f"{healthy_heaters}/{heater_count} healthy"
+        heater_state = "unknown" if combined_packet is None else tri_state(healthy_heaters, heater_count)
         self.health_table.set_value("Heater / PID Records", heater_text)
-        self.health_table.set_state(
-            "Heater / PID Records",
-            "unknown" if combined_packet is None else "healthy" if healthy_heaters == heater_count else "warning",
-        )
+        self.health_table.set_state("Heater / PID Records", heater_state)
         self.heater_health_section.set_status(
             heater_text.upper(),
-            "unknown" if combined_packet is None else "healthy" if healthy_heaters == heater_count else "warning",
+            heater_state,
         )
         self.health_table.setToolTip(
             f"Telemetry {'enabled' if telemetry_enabled else 'disabled'}; packet {packet.counter}"
@@ -1047,7 +1056,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             "waiting": ("WAITING", "No telemetry received"),
             "receiving": ("RECEIVING", "Telemetry is arriving"),
             "stale": ("STALE", "No telemetry packet has arrived recently"),
-            "error": ("ERROR", "Telemetry receiver reported an error"),
+            "error": ("ERROR", "Downlink reported an error"),
         }
         text, tooltip = labels.get(status, labels["error"])
         self.telemetry_indicator.set_status(text, status, tooltip)
@@ -1107,6 +1116,16 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                 value_text if packet.os_adc_valid(reading.slot) else f"INVALID/STALE (last {value_text})",
             )
 
+    def _mark_downlink_derived_status_unknown(self) -> None:
+        """Data that only arrives over a stale downlink can't be trusted; say so."""
+        self.sd_log_indicator.set_status(
+            "UNKNOWN", "unknown", "Downlink is stale; SD logging state can't be confirmed"
+        )
+        self.health_table.set_value("SD Temperature Logger", "unknown")
+        self.health_table.set_state("SD Temperature Logger", "unknown")
+        self.health_table.set_value("TCP Server", "unknown")
+        self.health_table.set_state("TCP Server", "unknown")
+
     def update_telemetry_age(self) -> None:
         if self.client.connected and not self.client.check_connection():
             self.update_connection_state()
@@ -1114,9 +1133,10 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
         if self.last_telemetry_time is None:
             self.set_telemetry_status("waiting")
-            self.health_table.set_value("Telemetry Receiver", f"waiting on UDP {DEFAULT_TELEMETRY_PORT}")
-            self.health_table.set_state("Telemetry Receiver", "unknown")
+            self.health_table.set_value("Downlink", f"waiting on UDP {DEFAULT_TELEMETRY_PORT}")
+            self.health_table.set_state("Downlink", "unknown")
             self.system_health_section.set_status("WAITING FOR DOWNLINK", "unknown")
+            self._mark_downlink_derived_status_unknown()
             return
 
         age = time.monotonic() - self.last_telemetry_time
@@ -1124,12 +1144,13 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.telemetry_table.set_value("Last Seen", age_text)
         self.health_table.set_value("Last Telemetry", age_text)
         self.health_table.set_state("Last Telemetry", "healthy" if age < 2.5 else "warning")
-        self.health_table.set_value("Telemetry Receiver", "receiving" if age < 2.5 else "stale")
-        self.health_table.set_state("Telemetry Receiver", "healthy" if age < 2.5 else "warning")
+        self.health_table.set_value("Downlink", "receiving" if age < 2.5 else "stale")
+        self.health_table.set_state("Downlink", "healthy" if age < 2.5 else "warning")
         if age >= 2.5:
             self.system_health_section.set_status(
                 f"DOWNLINK STALE  ·  LAST PACKET {age_text.upper()}", "warning"
             )
+            self._mark_downlink_derived_status_unknown()
 
         active = age < 2.5
         self.set_telemetry_status("receiving" if active else "stale")
@@ -1140,8 +1161,8 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
     def on_receiver_error(self, message: str) -> None:
         self.log(message)
         self.set_telemetry_status("error")
-        self.health_table.set_value("Telemetry Receiver", message)
-        self.health_table.set_state("Telemetry Receiver", "error")
+        self.health_table.set_value("Downlink", message)
+        self.health_table.set_state("Downlink", "error")
         self.system_health_section.set_status("DOWNLINK ERROR", "error")
 
     def closeEvent(self, event) -> None:  # noqa: N802
