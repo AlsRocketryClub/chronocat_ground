@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .protocol import TelemetryPacket
+from .protocol_constants import HEATER_SENSOR_IDS
 
 
 HEATER_COUNT = 12
@@ -9,11 +10,6 @@ MAX_SAFE_TEMPERATURE_C = 65.0
 # Sensor indices follow the firmware's two-board TMP117 ordering. Keep this
 # mapping explicit so the heater page remains readable without relying on
 # heater-number arithmetic or sensor discovery order.
-HEATER_SENSOR_IDS = (
-    3, 4, 5, 0, 1, 2,
-    9, 10, 11, 6, 7, 8,
-)
-
 if len(HEATER_SENSOR_IDS) != HEATER_COUNT:
     raise RuntimeError("heater temperature mapping must cover every heater")
 

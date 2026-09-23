@@ -12,10 +12,6 @@ from .protocol_constants import (
     AD7177_STATUS_RDY,
     AD7177_STATUS_REG_ERROR,
     AD7177_VREF_VOLTS,
-    PID_FLAG_ENABLED,
-    PID_FLAG_MANUAL,
-    PID_FLAG_SENSOR_MAPPED,
-    PID_FLAG_SENSOR_VALID,
     PID_RESULT_NAMES,
     TELEMETRY_FLAG_TCP_LISTENING,
 )
@@ -197,9 +193,10 @@ class TelemetryPacket:
 
 @dataclass(frozen=True)
 class HeaterPidReading:
-    heater_id: int
     sensor_id: int
-    flags: int
+    sensor_valid: bool
+    pid_enabled: bool
+    manual: bool
     target_milli_c: int
     measurement_milli_c: int
     duty_permille: int
@@ -214,19 +211,7 @@ class HeaterPidReading:
 
     @property
     def sensor_mapped(self) -> bool:
-        return (self.flags & PID_FLAG_SENSOR_MAPPED) != 0
-
-    @property
-    def sensor_valid(self) -> bool:
-        return (self.flags & PID_FLAG_SENSOR_VALID) != 0
-
-    @property
-    def pid_enabled(self) -> bool:
-        return (self.flags & PID_FLAG_ENABLED) != 0
-
-    @property
-    def manual(self) -> bool:
-        return (self.flags & PID_FLAG_MANUAL) != 0
+        return self.sensor_id < 12 and self.result != 5
 
     @property
     def result_name(self) -> str:
@@ -251,15 +236,13 @@ class PidTelemetryPacket:
     payload_length: int
     timestamp: int
     counter: int
-    heater_count: int
-    record_size: int
-    mapped_mask: int
-    sensor_valid_mask: int
     pid_enabled_mask: int
     manual_mask: int
-    initialized_mask: int
-    fault_mask: int
     heaters: tuple[HeaterPidReading, ...]
+
+    @property
+    def mapped_mask(self) -> int:
+        return (1 << len(self.heaters)) - 1
 
 
 @dataclass(frozen=True)

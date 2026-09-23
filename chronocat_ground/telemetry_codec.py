@@ -6,10 +6,10 @@ from .protocol_constants import (
     COMBINED_TELEMETRY_MESSAGE_TYPE,
     COMBINED_TELEMETRY_PACKET_SIZE,
     GEIGER_RECORD_STRUCT,
+    HEATER_SENSOR_IDS,
     PID_TELEMETRY_HEATER_COUNT,
     PID_TELEMETRY_MESSAGE_TYPE,
     PID_TELEMETRY_PACKET_SIZE,
-    PID_TELEMETRY_RECORD_SIZE,
     TELEMETRY_GEIGER_COUNT_V2,
     TELEMETRY_MAGIC,
     TELEMETRY_MESSAGE_TYPE,
@@ -53,37 +53,32 @@ def _parse_geiger_reading(
 
 
 def _parse_pid_records(
-    data: bytes, offset: int, expected_end: int
-) -> tuple[int, int, tuple[int, ...], tuple[HeaterPidReading, ...], int]:
-    heater_count = data[offset]
-    record_size = data[offset + 1]
-    offset += 2
-    if (heater_count != PID_TELEMETRY_HEATER_COUNT) or (
-        record_size != PID_TELEMETRY_RECORD_SIZE
-    ):
-        raise ValueError(f"unexpected PID telemetry shape {heater_count}x{record_size}")
-
-    masks = struct.unpack_from(">HHHHHH", data, offset)
-    offset += 12
+    data: bytes, offset: int, expected_end: int,
+    temperatures: tuple[int, ...] | None = None,
+    temperature_valid_mask: int = 0,
+) -> tuple[tuple[int, ...], tuple[HeaterPidReading, ...], int]:
+    masks = struct.unpack_from(">HH", data, offset)
+    offset += 4
     heaters: list[HeaterPidReading] = []
-    for _ in range(heater_count):
-        heater_id, sensor_id, flags = struct.unpack_from(">BBH", data, offset)
-        offset += 4
+    for heater_id in range(PID_TELEMETRY_HEATER_COUNT):
+        sensor_id = HEATER_SENSOR_IDS[heater_id]
+        measurement_milli_c = (
+            temperatures[sensor_id] * 10 if temperatures is not None else 0
+        )
         target_milli_c = struct.unpack_from(">I", data, offset)[0]
-        offset += 4
-        measurement_milli_c = struct.unpack_from(">i", data, offset)[0]
         offset += 4
         duty_permille = struct.unpack_from(">H", data, offset)[0]
         offset += 2
         result = data[offset]
-        offset += 2
+        offset += 1
         terms = struct.unpack_from(">fffffff", data, offset)
         offset += 28
         heaters.append(
             HeaterPidReading(
-                heater_id=heater_id,
                 sensor_id=sensor_id,
-                flags=flags,
+                sensor_valid=bool(temperature_valid_mask & (1 << sensor_id)),
+                pid_enabled=bool(masks[0] & (1 << heater_id)),
+                manual=bool(masks[1] & (1 << heater_id)),
                 target_milli_c=target_milli_c,
                 measurement_milli_c=measurement_milli_c,
                 duty_permille=duty_permille,
@@ -100,7 +95,7 @@ def _parse_pid_records(
 
     if offset != expected_end:
         raise ValueError(f"PID telemetry size mismatch: consumed {offset} bytes")
-    return heater_count, record_size, masks, tuple(heaters), offset
+    return masks, tuple(heaters), offset
 
 
 def _parse_pid_telemetry_packet(data: bytes) -> PidTelemetryPacket:
@@ -116,7 +111,7 @@ def _parse_pid_telemetry_packet(data: bytes) -> PidTelemetryPacket:
         raise ValueError(f"bad PID telemetry payload length {payload_length}")
 
     timestamp, counter = struct.unpack_from(">II", data, 10)
-    heater_count, record_size, masks, heaters, _offset = _parse_pid_records(
+    masks, heaters, _offset = _parse_pid_records(
         data, 18, PID_TELEMETRY_PACKET_SIZE
     )
     return PidTelemetryPacket(
@@ -126,14 +121,8 @@ def _parse_pid_telemetry_packet(data: bytes) -> PidTelemetryPacket:
         payload_length=payload_length,
         timestamp=timestamp,
         counter=counter,
-        heater_count=heater_count,
-        record_size=record_size,
-        mapped_mask=masks[0],
-        sensor_valid_mask=masks[1],
-        pid_enabled_mask=masks[2],
-        manual_mask=masks[3],
-        initialized_mask=masks[4],
-        fault_mask=masks[5],
+        pid_enabled_mask=masks[0],
+        manual_mask=masks[1],
         heaters=heaters,
     )
 
@@ -190,8 +179,9 @@ def _parse_combined_telemetry_packet(data: bytes) -> CombinedTelemetryPacket:
         os_adc_readings=os_adc_readings,
         geiger_readings=tuple(geiger_readings),
     )
-    heater_count, record_size, masks, heaters, offset = _parse_pid_records(
-        data, offset, COMBINED_TELEMETRY_PACKET_SIZE
+    masks, heaters, offset = _parse_pid_records(
+        data, offset, COMBINED_TELEMETRY_PACKET_SIZE,
+        temperatures, temperature_valid_mask,
     )
     pid = PidTelemetryPacket(
         version=TELEMETRY_VERSION_V3,
@@ -200,14 +190,8 @@ def _parse_combined_telemetry_packet(data: bytes) -> CombinedTelemetryPacket:
         payload_length=payload_length,
         timestamp=timestamp,
         counter=counter,
-        heater_count=heater_count,
-        record_size=record_size,
-        mapped_mask=masks[0],
-        sensor_valid_mask=masks[1],
-        pid_enabled_mask=masks[2],
-        manual_mask=masks[3],
-        initialized_mask=masks[4],
-        fault_mask=masks[5],
+        pid_enabled_mask=masks[0],
+        manual_mask=masks[1],
         heaters=heaters,
     )
     if offset != COMBINED_TELEMETRY_PACKET_SIZE:

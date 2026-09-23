@@ -185,7 +185,7 @@ class GeigerCsvDurabilityTests(unittest.TestCase):
                 path=path, mode=CSV_MODE_GEIGER_ONLY, durable=False
             )
             logger.start()
-            pid = PidTelemetryPacket(3, 3, 0, 0, 100, 2, 0, 0, 0, 0, 0, 0, 0, 0, ())
+            pid = PidTelemetryPacket(3, 3, 0, 0, 100, 2, 0, 0, ())
             combined = CombinedTelemetryPacket(sample_packet(), pid)
 
             logger.write_packet(combined, "127.0.0.1:5005", datetime.now())

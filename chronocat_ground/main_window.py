@@ -1023,9 +1023,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         heater_count = 0
         healthy_heaters = 0
         if combined_packet is not None:
-            for reading in combined_packet.pid.heaters:
-                if not 0 <= reading.heater_id < 12:
-                    continue
+            for heater_id, reading in enumerate(combined_packet.pid.heaters):
                 heater_count += 1
                 if reading.result >= 7:
                     state = "error"
@@ -1034,7 +1032,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                 else:
                     state = "healthy"
                     healthy_heaters += 1
-                row = f"H{reading.heater_id}"
+                row = f"H{heater_id}"
                 value = "—" if reading.temperature_c is None else f"{reading.temperature_c:.2f} C / {reading.duty_permille}‰"
                 self.health_heater_table.set_value(row, value, 2)
                 self.health_heater_table.set_value(row, "OK" if state == "healthy" else state, 3)

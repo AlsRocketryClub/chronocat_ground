@@ -401,10 +401,7 @@ class PidPage(QWidget):
         fault_count = 0
         self._mapped_mask = packet.mapped_mask
         self._latest_pid_enabled_mask = packet.pid_enabled_mask
-        for reading in packet.heaters:
-            if not 0 <= reading.heater_id < HEATER_COUNT:
-                continue
-            heater_id = reading.heater_id
+        for heater_id, reading in enumerate(packet.heaters):
             self.readings[heater_id] = reading
             self.rows[heater_id].set_reading(reading)
             if reading.sensor_valid:

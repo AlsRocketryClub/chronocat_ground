@@ -181,24 +181,14 @@ def packet_to_geiger_rows(
 
 def pid_csv_fieldnames() -> list[str]:
     fields = [
-        "pid_heater_count",
-        "pid_record_size",
-        "pid_mapped_mask",
-        "pid_sensor_valid_mask",
         "pid_enabled_mask",
         "pid_manual_mask",
-        "pid_initialized_mask",
-        "pid_fault_mask",
     ]
     for heater_id in range(12):
         prefix = f"heater_{heater_id}"
         fields.extend(
             [
-                f"{prefix}_id",
-                f"{prefix}_sensor_id",
-                f"{prefix}_flags",
                 f"{prefix}_target_milli_c",
-                f"{prefix}_measurement_milli_c",
                 f"{prefix}_duty_permille",
                 f"{prefix}_result",
                 f"{prefix}_proportional",
@@ -221,24 +211,14 @@ def pid_packet_to_row(
     row: dict[str, object] = {
         "received_at": received_at.isoformat(timespec="microseconds"),
         "source": format_source(source),
-        "pid_heater_count": packet.heater_count,
-        "pid_record_size": packet.record_size,
-        "pid_mapped_mask": f"0x{packet.mapped_mask:04x}",
-        "pid_sensor_valid_mask": f"0x{packet.sensor_valid_mask:04x}",
         "pid_enabled_mask": f"0x{packet.pid_enabled_mask:04x}",
         "pid_manual_mask": f"0x{packet.manual_mask:04x}",
-        "pid_initialized_mask": f"0x{packet.initialized_mask:04x}",
-        "pid_fault_mask": f"0x{packet.fault_mask:04x}",
     }
     for index, heater in enumerate(packet.heaters):
         prefix = f"heater_{index}"
         row.update(
             {
-                f"{prefix}_id": heater.heater_id,
-                f"{prefix}_sensor_id": heater.sensor_id,
-                f"{prefix}_flags": f"0x{heater.flags:04x}",
                 f"{prefix}_target_milli_c": heater.target_milli_c,
-                f"{prefix}_measurement_milli_c": heater.measurement_milli_c,
                 f"{prefix}_duty_permille": heater.duty_permille,
                 f"{prefix}_result": heater.result,
                 f"{prefix}_proportional": f"{heater.proportional_term:.9g}",

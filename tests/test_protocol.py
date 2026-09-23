@@ -29,7 +29,6 @@ from chronocat_ground.protocol import (
     telemetry_health_name,
     build_command,
     parse_command_response,
-    PID_FLAG_RESERVED_3,
     PID_RESULT_NAMES,
     COMMAND_HEATER_SET_TARGET,
     COMMAND_HEATER_SET_KP,
@@ -100,20 +99,16 @@ def pid_telemetry_packet() -> bytes:
     packet = bytearray(PID_TELEMETRY_PACKET_SIZE)
     packet[:6] = b"CCTM\x03\x02"
     struct.pack_into(">HHII", packet, 6, 0x0003, PID_TELEMETRY_PACKET_SIZE, 1234, 99)
-    packet[18:20] = bytes((12, PID_TELEMETRY_RECORD_SIZE))
-    struct.pack_into(">HHHHHH", packet, 20, 0x003F, 0x0001, 0x0001, 0, 0x0001, 0)
-    offset = 32
+    struct.pack_into(">HH", packet, 18, 0x0001, 0)
+    offset = 22
     for heater_id in range(12):
-        struct.pack_into(">BBH", packet, offset, heater_id, 3 if heater_id == 0 else 0xFF, 0x0061 if heater_id == 0 else 0)
         struct.pack_into(
-            ">IiHBBfffffff",
+            ">IHBfffffff",
             packet,
-            offset + 4,
+            offset,
             20000,
-            21500,
             42,
             1 if heater_id == 0 else 0,
-            0,
             15.0,
             2.0,
             0.5,
@@ -130,12 +125,13 @@ def combined_telemetry_packet(
     adc_words: tuple[int, ...] | None = None,
     adc_valid_mask: int = 0x0001,
 ) -> bytes:
-    standard = telemetry_packet(
+    standard = bytearray(telemetry_packet(
         2,
         [geiger_record(0, 300, 3.0), geiger_record(1, 301, 4.0)],
         adc_words,
         adc_valid_mask,
-    )
+    ))
+    standard[19:21] = struct.pack(">H", 1 << 3)
     pid = pid_telemetry_packet()
     packet = bytearray()
     packet.extend(b"CCTM\x03\x03")
@@ -169,7 +165,27 @@ class TelemetryProtocolTests(unittest.TestCase):
         self.assertEqual(packet.standard.timestamp, 1234)
         self.assertEqual(packet.pid.counter, 99)
         self.assertEqual(packet.pid.heaters[0].duty_permille, 42)
+        self.assertEqual(packet.pid.heaters[0].sensor_id, 3)
+        self.assertTrue(packet.pid.heaters[0].sensor_valid)
+        self.assertEqual(packet.pid.heaters[0].measurement_milli_c, -30)
+        self.assertEqual(len(combined_telemetry_packet()), 587)
         self.assertEqual(packet.standard.geiger_reading(1).event_id, 301)
+
+    def test_heater_modes_and_feedback_use_masks_and_shared_temperatures(self) -> None:
+        data = bytearray(combined_telemetry_packet())
+        # Heater 0 maps to sensor 3; heater 6 maps to sensor 9.
+        struct.pack_into(">H", data, 19, (1 << 3) | (1 << 9))
+        struct.pack_into(">h", data, 21 + 9 * 2, 2345)
+        struct.pack_into(">HH", data, 163, 1 << 0, 1 << 6)
+        packet = parse_telemetry_packet(bytes(data))
+
+        self.assertTrue(packet.pid.heaters[0].pid_enabled)
+        self.assertFalse(packet.pid.heaters[0].manual)
+        self.assertAlmostEqual(packet.pid.heaters[0].temperature_c, -0.03)
+        self.assertTrue(packet.pid.heaters[6].manual)
+        self.assertEqual(packet.pid.heaters[6].sensor_id, 9)
+        self.assertAlmostEqual(packet.pid.heaters[6].temperature_c, 23.45)
+        self.assertIsNone(packet.pid.heaters[1].temperature_c)
 
     def test_parses_all_adc_slots_and_validity_bits(self) -> None:
         words = tuple(((0x120000 + slot) << 8) | (slot % 3) for slot in range(12))
@@ -192,22 +208,22 @@ class TelemetryProtocolTests(unittest.TestCase):
 
         self.assertEqual(len(packet.heaters), 12)
         self.assertEqual(packet.heaters[0].sensor_id, 3)
-        self.assertTrue(packet.heaters[0].sensor_valid)
+        self.assertFalse(packet.heaters[0].sensor_valid)
         self.assertAlmostEqual(packet.heaters[0].kp, 10.0)
-        self.assertEqual(packet.heaters[1].sensor_id, 0xFF)
+        self.assertEqual(packet.heaters[1].sensor_id, 4)
         self.assertEqual(packet.heaters[1].result_name, "disabled")
 
     def test_removed_characterization_values_remain_reserved(self) -> None:
-        self.assertEqual(PID_FLAG_RESERVED_3, 1 << 3)
+        self.assertEqual(PID_RESULT_NAMES[3], "reserved")
         self.assertEqual(PID_RESULT_NAMES[4], "reserved")
         self.assertEqual(PID_RESULT_NAMES[5], "unmapped sensor")
 
     def test_calculates_heater_temperature_and_duty_averages(self) -> None:
-        packet = parse_telemetry_packet(pid_telemetry_packet())
+        packet = parse_telemetry_packet(combined_telemetry_packet()).pid
 
         average_temperature, average_duty = heater_pid_averages(packet.heaters)
 
-        self.assertAlmostEqual(average_temperature, 21.5)
+        self.assertAlmostEqual(average_temperature, -0.03)
         self.assertAlmostEqual(average_duty, 42.0)
 
     def test_parses_v1_and_preserves_legacy_properties(self) -> None:
