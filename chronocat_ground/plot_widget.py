@@ -320,7 +320,7 @@ class PlotWidget(pg.PlotWidget):
             return
         w, h = event.size().width(), event.size().height()
         self._empty_label.setGeometry(0, 0, w, h)
-        self._stats_label.setGeometry(w - 220, 4, 216, 26)
+        self._stats_label.setGeometry(w - 220, 4, 216, 30)
         self._tooltip_label.setGeometry(4, 4, 200, 40)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
