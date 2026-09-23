@@ -32,6 +32,7 @@ from ..protocol import (
     COMMAND_GEIGER_RESET_ACCUMULATED_DOSE,
     COMMAND_GEIGER_RESET_STATS,
     COMMAND_PING,
+    COMMAND_SYSTEM_RESET,
     COMMAND_TELEMETRY_SET,
     COMMAND_TELEMETRY_STATUS,
     DEFAULT_COMMAND_PORT,
@@ -846,6 +847,22 @@ class MainWindowPagesMixin:
         db_panel.layout.addWidget(clear_btn)
 
         layout.addWidget(db_panel)
+
+        danger_panel = Panel("DANGER ZONE")
+        danger_note = QLabel(
+            "Reboots the flight computer over the uplink. All sensors, the ADCs, "
+            "and the network stack reinitialize from scratch; in-flight state is lost."
+        )
+        danger_note.setObjectName("smallNote")
+        danger_note.setWordWrap(True)
+        danger_panel.layout.addWidget(danger_note)
+
+        reset_btn = QPushButton("Reset board")
+        reset_btn.setObjectName("dangerButton")
+        reset_btn.clicked.connect(self._on_reset_board)
+        danger_panel.layout.addWidget(reset_btn)
+
+        layout.addWidget(danger_panel)
         layout.addStretch(1)
         return page
 
@@ -914,6 +931,18 @@ class MainWindowPagesMixin:
             self.telemetry_history.set_database(self.adc_db)
             self._refresh_db_info()
             self.log(f"Database archived to {archive}, new database created")
+
+    def _on_reset_board(self) -> None:
+        ret = QMessageBox.question(
+            self, "Reset Board",
+            "This will reboot the flight computer right now. The uplink will "
+            "drop and telemetry will pause for several seconds while it "
+            "reinitializes. Continue?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if ret == QMessageBox.Yes:
+            self.log("Sending reset command")
+            self.send_command(COMMAND_SYSTEM_RESET, 0)
 
     def switch_view(self, view: str) -> None:
         order = [
