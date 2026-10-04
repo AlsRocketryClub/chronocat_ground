@@ -64,6 +64,22 @@ def decode_heater_target_c(encoded: int) -> float:
     return encoded / 1000.0
 
 
+def encode_heater_target_signed_c(value: float) -> int:
+    """Encode tenths of a degree as a signed 16-bit TCP word."""
+    if not math.isfinite(value) or not -55.0 <= value <= 64.9:
+        raise ValueError(f"heater target {value} out of range -55.0..64.9 C")
+    deci_c = round(value * 10)
+    if not -550 <= deci_c <= 649:
+        raise ValueError(f"rounded heater target {value} out of range -55.0..64.9 C")
+    return deci_c & 0xFFFF
+
+
+def decode_heater_target_signed_c(encoded: int) -> float:
+    if not 0 <= encoded <= 0xFFFF:
+        raise ValueError("signed heater target must fit in two bytes")
+    return (encoded - 0x10000 if encoded & 0x8000 else encoded) / 10.0
+
+
 def encode_heater_gain(value: float) -> int:
     if not (0.0 <= value <= 65.535):
         raise ValueError(f"heater gain {value} out of range 0..65.535")

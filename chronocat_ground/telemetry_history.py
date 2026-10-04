@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
+import math
 
 from .protocol import TELEMETRY_OS_ADC_COUNT, TelemetryPacket
 from .telemetry_db import TelemetryDb
@@ -53,6 +54,7 @@ class TelemetryHistory:
         for counter_id in range(2):
             reading = packet.geiger_reading(counter_id)
             if reading is None or not reading.valid:
+                self._geiger_points[counter_id].append((received_monotonic, received_wall, math.nan))
                 continue
             self._geiger_points[counter_id].append(
                 (received_monotonic, received_wall, reading.dose_rate_cps)
@@ -73,7 +75,15 @@ class TelemetryHistory:
         adc_rows = []
         adc_readings = packet.ad7177_readings
         for reading in adc_readings:
-            if not packet.os_adc_valid(reading.slot):
+            valid = (
+                packet.os_adc_valid(reading.slot)
+                and reading.word != 0
+                and not reading.has_error
+            )
+            if not valid:
+                self._adc_points[reading.slot].append(
+                    (received_monotonic, received_wall, math.nan, math.nan)
+                )
                 continue
             self._adc_points[reading.slot].append(
                 (received_monotonic, received_wall, reading.voltage, reading.raw24)
@@ -89,6 +99,8 @@ class TelemetryHistory:
             self._adc_average_points.append(
                 (received_monotonic, received_wall, sum(valid_adc_values) / len(valid_adc_values))
             )
+        else:
+            self._adc_average_points.append((received_monotonic, received_wall, math.nan))
 
         temperature_rows = [
             (packet.timestamp, received_wall, slot, temperature_c)

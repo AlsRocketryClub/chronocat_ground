@@ -74,6 +74,8 @@ def choose_database_action(path: Path) -> Literal["continue", "new"] | None:
 def main() -> int:
     configure_qt_plugin_paths()
     app = QApplication(sys.argv)
+    if sys.platform.startswith("linux"):
+        app.setDesktopFileName("chronocat_ground")
     app.setStyleSheet(APPLICATION_STYLE)
 
     icon_path = os.path.join(os.path.dirname(__file__), "CHRONO-CAT_logo.png")

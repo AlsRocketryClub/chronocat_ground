@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 import csv
+import math
 from pathlib import Path
 import tempfile
 import unittest
 
 from chronocat_ground.protocol import (
     AD7177_BIPOLAR_MIDSCALE,
+    AD7177_STATUS_ADC_ERROR,
     AD7177_VREF_VOLTS,
     TELEMETRY_TEMP_COUNT,
     GeigerReading,
@@ -60,6 +62,20 @@ def sample_packet() -> TelemetryPacket:
 
 
 class TelemetryHistoryTests(unittest.TestCase):
+    def test_adc_error_status_is_a_plot_gap_not_a_sample(self) -> None:
+        packet = replace(
+            sample_packet(),
+            os_adc_readings=((10 << 8) | AD7177_STATUS_ADC_ERROR,) + (0,) * 11,
+        )
+        database = TelemetryDb()
+        history = TelemetryHistory(database)
+
+        snapshot = history.record(packet, 10.0, 20.0)
+
+        self.assertTrue(math.isnan(snapshot.adc_points[0][-1][2]))
+        self.assertEqual(database.query_adc(0), [])
+        database.close()
+
     def test_global_heater_interlock_requires_all_twelve_safe_sensors(self) -> None:
         self.assertFalse(all_heaters_safe(sample_packet()))
 

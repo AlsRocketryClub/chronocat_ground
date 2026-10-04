@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import math
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -86,7 +87,8 @@ class PidPage(QWidget):
         controls.setSpacing(8)
         controls.setAlignment(Qt.AlignVCenter)
         controls.addWidget(QLabel("Setpoint"))
-        self.global_target_spin = self._make_float_spin(0.0, 64.999, 20.0, 0.1)
+        self.global_target_spin = self._make_float_spin(-55.0, 64.9, 20.0, 0.1)
+        self.global_target_spin.setDecimals(1)
         self.global_target_spin.setSuffix(" C")
         controls.addWidget(self.global_target_spin)
 
@@ -138,7 +140,7 @@ class PidPage(QWidget):
 
         columns = QHBoxLayout()
         columns.setContentsMargins(10, 0, 10, 0)
-        for text, width in (("ID", 34), ("SENSOR", 62), ("TEMP", 72), ("DUTY", 54)):
+        for text, width in (("ID", 34), ("SENSOR", 62), ("TEMP", 72), ("DUTY %", 54)):
             label = QLabel(text)
             label.setObjectName("pidColumnLabel")
             label.setFixedWidth(width)
@@ -198,8 +200,8 @@ class PidPage(QWidget):
             y_range=(-150.0, 150.0), min_y_range=5.0, monitor_mode=True,
         )
         self.output_plot = PlotWidget(
-            "Duty (‰)", "No data", hover_label="‰",
-            y_range=(0.0, 250.0), min_y_range=5.0, monitor_mode=True,
+            "Duty (%)", "No data", hover_label="%",
+            y_range=(0.0, 25.0), min_y_range=0.5, monitor_mode=True,
         )
         self.temperature_plot.setMinimumHeight(215)
         self.output_plot.setMinimumHeight(215)
@@ -223,11 +225,11 @@ class PidPage(QWidget):
             monitor_mode=True,
         )
         self.average_duty_plot = PlotWidget(
-            "Duty (‰)",
+            "Duty (%)",
             "No data",
-            hover_label="‰",
-            y_range=(0.0, 250.0),
-            min_y_range=5.0,
+            hover_label="%",
+            y_range=(0.0, 25.0),
+            min_y_range=0.5,
             monitor_mode=True,
         )
         self.average_temperature_plot.setMinimumHeight(175)
@@ -270,7 +272,8 @@ class PidPage(QWidget):
         grid = QGridLayout()
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(5)
-        self.target_spin = self._make_float_spin(0.0, 64.999, 20.0, 0.1)
+        self.target_spin = self._make_float_spin(-55.0, 64.9, 20.0, 0.1)
+        self.target_spin.setDecimals(1)
         self.target_spin.setSuffix(" C")
         self.kp_spin = self._make_float_spin(0.0, 65.535, 2.25, 0.1)
         self.ki_spin = self._make_float_spin(0.0, 65.535, 0.051, 0.001)
@@ -284,7 +287,7 @@ class PidPage(QWidget):
             ("Kp", self.kp_spin, "Set", self._apply_kp),
             ("Ki", self.ki_spin, "Set", self._apply_ki),
             ("Kd", self.kd_spin, "Set", self._apply_kd),
-            ("Manual duty", self.manual_spin, "Set", self._apply_manual),
+            ("Manual duty (‰)", self.manual_spin, "Set", self._apply_manual),
         )
         for row, (label_text, widget, button_text, callback) in enumerate(controls):
             grid.addWidget(QLabel(label_text), row, 0)
@@ -395,7 +398,7 @@ class PidPage(QWidget):
     def mapped_heater_ids(self) -> list[int]:
         return [heater_id for heater_id in range(HEATER_COUNT) if self._mapped_mask & (1 << heater_id)]
 
-    def update_packet(self, packet: PidTelemetryPacket) -> None:
+    def update_packet(self, packet: PidTelemetryPacket, received_monotonic: float) -> None:
         valid_count = 0
         enabled_count = 0
         fault_count = 0
@@ -406,27 +409,34 @@ class PidPage(QWidget):
             self.rows[heater_id].set_reading(reading)
             if reading.sensor_valid:
                 valid_count += 1
-                self.temperature_history[heater_id].append(
-                    (packet.timestamp / 1000.0, reading.measurement_milli_c / 1000.0)
+            self.temperature_history[heater_id].append(
+                (
+                    received_monotonic,
+                    reading.measurement_milli_c / 1000.0
+                    if reading.sensor_valid
+                    else math.nan,
                 )
+            )
             self.output_history[heater_id].append(
-                (packet.timestamp / 1000.0, float(reading.duty_permille))
+                (received_monotonic, reading.duty_permille / 10.0)
             )
             if reading.pid_enabled:
                 enabled_count += 1
             if reading.result >= 5:
                 fault_count += 1
         average_temperature, average_duty = heater_pid_averages(packet.heaters)
-        timestamp = packet.timestamp / 1000.0
+        timestamp = received_monotonic
         if average_temperature is not None:
             self.average_temperature_history.append(
                 (timestamp, average_temperature)
             )
-            self.average_temperature_plot.set_points(
-                list(self.average_temperature_history)
-            )
+        else:
+            self.average_temperature_history.append((timestamp, math.nan))
+        self.average_temperature_plot.set_points(
+            list(self.average_temperature_history)
+        )
         if average_duty is not None:
-            self.average_duty_history.append((timestamp, average_duty))
+            self.average_duty_history.append((timestamp, average_duty / 10.0))
             self.average_duty_plot.set_points(list(self.average_duty_history))
         self.summary_label.setText(
             f"PID {enabled_count}/12   |   sensors {valid_count}/12   |   "
@@ -459,12 +469,12 @@ class PidPage(QWidget):
         self.detail_status.style().polish(self.detail_status)
         self.detail_alert.setText(
             f"{'PID' if reading.pid_enabled else 'MANUAL' if reading.manual else 'OFF'}  |  "
-            f"Target {reading.target_c:.3f} C  |  Duty {reading.duty_permille}‰"
+            f"Target {reading.target_c:.3f} C  |  Duty {reading.duty_permille / 10.0:.1f}%"
         )
         self.term_labels["P"].setText(f"{reading.proportional_term:.3f}")
         self.term_labels["I"].setText(f"{reading.integral_term:.3f}")
         self.term_labels["D"].setText(f"{reading.derivative_term:.3f}")
-        self.term_labels["OUTPUT"].setText(f"{reading.output:.3f}")
+        self.term_labels["OUTPUT"].setText(f"{reading.output / 10.0:.1f}%")
         for spin, value in (
             (self.target_spin, reading.target_c),
             (self.kp_spin, reading.kp),

@@ -24,6 +24,7 @@ from .protocol import (
     COMMAND_HEATER_SET_KD,
     COMMAND_HEATER_SET_KI,
     COMMAND_HEATER_SET_TARGET,
+    COMMAND_HEATER_SET_TARGET_SIGNED,
     COMMAND_HEATER_SET_MANUAL_DUTY,
     COMMAND_HEATER_RETURN_TO_PID,
     COMMAND_HEATER_ALL_OFF,
@@ -38,8 +39,10 @@ from .protocol import (
     decode_heater_gain,
     decode_float32_args,
     decode_heater_target_c,
+    decode_heater_target_signed_c,
     encode_heater_gain,
     encode_heater_target_c,
+    encode_heater_target_signed_c,
     geiger_reset_actions_name,
     geiger_error_names,
     heater_pid_averages,
@@ -342,6 +345,13 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                         )
                     else:
                         self.pid_page.set_command_status(f"applied {decoded:.3f} C")
+                elif value_kind == "signed_target" and self.pid_page is not None:
+                    decoded = decode_heater_target_signed_c(response.arg2)
+                    requested = decode_heater_target_signed_c(encoded_value)
+                    self.pid_page.set_command_status(
+                        f"applied {decoded:.1f} C"
+                        + (f" (requested {requested:.1f} C)" if decoded != requested else "")
+                    )
                 elif value_kind == "gain" and self.pid_page is not None:
                     decoded = decode_heater_gain(response.arg2)
                     if response.arg2 != encoded_value:
@@ -352,7 +362,9 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                     else:
                         self.pid_page.set_command_status(f"applied {decoded:.3f}")
                 elif value_kind == "duty" and self.pid_page is not None:
-                    self.pid_page.set_command_status(f"manual duty active: {response.arg2}/1000")
+                    self.pid_page.set_command_status(
+                        f"manual duty active: {response.arg2 / 10.0:.1f}%"
+                    )
                 elif self.pid_page is not None:
                     self.pid_page.set_command_status("PID mode active")
                 self.log_response(response)
@@ -450,7 +462,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         heater_id = operation.heater_ids[operation.heater_index]
         gains = operation.profile.gains_for(heater_id)
         steps = (
-            (COMMAND_HEATER_SET_TARGET, "target", encode_heater_target_c(operation.target)),
+            self._target_command(operation.target),
             (COMMAND_HEATER_SET_KP, "kp", encode_heater_gain(gains.kp)),
             (COMMAND_HEATER_SET_KI, "ki", encode_heater_gain(gains.ki)),
             (COMMAND_HEATER_SET_KD, "kd", encode_heater_gain(gains.kd)),
@@ -494,13 +506,20 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         if self.pid_page is None:
             return
         self.pid_page.set_command_status("sending target...")
+        command, name, encoded = self._target_command(value)
         self.send_heater_parameter(
-            COMMAND_HEATER_SET_TARGET,
+            command,
             f"H{heater_id} target",
-            encode_heater_target_c(value),
-            "target",
+            encoded,
+            name,
             heater_id,
         )
+
+    @staticmethod
+    def _target_command(value: float) -> tuple[int, str, int]:
+        if value < 0:
+            return (COMMAND_HEATER_SET_TARGET_SIGNED, "signed_target", encode_heater_target_signed_c(value))
+        return (COMMAND_HEATER_SET_TARGET, "target", encode_heater_target_c(value))
 
     def set_pid_gain(self, heater_id: int, name: str, value: float) -> None:
         if self.pid_page is None:
@@ -717,14 +736,14 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self.update_sd_log_status(packet.flags)
             self.set_telemetry_status("receiving")
             if self.pid_page is not None:
-                self.pid_page.update_packet(packet.pid)
+                self.pid_page.update_packet(packet.pid, received_monotonic)
             packet = packet.standard
         elif isinstance(packet, PidTelemetryPacket):
             self.last_telemetry_time = received_monotonic
             self.update_sd_log_status(packet.flags)
             self.set_telemetry_status("receiving")
             if self.pid_page is not None:
-                self.pid_page.update_packet(packet)
+                self.pid_page.update_packet(packet, received_monotonic)
             if self.csv_logger is not None and self.csv_logger.active:
                 try:
                     self.csv_logger.write_packet(
@@ -808,10 +827,10 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
         self.telemetry_table.set_value("AD7177 Readings", adc_summary)
         self.telemetry_table.set_value("Temperature Measurements", temp_summary)
-        heater_duty = packet.heater_duty_permille
+        heater_duty = f"{packet.heater_duty_permille / 10.0:.1f}%"
         if combined_packet is not None:
             _, average_duty = heater_pid_averages(combined_packet.pid.heaters)
-            heater_duty = "—" if average_duty is None else f"{average_duty:.1f}"
+            heater_duty = "—" if average_duty is None else f"{average_duty / 10.0:.1f}%"
             enabled_count = sum(
                 1 for reading in combined_packet.pid.heaters if reading.pid_enabled
             )
@@ -820,7 +839,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             )
         else:
             self.heater_summary_card.set_value("no PID data")
-        self.telemetry_table.set_value("Heater Duty (permille)", str(heater_duty))
+        self.telemetry_table.set_value("Average Heater Duty", str(heater_duty))
         self.telemetry_table.set_value("Subsystem Health Indicators", health)
         for number, reading in ((1, geiger_1), (2, geiger_2)):
             prefix = f"Geiger {number}"
@@ -1033,7 +1052,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                     state = "healthy"
                     healthy_heaters += 1
                 row = f"H{heater_id}"
-                value = "—" if reading.temperature_c is None else f"{reading.temperature_c:.2f} C / {reading.duty_permille}‰"
+                value = "—" if reading.temperature_c is None else f"{reading.temperature_c:.2f} C / {reading.duty_permille / 10.0:.1f}%"
                 self.health_heater_table.set_value(row, value, 2)
                 self.health_heater_table.set_value(row, "OK" if state == "healthy" else state, 3)
                 self.health_heater_table.set_state(row, state, 3)

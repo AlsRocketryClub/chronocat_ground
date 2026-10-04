@@ -19,10 +19,12 @@ from chronocat_ground.protocol import (
     TELEMETRY_TEMP_COUNT,
     encode_heater_gain,
     encode_heater_target_c,
+    encode_heater_target_signed_c,
     encode_heater_duty_permille,
     heater_pid_averages,
     decode_heater_gain,
     decode_heater_target_c,
+    decode_heater_target_signed_c,
     decode_float32_args,
     geiger_error_names,
     parse_telemetry_packet,
@@ -31,6 +33,7 @@ from chronocat_ground.protocol import (
     parse_command_response,
     PID_RESULT_NAMES,
     COMMAND_HEATER_SET_TARGET,
+    COMMAND_HEATER_SET_TARGET_SIGNED,
     COMMAND_HEATER_SET_KP,
     COMMAND_HEATER_SET_KI,
     COMMAND_HEATER_SET_KD,
@@ -143,6 +146,39 @@ def combined_telemetry_packet(
 
 
 class TelemetryProtocolTests(unittest.TestCase):
+    def test_v4_signed_target_preserves_packet_size_and_v3_reading(self) -> None:
+        v3 = bytearray(combined_telemetry_packet())
+        v4 = bytearray(v3)
+        v4[4] = 4
+        struct.pack_into(">i", v4, 167, -55000)
+
+        self.assertEqual(len(v4), 587)
+        decoded = parse_telemetry_packet(bytes(v4))
+        self.assertEqual(decoded.pid.heaters[0].target_c, -55.0)
+        self.assertEqual(decoded.standard.version, 4)
+        self.assertEqual(combined_packet_to_row(decoded, datetime(2026, 1, 1), "device")["heater_0_target_milli_c"], -55000)
+        self.assertEqual(parse_telemetry_packet(bytes(v3)).pid.heaters[0].target_c, 20.0)
+
+        pid = bytearray(pid_telemetry_packet())
+        pid[4] = 4
+        struct.pack_into(">i", pid, 22, -100)
+        self.assertEqual(parse_telemetry_packet(bytes(pid)).heaters[0].target_c, -0.1)
+
+    def test_signed_deci_degree_command_bounds_and_round_trip(self) -> None:
+        for target, expected in [(-55.0, -550), (-0.1, -1), (0.0, 0), (64.9, 649)]:
+            encoded = encode_heater_target_signed_c(target)
+            self.assertEqual(encoded, expected & 0xFFFF)
+            self.assertAlmostEqual(decode_heater_target_signed_c(encoded), target)
+        self.assertEqual(
+            build_command(COMMAND_HEATER_SET_TARGET_SIGNED, 3, encode_heater_target_signed_c(-12.3)),
+            bytes((0x1D, 0, 3, 0xFF, 0x85)),
+        )
+        response = parse_command_response(bytes((0, 0x1D, 0, 3, 0xFF, 0x85)))
+        self.assertAlmostEqual(decode_heater_target_signed_c(response.arg2), -12.3)
+        for target in (-55.1, 65.0, float("nan")):
+            with self.assertRaises(ValueError):
+                encode_heater_target_signed_c(target)
+
     def test_decodes_xder_float_from_reply_words(self) -> None:
         bits = struct.unpack(">I", struct.pack(">f", 1.25))[0]
         value = decode_float32_args(bits >> 16, bits & 0xFFFF)
@@ -311,6 +347,29 @@ class TelemetryProtocolTests(unittest.TestCase):
         self.assertEqual(row["geiger_event_id"], 300)
         self.assertEqual(row["geiger_0_event_id"], 300)
         self.assertEqual(row["geiger_1_event_id"], 301)
+
+    def test_csv_temperature_headers_follow_heater_sensor_mapping(self) -> None:
+        packet = parse_telemetry_packet(
+            telemetry_packet(
+                2,
+                [geiger_record(0, 300, 3.0), geiger_record(1, 301, 4.0)],
+            )
+        )
+        fields = csv_fieldnames()
+        row = packet_to_row(packet, datetime(2026, 1, 1), ("127.0.0.1", 5005))
+
+        for heater_id, sensor_index in enumerate(HEATER_SENSOR_IDS):
+            temp_field = f"heater_{heater_id}_temp_c"
+            valid_field = f"heater_{heater_id}_temp_valid"
+            self.assertIn(temp_field, fields)
+            self.assertIn(valid_field, fields)
+            self.assertEqual(
+                row[temp_field], f"{packet.temperatures[sensor_index] / 100:.2f}"
+            )
+            self.assertEqual(
+                row[valid_field], int(packet.temperature_valid(sensor_index))
+            )
+        self.assertNotIn("temp_7_c", fields)
 
     def test_v1_csv_leaves_second_counter_columns_empty(self) -> None:
         packet = parse_telemetry_packet(

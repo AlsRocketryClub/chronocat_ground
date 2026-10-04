@@ -6,9 +6,11 @@ from .command_codec import (
     decode_float32_args,
     decode_heater_gain,
     decode_heater_target_c,
+    decode_heater_target_signed_c,
     encode_heater_duty_permille,
     encode_heater_gain,
     encode_heater_target_c,
+    encode_heater_target_signed_c,
     parse_command_response,
 )
 from .protocol_constants import *

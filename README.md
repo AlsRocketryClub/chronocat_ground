@@ -35,6 +35,17 @@ Or:
 python -m chronocat_ground.main
 ```
 
+On Ubuntu, register the application once so the dock can match terminal-launched
+windows to the CHRONO-CAT logo (run this with the same virtual environment used
+to launch the GUI):
+
+```bash
+python -m chronocat_ground.install_desktop
+```
+
+This installs a launcher under `~/.local/share/applications` (or `XDG_DATA_HOME`).
+You can still launch the GUI with `chronocat_ground` from the terminal.
+
 The GUI has a `Start CSV Log` / `Stop CSV Log` toggle in the top bar. When enabled, it
 creates a timestamped CSV file in the current directory and writes each received telemetry
 packet to it. The file is flushed after every packet.
@@ -115,6 +126,10 @@ The CSV includes receive time, packet timestamp in milliseconds, counter, flags,
 12 temperature sensor values with validity flags, 12 decoded AD7177 readings, both Geiger telemetry slots,
 and TCP status. Legacy `geiger_*` columns remain aliases for Geiger 1; explicit `geiger_0_*` and
 `geiger_1_*` columns identify both counters.
+
+In full CSV logs, temperature columns are named by the mapped heater, for example
+`heater_9_temp_c` / `heater_9_temp_valid` for the F2_U3 sensor. Heater-page duty
+readouts and plots use percent; the manual-duty control and commands remain in integer permille.
 
 The Dashboard view also plots a rolling average of the error-free AD7177
 `raw24` channel values present in each packet. Channels carrying ADC/CRC/register

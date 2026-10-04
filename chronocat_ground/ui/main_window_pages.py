@@ -437,7 +437,7 @@ class MainWindowPagesMixin:
             [
                 ("AD7177 Readings", "—"),
                 ("Temperature Measurements", "—"),
-                ("Heater Duty (permille)", "—"),
+                ("Average Heater Duty", "—"),
                 ("Subsystem Health Indicators", "—"),
                 ("Geiger 1 Valid", "—"),
                 ("Geiger 1 Dose Rate (CPS)", "—"),

@@ -52,7 +52,7 @@ class HeaterOverviewRow(QFrame):
         self.temperature_label.setFixedWidth(72)
         layout.addWidget(self.temperature_label)
 
-        self.duty_label = QLabel("0‰")
+        self.duty_label = QLabel("0.0%")
         self.duty_label.setObjectName("pidRowDuty")
         self.duty_label.setFixedWidth(54)
         layout.addWidget(self.duty_label)
@@ -77,7 +77,7 @@ class HeaterOverviewRow(QFrame):
         if reading is None:
             self.sensor_label.setText(self._mapped_sensor_name())
             self.temperature_label.setText("—")
-            self.duty_label.setText("0‰")
+            self.duty_label.setText("0.0%")
             self.state_label.setText("—")
             self.setProperty("state", "waiting")
             self._refresh_style()
@@ -111,7 +111,7 @@ class HeaterOverviewRow(QFrame):
 
         self.sensor_label.setText(sensor)
         self.temperature_label.setText(temperature)
-        self.duty_label.setText(f"{reading.duty_permille}‰")
+        self.duty_label.setText(f"{reading.duty_permille / 10.0:.1f}%")
         self.state_label.setText(state)
         self.state_label.setToolTip(reading.result_name)
         self.setProperty("state", state_class)

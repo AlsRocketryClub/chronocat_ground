@@ -12,6 +12,9 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QLabel, QWidget
 
 
+PLOT_GAP_SECONDS = 2.5
+
+
 class WallClockAxis(pg.AxisItem):
     """X-axis that formats absolute points as clocks or relative points as seconds."""
 
@@ -203,27 +206,57 @@ class PlotWidget(pg.PlotWidget):
             )
             raw_series.append((label, raw))
 
+        if not any(math.isfinite(val) for _label, points in raw_series for _mono, _wall, val in points):
+            self._series_points = []
+            self._points = []
+            self._update_empty()
+            self._redraw()
+            return
+
         if self._abs_time:
-            max_wall = max(wall for _label, points in raw_series for _mono, wall, _val in points)
+            max_wall = max(wall for _label, points in raw_series for _mono, wall, val in points if math.isfinite(val))
             self._wall_clock_axis.setWallRef(max_wall)
             self._series_points = [
-                (label, [(wall - max_wall, wall, val) for _mono, wall, val in points])
+                (label, self._points_with_gaps([(wall - max_wall, wall, val) for _mono, wall, val in points]))
                 for label, points in raw_series
             ]
         else:
-            max_mono = max(mono for _label, points in raw_series for mono, _wall, _val in points)
+            max_mono = max(mono for _label, points in raw_series for mono, _wall, val in points if math.isfinite(val))
             self._series_points = [
-                (label, [(mono - max_mono, wall, val) for mono, wall, val in points])
+                (label, self._points_with_gaps([(mono - max_mono, wall, val) for mono, wall, val in points]))
                 for label, points in raw_series
             ]
 
         self._points = next(
-            (points for _label, points in self._series_points if points),
+            (
+                valid_points
+                for _label, points in self._series_points
+                if (valid_points := [point for point in points if math.isfinite(point[2])])
+            ),
             [],
         )
         self._update_series_legend()
         self._update_empty()
         self._redraw()
+
+    @staticmethod
+    def _points_with_gaps(points: list[tuple[float, float, float]]) -> list[tuple[float, float, float]]:
+        """Insert NaN separators so invalid samples and long outages break lines."""
+        result: list[tuple[float, float, float]] = []
+        previous_valid: tuple[float, float, float] | None = None
+        gap_pending = False
+        for point in points:
+            if not math.isfinite(point[2]):
+                if previous_valid is not None:
+                    gap_pending = True
+                result.append(point)
+                continue
+            if previous_valid is not None and (gap_pending or point[0] - previous_valid[0] > PLOT_GAP_SECONDS):
+                result.append((point[0], point[1], math.nan))
+            result.append(point)
+            previous_valid = point
+            gap_pending = False
+        return result
 
     def _update_series_legend(self) -> None:
         multiple = len(self._series_points) > 1
@@ -245,19 +278,20 @@ class PlotWidget(pg.PlotWidget):
             curve.setData([], [])
 
     def _update_empty(self) -> None:
-        point_count = sum(len(points) for _label, points in self._series_points)
+        point_count = sum(sum(math.isfinite(point[2]) for point in points) for _label, points in self._series_points)
         visible = point_count < 2
         self._empty_label.setVisible(visible)
         self._stats_label.setVisible(not visible)
 
     def _redraw(self) -> None:
-        if sum(len(points) for _label, points in self._series_points) < 2:
+        finite_points = [point for _label, points in self._series_points for point in points if math.isfinite(point[2])]
+        if len(finite_points) < 2:
             for curve in self._curves:
                 curve.setData([], [])
             return
 
-        x_values = [point[0] for _label, points in self._series_points for point in points]
-        y_values = [point[2] for _label, points in self._series_points for point in points]
+        x_values = [point[0] for point in finite_points]
+        y_values = [point[2] for point in finite_points]
         x = np.array(x_values)
         y = np.array(y_values)
 
@@ -266,13 +300,14 @@ class PlotWidget(pg.PlotWidget):
             for curve, (_label, points) in zip(self._curves, self._series_points):
                 series_x = np.array([point[0] for point in points])
                 series_y = np.array([point[2] for point in points])
-                mask = series_x >= max_x - self._time_window_s
-                curve.setData(series_x[mask], series_y[mask])
+                mask = (series_x >= max_x - self._time_window_s) | ~np.isfinite(series_y)
+                curve.setData(series_x[mask], series_y[mask], connect="finite")
         else:
             for curve, (_label, points) in zip(self._curves, self._series_points):
                 curve.setData(
                     np.array([point[0] for point in points]),
                     np.array([point[2] for point in points]),
+                    connect="finite",
                 )
 
         if self._first_draw:
@@ -307,10 +342,11 @@ class PlotWidget(pg.PlotWidget):
         self._update_stats()
 
     def _update_stats(self) -> None:
-        if sum(len(points) for _label, points in self._series_points) < 2:
+        values = [p[2] for _label, points in self._series_points for p in points if math.isfinite(p[2])]
+        if len(values) < 2:
             return
 
-        y = np.array([p[2] for _label, points in self._series_points for p in points])
+        y = np.array(values)
         stats = f"min {y.min():.4g}  max {y.max():.4g}  mean {y.mean():.4g}"
         self._stats_label.setText(stats)
 

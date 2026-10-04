@@ -21,6 +21,7 @@ from .protocol_constants import (
     TELEMETRY_VERSION_V1,
     TELEMETRY_VERSION_V2,
     TELEMETRY_VERSION_V3,
+    TELEMETRY_VERSION_V4,
 )
 from .protocol_models import (
     CombinedTelemetryPacket,
@@ -56,6 +57,7 @@ def _parse_pid_records(
     data: bytes, offset: int, expected_end: int,
     temperatures: tuple[int, ...] | None = None,
     temperature_valid_mask: int = 0,
+    signed_targets: bool = False,
 ) -> tuple[tuple[int, ...], tuple[HeaterPidReading, ...], int]:
     masks = struct.unpack_from(">HH", data, offset)
     offset += 4
@@ -65,7 +67,7 @@ def _parse_pid_records(
         measurement_milli_c = (
             temperatures[sensor_id] * 10 if temperatures is not None else 0
         )
-        target_milli_c = struct.unpack_from(">I", data, offset)[0]
+        target_milli_c = struct.unpack_from(">i" if signed_targets else ">I", data, offset)[0]
         offset += 4
         duty_permille = struct.unpack_from(">H", data, offset)[0]
         offset += 2
@@ -103,7 +105,7 @@ def _parse_pid_telemetry_packet(data: bytes) -> PidTelemetryPacket:
         raise ValueError(
             f"expected {PID_TELEMETRY_PACKET_SIZE} PID telemetry bytes, got {len(data)}"
         )
-    if data[4] != TELEMETRY_VERSION_V3 or data[5] != PID_TELEMETRY_MESSAGE_TYPE:
+    if data[4] not in (TELEMETRY_VERSION_V3, TELEMETRY_VERSION_V4) or data[5] != PID_TELEMETRY_MESSAGE_TYPE:
         raise ValueError("unsupported PID telemetry header")
 
     payload_length = struct.unpack_from(">H", data, 8)[0]
@@ -112,7 +114,7 @@ def _parse_pid_telemetry_packet(data: bytes) -> PidTelemetryPacket:
 
     timestamp, counter = struct.unpack_from(">II", data, 10)
     masks, heaters, _offset = _parse_pid_records(
-        data, 18, PID_TELEMETRY_PACKET_SIZE
+        data, 18, PID_TELEMETRY_PACKET_SIZE, signed_targets=data[4] == TELEMETRY_VERSION_V4
     )
     return PidTelemetryPacket(
         version=data[4],
@@ -133,7 +135,7 @@ def _parse_combined_telemetry_packet(data: bytes) -> CombinedTelemetryPacket:
             f"expected {COMBINED_TELEMETRY_PACKET_SIZE} combined telemetry bytes, "
             f"got {len(data)}"
         )
-    if data[4] != TELEMETRY_VERSION_V3 or data[5] != COMBINED_TELEMETRY_MESSAGE_TYPE:
+    if data[4] not in (TELEMETRY_VERSION_V3, TELEMETRY_VERSION_V4) or data[5] != COMBINED_TELEMETRY_MESSAGE_TYPE:
         raise ValueError("unsupported combined telemetry header")
 
     flags = struct.unpack_from(">H", data, 6)[0]
@@ -165,7 +167,7 @@ def _parse_combined_telemetry_packet(data: bytes) -> CombinedTelemetryPacket:
         raise ValueError(f"duplicate Geiger counter IDs {counter_ids}")
 
     standard = TelemetryPacket(
-        version=TELEMETRY_VERSION_V3,
+        version=data[4],
         message_type=COMBINED_TELEMETRY_MESSAGE_TYPE,
         flags=flags,
         payload_length=payload_length,
@@ -182,9 +184,10 @@ def _parse_combined_telemetry_packet(data: bytes) -> CombinedTelemetryPacket:
     masks, heaters, offset = _parse_pid_records(
         data, offset, COMBINED_TELEMETRY_PACKET_SIZE,
         temperatures, temperature_valid_mask,
+        signed_targets=data[4] == TELEMETRY_VERSION_V4,
     )
     pid = PidTelemetryPacket(
-        version=TELEMETRY_VERSION_V3,
+        version=data[4],
         message_type=COMBINED_TELEMETRY_MESSAGE_TYPE,
         flags=flags,
         payload_length=payload_length,
@@ -210,9 +213,9 @@ def parse_telemetry_packet(
         raise ValueError(f"bad telemetry magic {magic!r}")
 
     version = data[4]
-    if (version == TELEMETRY_VERSION_V3) and (data[5] == PID_TELEMETRY_MESSAGE_TYPE):
+    if version in (TELEMETRY_VERSION_V3, TELEMETRY_VERSION_V4) and data[5] == PID_TELEMETRY_MESSAGE_TYPE:
         return _parse_pid_telemetry_packet(data)
-    if (version == TELEMETRY_VERSION_V3) and (
+    if version in (TELEMETRY_VERSION_V3, TELEMETRY_VERSION_V4) and (
         data[5] == COMBINED_TELEMETRY_MESSAGE_TYPE
     ):
         return _parse_combined_telemetry_packet(data)

@@ -22,3 +22,6 @@ chronocat_telemetry = "chronocat_ground.telemetry_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["chronocat_ground*"]
+
+[tool.setuptools.package-data]
+chronocat_ground = ["CHRONO-CAT_logo.png"]
