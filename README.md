@@ -123,12 +123,14 @@ timestamp, detector ID, and fields supplied by detector command D; it omits all 
 telemetry, interpreted error names, aliases, and placeholder columns.
 
 The CSV includes receive time, packet timestamp in milliseconds, counter, flags, health,
-12 temperature sensor values with validity flags, 12 decoded AD7177 readings, both Geiger telemetry slots,
+16 temperature sensor values (12 heater, 4 ambient) with validity flags, 12 decoded AD7177 readings, both Geiger telemetry slots,
 and TCP status. Legacy `geiger_*` columns remain aliases for Geiger 1; explicit `geiger_0_*` and
 `geiger_1_*` columns identify both counters.
 
 In full CSV logs, temperature columns are named by the mapped heater, for example
-`heater_9_temp_c` / `heater_9_temp_valid` for the F2_U3 sensor. Heater-page duty
+`heater_9_temp_c` / `heater_9_temp_valid` for the F2_U3 sensor. The four ambient
+sensors (12-15) are not mapped to heaters and are named by board label, for example
+`ambient_u7_temp_c` and `ambient_f2_u6_temp_c`. Heater-page duty
 readouts and plots use percent; the manual-duty control and commands remain in integer permille.
 
 The Dashboard view also plots a rolling average of the error-free AD7177
@@ -199,24 +201,28 @@ version 1, type 1: 129 bytes, one Geiger record (legacy)
 version 2, type 1: 163 bytes, two Geiger records (legacy)
 version 3, type 1: 165 bytes, standard telemetry (legacy)
 version 3, type 2: 442 bytes, PID-only telemetry (development format)
-version 3, type 3: 587 bytes, combined telemetry (current firmware)
+version 3, type 3: 587 bytes, combined telemetry, 12 temperatures (legacy)
+version 4, type 3: 587 bytes, as version 3 with signed heater targets (legacy)
+version 5, type 3: 595 bytes, combined telemetry, 16 temperatures (current firmware)
 ```
 
-The current firmware sends one version 3, type 3 datagram per second. It combines
-the 163-byte standard body with two PID masks and twelve 35-byte heater records:
+Version 3 and 4 packets are decoded with the four ambient temperatures marked invalid.
+
+The current firmware sends one version 5, type 3 datagram per second. It combines
+the standard body with two PID masks and twelve 35-byte heater records:
 
 ```text
 offset  size  field
 0       18    common header
 18      1     health_code
 19      2     temperature_valid_mask
-21      24    12 signed int16 temperatures in centi-degrees C
-45      2     os_adc_valid_mask
-47      48    12 uint32 AD7177 words
-95      68    two 34-byte Geiger records
-163     4     PID-enabled and manual-mode uint16 masks
-167     420   twelve 35-byte heater records
-587           total application payload length
+21      32    16 signed int16 temperatures in centi-degrees C
+53      2     os_adc_valid_mask
+55      48    12 uint32 AD7177 words
+103     68    two 34-byte Geiger records
+171     4     PID-enabled and manual-mode uint16 masks
+175     420   twelve 35-byte heater records
+595           total application payload length
 ```
 
 Each combined heater record is encoded as target (uint32 milli-degrees C), duty
@@ -332,7 +338,8 @@ The legacy manual global heater controls remain protocol-compatible:
 0x1C all off: arg1 = 0, arg2 = 0
 ```
 
-All On requires all 12 temperature sensors to be valid and below 65 C. All Off stops
+All On requires all 12 heater temperature sensors to be valid and below 65 C; the
+ambient sensors are not checked. All Off stops
 every heater immediately.
 
 Geiger memory commands can take a few seconds while the detector writes flash.

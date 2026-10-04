@@ -5,6 +5,7 @@ import struct
 from .protocol_constants import (
     COMBINED_TELEMETRY_MESSAGE_TYPE,
     COMBINED_TELEMETRY_PACKET_SIZE,
+    COMBINED_TELEMETRY_PACKET_SIZE_V4,
     GEIGER_RECORD_STRUCT,
     HEATER_SENSOR_IDS,
     PID_TELEMETRY_HEATER_COUNT,
@@ -18,10 +19,12 @@ from .protocol_constants import (
     TELEMETRY_PACKET_SIZE_V2,
     TELEMETRY_PACKET_SIZE_V3,
     TELEMETRY_TEMP_COUNT,
+    TELEMETRY_TEMP_COUNT_LEGACY,
     TELEMETRY_VERSION_V1,
     TELEMETRY_VERSION_V2,
     TELEMETRY_VERSION_V3,
     TELEMETRY_VERSION_V4,
+    TELEMETRY_VERSION_V5,
 )
 from .protocol_models import (
     CombinedTelemetryPacket,
@@ -30,6 +33,24 @@ from .protocol_models import (
     PidTelemetryPacket,
     TelemetryPacket,
 )
+
+
+PID_VERSIONS = (TELEMETRY_VERSION_V3, TELEMETRY_VERSION_V4, TELEMETRY_VERSION_V5)
+COMBINED_LAYOUTS = {
+    TELEMETRY_VERSION_V3: (COMBINED_TELEMETRY_PACKET_SIZE_V4, TELEMETRY_TEMP_COUNT_LEGACY),
+    TELEMETRY_VERSION_V4: (COMBINED_TELEMETRY_PACKET_SIZE_V4, TELEMETRY_TEMP_COUNT_LEGACY),
+    TELEMETRY_VERSION_V5: (COMBINED_TELEMETRY_PACKET_SIZE, TELEMETRY_TEMP_COUNT),
+}
+
+
+def _parse_temperatures(data: bytes, offset: int, count: int) -> tuple[tuple[int, ...], int]:
+    """Read `count` temperatures, padding older packets to the current sensor count.
+
+    Padded slots stay invalid because their temperature_valid_mask bits are clear.
+    """
+    temperatures = struct.unpack_from(f">{count}h", data, offset)
+    padding = (0,) * (TELEMETRY_TEMP_COUNT - count)
+    return temperatures + padding, offset + count * 2
 
 
 def _parse_geiger_reading(
@@ -105,7 +126,7 @@ def _parse_pid_telemetry_packet(data: bytes) -> PidTelemetryPacket:
         raise ValueError(
             f"expected {PID_TELEMETRY_PACKET_SIZE} PID telemetry bytes, got {len(data)}"
         )
-    if data[4] not in (TELEMETRY_VERSION_V3, TELEMETRY_VERSION_V4) or data[5] != PID_TELEMETRY_MESSAGE_TYPE:
+    if data[4] not in PID_VERSIONS or data[5] != PID_TELEMETRY_MESSAGE_TYPE:
         raise ValueError("unsupported PID telemetry header")
 
     payload_length = struct.unpack_from(">H", data, 8)[0]
@@ -114,7 +135,7 @@ def _parse_pid_telemetry_packet(data: bytes) -> PidTelemetryPacket:
 
     timestamp, counter = struct.unpack_from(">II", data, 10)
     masks, heaters, _offset = _parse_pid_records(
-        data, 18, PID_TELEMETRY_PACKET_SIZE, signed_targets=data[4] == TELEMETRY_VERSION_V4
+        data, 18, PID_TELEMETRY_PACKET_SIZE, signed_targets=data[4] >= TELEMETRY_VERSION_V4
     )
     return PidTelemetryPacket(
         version=data[4],
@@ -130,17 +151,18 @@ def _parse_pid_telemetry_packet(data: bytes) -> PidTelemetryPacket:
 
 
 def _parse_combined_telemetry_packet(data: bytes) -> CombinedTelemetryPacket:
-    if len(data) != COMBINED_TELEMETRY_PACKET_SIZE:
-        raise ValueError(
-            f"expected {COMBINED_TELEMETRY_PACKET_SIZE} combined telemetry bytes, "
-            f"got {len(data)}"
-        )
-    if data[4] not in (TELEMETRY_VERSION_V3, TELEMETRY_VERSION_V4) or data[5] != COMBINED_TELEMETRY_MESSAGE_TYPE:
+    layout = COMBINED_LAYOUTS.get(data[4])
+    if layout is None or data[5] != COMBINED_TELEMETRY_MESSAGE_TYPE:
         raise ValueError("unsupported combined telemetry header")
+    packet_size, temperature_count = layout
+    if len(data) != packet_size:
+        raise ValueError(
+            f"expected {packet_size} combined telemetry bytes, got {len(data)}"
+        )
 
     flags = struct.unpack_from(">H", data, 6)[0]
     payload_length = struct.unpack_from(">H", data, 8)[0]
-    if payload_length != COMBINED_TELEMETRY_PACKET_SIZE:
+    if payload_length != packet_size:
         raise ValueError(f"bad combined telemetry payload length {payload_length}")
     timestamp, counter = struct.unpack_from(">II", data, 10)
 
@@ -149,8 +171,7 @@ def _parse_combined_telemetry_packet(data: bytes) -> CombinedTelemetryPacket:
     offset += 1
     temperature_valid_mask = struct.unpack_from(">H", data, offset)[0]
     offset += 2
-    temperatures = struct.unpack_from(f">{TELEMETRY_TEMP_COUNT}h", data, offset)
-    offset += TELEMETRY_TEMP_COUNT * 2
+    temperatures, offset = _parse_temperatures(data, offset, temperature_count)
     os_adc_valid_mask = struct.unpack_from(">H", data, offset)[0]
     offset += 2
     os_adc_readings = struct.unpack_from(f">{TELEMETRY_OS_ADC_COUNT}I", data, offset)
@@ -182,9 +203,9 @@ def _parse_combined_telemetry_packet(data: bytes) -> CombinedTelemetryPacket:
         geiger_readings=tuple(geiger_readings),
     )
     masks, heaters, offset = _parse_pid_records(
-        data, offset, COMBINED_TELEMETRY_PACKET_SIZE,
+        data, offset, packet_size,
         temperatures, temperature_valid_mask,
-        signed_targets=data[4] == TELEMETRY_VERSION_V4,
+        signed_targets=data[4] >= TELEMETRY_VERSION_V4,
     )
     pid = PidTelemetryPacket(
         version=data[4],
@@ -197,7 +218,7 @@ def _parse_combined_telemetry_packet(data: bytes) -> CombinedTelemetryPacket:
         manual_mask=masks[1],
         heaters=heaters,
     )
-    if offset != COMBINED_TELEMETRY_PACKET_SIZE:
+    if offset != packet_size:
         raise ValueError(f"combined telemetry size mismatch: consumed {offset} bytes")
     return CombinedTelemetryPacket(standard=standard, pid=pid)
 
@@ -213,11 +234,9 @@ def parse_telemetry_packet(
         raise ValueError(f"bad telemetry magic {magic!r}")
 
     version = data[4]
-    if version in (TELEMETRY_VERSION_V3, TELEMETRY_VERSION_V4) and data[5] == PID_TELEMETRY_MESSAGE_TYPE:
+    if version in PID_VERSIONS and data[5] == PID_TELEMETRY_MESSAGE_TYPE:
         return _parse_pid_telemetry_packet(data)
-    if version in (TELEMETRY_VERSION_V3, TELEMETRY_VERSION_V4) and (
-        data[5] == COMBINED_TELEMETRY_MESSAGE_TYPE
-    ):
+    if version in COMBINED_LAYOUTS and data[5] == COMBINED_TELEMETRY_MESSAGE_TYPE:
         return _parse_combined_telemetry_packet(data)
     expected_sizes = {
         TELEMETRY_VERSION_V1: TELEMETRY_PACKET_SIZE_V1,
@@ -254,8 +273,7 @@ def parse_telemetry_packet(
     offset += 1
     temperature_valid_mask = struct.unpack_from(">H", data, offset)[0]
     offset += 2
-    temperatures = struct.unpack_from(f">{TELEMETRY_TEMP_COUNT}h", data, offset)
-    offset += TELEMETRY_TEMP_COUNT * 2
+    temperatures, offset = _parse_temperatures(data, offset, TELEMETRY_TEMP_COUNT_LEGACY)
 
     heater_duty_permille = 0
     if version >= TELEMETRY_VERSION_V3:

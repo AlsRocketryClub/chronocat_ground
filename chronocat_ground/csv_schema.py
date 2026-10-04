@@ -6,6 +6,7 @@ from .protocol import (
     AD7177_CHANNEL_COUNT,
     CombinedTelemetryPacket,
     HEATER_SENSOR_IDS,
+    TEMP_SENSOR_LABELS,
     TELEMETRY_OS_ADC_COUNT,
     TELEMETRY_TEMP_COUNT,
     GeigerReading,
@@ -16,6 +17,13 @@ from .protocol import (
     tcp_status_name,
     telemetry_health_name,
 )
+
+def temperature_csv_prefix(sensor_index: int) -> str:
+    """Heater sensors are named by their heater; ambient sensors by board label."""
+    if sensor_index in HEATER_SENSOR_IDS:
+        return f"heater_{HEATER_SENSOR_IDS.index(sensor_index)}_temp"
+    return f"ambient_{TEMP_SENSOR_LABELS[sensor_index].lower()}_temp"
+
 
 GEIGER_CSV_FIELDS = [
     "valid",
@@ -64,12 +72,8 @@ def csv_fieldnames() -> list[str]:
         "temperature_valid_mask",
     ]
 
-    heater_by_sensor = {
-        sensor_id: heater_id for heater_id, sensor_id in enumerate(HEATER_SENSOR_IDS)
-    }
     for sensor_index in range(TELEMETRY_TEMP_COUNT):
-        heater_id = heater_by_sensor[sensor_index]
-        prefix = f"heater_{heater_id}_temp"
+        prefix = temperature_csv_prefix(sensor_index)
         fields.append(f"{prefix}_c")
         fields.append(f"{prefix}_valid")
 
@@ -124,12 +128,10 @@ def packet_to_row(
         "temperature_valid_mask": f"0x{packet.temperature_valid_mask:04x}",
     }
 
-    for index, value in enumerate(packet.temperatures, start=1):
-        zero_based = index - 1
-        heater_id = HEATER_SENSOR_IDS.index(zero_based)
-        prefix = f"heater_{heater_id}_temp"
+    for index, value in enumerate(packet.temperatures):
+        prefix = temperature_csv_prefix(index)
         row[f"{prefix}_c"] = f"{value / 100:.2f}"
-        row[f"{prefix}_valid"] = int(packet.temperature_valid(zero_based))
+        row[f"{prefix}_valid"] = int(packet.temperature_valid(index))
 
     row["os_adc_valid_mask"] = f"0x{packet.os_adc_valid_mask:04x}"
 

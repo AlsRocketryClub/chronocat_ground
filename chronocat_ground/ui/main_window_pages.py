@@ -40,7 +40,7 @@ from ..protocol import (
     DEFAULT_COMMAND_PORT,
     DEFAULT_DEVICE_HOST,
     DEFAULT_TELEMETRY_PORT,
-    TELEMETRY_TEMP_COUNT,
+    TEMP_SENSOR_DISPLAY_NAMES,
     VALUE_OFF,
     VALUE_ON,
 )
@@ -764,7 +764,7 @@ class MainWindowPagesMixin:
         self.health_geiger_table.expand_to_contents()
 
         self.health_temperature_table = ValueTable(
-            [(f"TMP117-{index + 1}", "—", "unknown") for index in range(TELEMETRY_TEMP_COUNT)],
+            [(name, "—", "unknown") for name in TEMP_SENSOR_DISPLAY_NAMES],
             ("Sensor", "Reading", "State"),
         )
         self.health_temperature_table.expand_to_contents()

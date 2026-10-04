@@ -29,6 +29,7 @@ from .protocol import (
     COMMAND_HEATER_RETURN_TO_PID,
     COMMAND_HEATER_ALL_OFF,
     DEFAULT_TELEMETRY_PORT,
+    TEMP_SENSOR_DISPLAY_NAMES,
     CommandResponse,
     CombinedTelemetryPacket,
     PidTelemetryPacket,
@@ -973,7 +974,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             else:
                 value = f"invalid (raw {raw_value})"
                 state = "warning"
-            name = f"TMP117-{index + 1}"
+            name = TEMP_SENSOR_DISPLAY_NAMES[index]
             self.health_temperature_table.set_value(name, value, 1)
             self.health_temperature_table.set_value(name, "OK" if state == "healthy" else state, 2)
             self.health_temperature_table.set_state(name, state, 2)

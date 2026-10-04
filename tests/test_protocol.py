@@ -12,11 +12,13 @@ from unittest.mock import patch
 from chronocat_ground.protocol import (
     GEIGER_RECORD_STRUCT,
     COMBINED_TELEMETRY_PACKET_SIZE,
+    COMBINED_TELEMETRY_PACKET_SIZE_V4,
     PID_TELEMETRY_PACKET_SIZE,
     PID_TELEMETRY_RECORD_SIZE,
     TELEMETRY_PACKET_SIZE_V1,
     TELEMETRY_PACKET_SIZE_V2,
     TELEMETRY_TEMP_COUNT,
+    TELEMETRY_TEMP_COUNT_LEGACY,
     encode_heater_gain,
     encode_heater_target_c,
     encode_heater_target_signed_c,
@@ -89,7 +91,10 @@ def telemetry_packet(
     prefix.append(0)
     prefix.extend(struct.pack(">H", 0x0003))
     prefix.extend(
-        struct.pack(f">{TELEMETRY_TEMP_COUNT}h", *range(-6, -6 + TELEMETRY_TEMP_COUNT))
+        struct.pack(
+            f">{TELEMETRY_TEMP_COUNT_LEGACY}h",
+            *range(-6, -6 + TELEMETRY_TEMP_COUNT_LEGACY),
+        )
     )
     prefix.extend(struct.pack(">H", adc_valid_mask))
     prefix.extend(
@@ -138,9 +143,24 @@ def combined_telemetry_packet(
     pid = pid_telemetry_packet()
     packet = bytearray()
     packet.extend(b"CCTM\x03\x03")
-    packet.extend(struct.pack(">HHII", 0x0007, COMBINED_TELEMETRY_PACKET_SIZE, 1234, 99))
+    packet.extend(struct.pack(">HHII", 0x0007, COMBINED_TELEMETRY_PACKET_SIZE_V4, 1234, 99))
     packet.extend(standard[18:])
     packet.extend(pid[18:])
+    assert len(packet) == COMBINED_TELEMETRY_PACKET_SIZE_V4
+    return bytes(packet)
+
+
+def combined_telemetry_packet_v5(ambient_centi_c: tuple[int, ...] = (2100, 2200, 2300, 2400)) -> bytes:
+    """Version 5 inserts the four ambient temperatures after the original twelve."""
+    v4 = bytearray(combined_telemetry_packet())
+    temperatures_end = 21 + TELEMETRY_TEMP_COUNT_LEGACY * 2
+    packet = bytearray(v4[:temperatures_end])
+    packet.extend(struct.pack(">4h", *ambient_centi_c))
+    packet.extend(v4[temperatures_end:])
+    packet[4] = 5
+    struct.pack_into(">H", packet, 8, COMBINED_TELEMETRY_PACKET_SIZE)
+    mask = struct.unpack_from(">H", packet, 19)[0] | (1 << 12) | (1 << 15)
+    struct.pack_into(">H", packet, 19, mask)
     assert len(packet) == COMBINED_TELEMETRY_PACKET_SIZE
     return bytes(packet)
 
@@ -163,6 +183,42 @@ class TelemetryProtocolTests(unittest.TestCase):
         pid[4] = 4
         struct.pack_into(">i", pid, 22, -100)
         self.assertEqual(parse_telemetry_packet(bytes(pid)).heaters[0].target_c, -0.1)
+
+    def test_v5_adds_ambient_temperatures_after_heater_sensors(self) -> None:
+        packet = parse_telemetry_packet(combined_telemetry_packet_v5())
+
+        self.assertEqual(len(combined_telemetry_packet_v5()), 595)
+        self.assertEqual(len(packet.standard.temperatures), TELEMETRY_TEMP_COUNT)
+        self.assertEqual(packet.standard.temperature_c(12), 21.0)
+        self.assertIsNone(packet.standard.temperature_c(13))
+        self.assertEqual(packet.standard.temperature_c(15), 24.0)
+        # Heater feedback and the blocks after the temperatures are unchanged.
+        self.assertEqual(packet.pid.heaters[0].sensor_id, 3)
+        self.assertEqual(packet.pid.heaters[0].measurement_milli_c, -30)
+        self.assertEqual(packet.pid.heaters[0].duty_permille, 42)
+        self.assertEqual(packet.standard.geiger_reading(1).event_id, 301)
+
+    def test_v4_packet_pads_ambient_temperatures_as_invalid(self) -> None:
+        v4 = bytearray(combined_telemetry_packet())
+        v4[4] = 4
+        packet = parse_telemetry_packet(bytes(v4)).standard
+
+        self.assertEqual(len(packet.temperatures), TELEMETRY_TEMP_COUNT)
+        for index in range(TELEMETRY_TEMP_COUNT_LEGACY, TELEMETRY_TEMP_COUNT):
+            self.assertIsNone(packet.temperature_c(index))
+
+    def test_csv_names_ambient_temperatures_by_board_label(self) -> None:
+        packet = parse_telemetry_packet(combined_telemetry_packet_v5())
+        fields = csv_fieldnames()
+        row = combined_packet_to_row(packet, datetime(2026, 1, 1), "device")
+
+        for label in ("u7", "u6", "f2_u7", "f2_u6"):
+            self.assertIn(f"ambient_{label}_temp_c", fields)
+            self.assertIn(f"ambient_{label}_temp_valid", fields)
+        self.assertEqual(row["ambient_u7_temp_c"], "21.00")
+        self.assertEqual(row["ambient_u7_temp_valid"], 1)
+        self.assertEqual(row["ambient_u6_temp_valid"], 0)
+        self.assertEqual(row["ambient_f2_u6_temp_c"], "24.00")
 
     def test_signed_deci_degree_command_bounds_and_round_trip(self) -> None:
         for target, expected in [(-55.0, -550), (-0.1, -1), (0.0, 0), (64.9, 649)]:
