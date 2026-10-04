@@ -405,3 +405,118 @@ class PlotWidget(pg.PlotWidget):
         self._vline.setVisible(False)
         self._hline.setVisible(False)
         self._tooltip_label.setVisible(False)
+
+
+class _HistorySeries:
+    def __init__(self) -> None:
+        self.points = np.empty((8192, 2), dtype=float)
+        self.length = 0
+        self.count = 0
+        self.value_sum = 0.0
+        self.value_min = math.inf
+        self.value_max = -math.inf
+        self.last_wall: float | None = None
+
+
+class HistoryPlotWidget(PlotWidget):
+    """Full-history plot with amortized appends and view-dependent peak reduction."""
+
+    def __init__(self, *args, series_names: tuple[str, ...] = ("",), **kwargs) -> None:
+        super().__init__(*args, absolute_time=True, **kwargs)
+        self._history_series = [_HistorySeries() for _name in series_names]
+        self._history_names = series_names
+        self._origin: float | None = None
+        if len(series_names) > 1:
+            self._legend = self.addLegend(offset=(10, 10))
+        for index, name in enumerate(series_names):
+            curve = self._curve if index == 0 else self.plot()
+            if index:
+                self._curves.append(curve)
+            curve.setPen(pg.mkPen(color=("#111111", "#3f6f9f")[index % 2], width=2))
+            curve.setClipToView(True)
+            curve.setDownsampling(auto=True, method="peak")
+            if self._legend is not None:
+                self._legend.addItem(curve, name)
+
+    @property
+    def sample_count(self) -> int:
+        return sum(series.count for series in self._history_series)
+
+    def append_history(self, points: np.ndarray, series_index: int = 0) -> None:
+        if not len(points):
+            return
+        series = self._history_series[series_index]
+        if self._origin is None:
+            # Keep this fixed: new data must not shift a user's historical viewport.
+            self._origin = float(points[0, 0])
+            self._wall_clock_axis.setWallRef(self._origin)
+        walls = points[:, 0]
+        previous = np.concatenate((
+            [series.last_wall if series.last_wall is not None else walls[0]], walls[:-1]
+        ))
+        gaps = (walls - previous) > PLOT_GAP_SECONDS
+        positions = np.arange(len(points)) + np.cumsum(gaps)
+        count = len(points) + int(gaps.sum())
+        needed = series.length + count
+        if needed > len(series.points):
+            capacity = max(needed, len(series.points) * 2)
+            grown = np.empty((capacity, 2), dtype=float)
+            grown[:series.length] = series.points[:series.length]
+            series.points = grown
+        batch = series.points[series.length:needed]
+        batch[:, 0] = math.nan
+        batch[:, 1] = math.nan
+        batch[positions, 0] = walls - self._origin
+        batch[positions, 1] = points[:, 1]
+        # Give each line-break a finite x coordinate, but a NaN y coordinate.
+        batch[positions[gaps] - 1, 0] = walls[gaps] - self._origin
+        series.length = needed
+        series.last_wall = float(walls[-1])
+
+        values = points[:, 1][np.isfinite(points[:, 1])]
+        if len(values):
+            series.count += len(values)
+            series.value_sum += float(values.sum())
+            series.value_min = min(series.value_min, float(values.min()))
+            series.value_max = max(series.value_max, float(values.max()))
+        data = series.points[:series.length]
+        self._curves[series_index].setData(data[:, 0], data[:, 1], connect="finite")
+        self._empty_label.setVisible(self.sample_count < 2)
+        self._stats_label.setVisible(self.sample_count >= 2)
+        if self.sample_count:
+            minimum = min(item.value_min for item in self._history_series)
+            maximum = max(item.value_max for item in self._history_series)
+            total = sum(item.value_sum for item in self._history_series)
+            self._stats_label.setText(
+                f"min {minimum:.4g}  max {maximum:.4g}  "
+                f"mean {total / self.sample_count:.4g}"
+            )
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        # Bypass the rolling plot's list-based nearest-point scan.
+        pg.PlotWidget.mouseMoveEvent(self, event)
+        if self.sample_count < 2:
+            return
+        mouse = self.plotItem.vb.mapSceneToView(event.position())
+        readings = []
+        for name, series in zip(self._history_names, self._history_series):
+            if not series.length:
+                continue
+            data = series.points[:series.length]
+            index = min(int(np.searchsorted(data[:, 0], mouse.x())), len(data) - 1)
+            if index > 0 and abs(data[index - 1, 0] - mouse.x()) < abs(data[index, 0] - mouse.x()):
+                index -= 1
+            x, value = data[index]
+            if math.isfinite(value):
+                stamp = datetime.fromtimestamp(self._origin + x).strftime("%Y-%m-%d %H:%M:%S")
+                readings.append(f"{stamp}  {name or self.hover_label}: {value:.6g}")
+        if not readings:
+            self._tooltip_label.setVisible(False)
+            return
+        self._vline.setVisible(True)
+        self._hline.setVisible(True)
+        self._vline.setPos(mouse.x())
+        self._hline.setPos(mouse.y())
+        self._tooltip_label.setText("\n".join(readings))
+        self._tooltip_label.adjustSize()
+        self._tooltip_label.setVisible(True)

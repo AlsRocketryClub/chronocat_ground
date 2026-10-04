@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from functools import partial
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QPixmap
@@ -23,7 +24,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..pid_page import PidPage
-from ..plot_widget import PlotWidget
+from ..plot_widget import HistoryPlotWidget, PlotWidget
+from ..plot_history import PlotHistoryLoader
 from ..protocol import (
     AD7177_BIPOLAR_MIDSCALE,
     AD7177_CHANNEL_COUNT,
@@ -43,7 +45,6 @@ from ..protocol import (
     VALUE_ON,
 )
 from ..telemetry_db import TelemetryDb, archive_database
-from ..telemetry_history import adc_point_for_mode
 from ..telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY
 from .widgets import HealthSummaryCard, Panel, SampleCard, StatCard, ValueTable
 from .status_widgets import StatusIndicator
@@ -249,7 +250,7 @@ class MainWindowPagesMixin:
         self.monitoring_geiger_plot = PlotWidget(
             "Dose rate (CPS)", "No data", hover_label="CPS", interactive=False
         )
-        self.monitoring_geiger_plot.on_double_click = lambda: self.show_geiger_dialog(0)
+        self.monitoring_geiger_plot.on_double_click = lambda: self.show_geiger_dialog()
         chart_panel.layout.addWidget(self.monitoring_geiger_plot)
         average_title = QLabel("ADC CHANNEL AVERAGE")
         average_title.setObjectName("panelTitle")
@@ -594,32 +595,28 @@ class MainWindowPagesMixin:
             title = f"{card.toggle_button.text()} / ADC{adc_index} CH{channel_index}"
             raw_mode = self.samples_display_mode == "raw"
 
-            def points_fn(s=slot, raw_mode=raw_mode):
-                rows = self.adc_db.query_adc(s, limit=5000)
-                if raw_mode:
-                    return [(received_wall, float(raw24)) for received_wall, raw24 in rows]
-                return [(received_wall, raw24_to_volts(raw24)) for received_wall, raw24 in rows]
-
             self.show_plot_dialog(
                 plot_id=f"adc_{slot}",
                 title=title,
                 y_label="Raw24" if raw_mode else "Volts (V)",
                 hover_label="Raw24" if raw_mode else "Volts",
-                points_fn=points_fn,
+                history_sources=(("adc", slot, raw_mode),),
                 latest_fn=lambda s=slot: f"{self.sample_cards[s].reading_label.text()} / {self.sample_cards[s].temperature_label.text()}",
             )
         except Exception as exc:
             self.log(f"Failed to open ADC graph: {exc}")
 
-    def show_geiger_dialog(self, counter_id: int) -> None:
+    def show_geiger_dialog(self, counter_id: int | None = None) -> None:
         try:
-            name = "Geiger 1" if counter_id == 0 else "Geiger 2"
+            counters = (0, 1) if counter_id is None else (counter_id,)
+            name = "Geiger 1 + Geiger 2" if counter_id is None else f"Geiger {counter_id + 1}"
             self.show_plot_dialog(
-                plot_id=f"geiger_{counter_id}",
+                plot_id="geiger_all" if counter_id is None else f"geiger_{counter_id}",
                 title=f"{name} DOSE RATE",
                 y_label="Dose rate (CPS)",
                 hover_label="CPS",
-                points_fn=lambda cid=counter_id: list(self.adc_db.query_geiger(cid, limit=5000)),
+                history_sources=tuple(("geiger", counter, False) for counter in counters),
+                series_names=tuple(f"Geiger {counter + 1}" for counter in counters),
                 latest_fn=lambda: "",
             )
         except Exception as exc:
@@ -630,9 +627,10 @@ class MainWindowPagesMixin:
         plot_id: str,
         title: str,
         y_label: str,
-        points_fn,
+        history_sources: tuple[tuple[str, int, bool], ...],
         latest_fn=None,
         hover_label: str | None = None,
+        series_names: tuple[str, ...] = ("",),
     ) -> None:
         if plot_id in self.plot_dialogs:
             self.plot_dialogs[plot_id].raise_()
@@ -640,6 +638,7 @@ class MainWindowPagesMixin:
             return
 
         dialog = QDialog(self)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.setWindowTitle(title)
         dialog.resize(900, 520)
 
@@ -662,54 +661,68 @@ class MainWindowPagesMixin:
         latest_label.setObjectName("smallNote")
         latest_label.setWordWrap(True)
 
-        plot = PlotWidget(y_label, "No data", absolute_time=True, hover_label=hover_label, y_range=(-150.0, 150.0) if "temperature" in y_label.lower() else None, min_y_range=5.0 if "temperature" in y_label.lower() else None, min_x_range=10.0 if "temperature" in y_label.lower() else None)
+        plot = HistoryPlotWidget(y_label, "Loading history…", hover_label=hover_label,
+                                 series_names=series_names)
         plot.setMinimumHeight(400)
+
+        history_status = QLabel("Loading full database history…")
+        history_status.setObjectName("smallNote")
+        fit_button = QPushButton("Fit full history")
+        fit_button.clicked.connect(lambda: plot.enableAutoRange(x=True, y=True))
+        top_row.addWidget(fit_button)
+        loaders = []
+        caught_up = set()
+
+        def history_caught_up(index: int) -> None:
+            caught_up.add(index)
+            if len(caught_up) == len(history_sources):
+                history_status.setText(f"Full history · {plot.sample_count:,} samples · live")
+                plot._empty_label.setText("No recorded data")
+
+        for index, source in enumerate(history_sources):
+            loader = PlotHistoryLoader(self.database_path, *source, parent=dialog)
+            loader.batch_ready.connect(partial(plot.append_history, series_index=index))
+            loader.caught_up.connect(partial(history_caught_up, index))
+            loader.failed.connect(lambda message: history_status.setText(f"History read failed: {message}"))
+            loaders.append(loader)
 
         frame_layout.addLayout(top_row)
         if latest_fn:
             frame_layout.addWidget(latest_label)
         frame_layout.addWidget(plot, 1)
+        frame_layout.addWidget(history_status)
 
         self.plot_dialogs[plot_id] = dialog
         self.plot_dialog_refs[plot_id] = {
             "plot": plot,
             "latest": latest_label,
-            "points_fn": points_fn,
+            "loaders": loaders,
             "latest_fn": latest_fn,
         }
 
         dialog.finished.connect(lambda _result, pid=plot_id: self.clear_plot_dialog(pid))
 
-        points = points_fn()
-        plot.set_points(points)
         dialog.show()
+        for loader in loaders:
+            loader.start()
 
     def clear_plot_dialog(self, plot_id: str) -> None:
         self.plot_dialogs.pop(plot_id, None)
-        self.plot_dialog_refs.pop(plot_id, None)
+        refs = self.plot_dialog_refs.pop(plot_id, None)
+        if refs is not None:
+            for loader in refs["loaders"]:
+                loader.close()
 
     def update_plot_dialogs(self) -> None:
-        for plot_id, refs in list(self.plot_dialog_refs.items()):
-            plot: PlotWidget = refs["plot"]
+        for refs in list(self.plot_dialog_refs.values()):
             latest: QLabel = refs["latest"]
-            points_fn = refs["points_fn"]
             latest_fn = refs["latest_fn"]
 
             if latest_fn:
                 latest.setText(latest_fn())
 
-            if plot_id.startswith("adc_"):
-                raw_entries = self.telemetry_history.adc_points(int(plot_id.removeprefix("adc_")))
-                points = [
-                    adc_point_for_mode(entry, self.samples_display_mode) for entry in raw_entries
-                ]
-            elif plot_id.startswith("geiger_"):
-                points = self.telemetry_history.geiger_points(
-                    int(plot_id.removeprefix("geiger_"))
-                )
-            else:
-                points = points_fn()
-            plot.set_points(points)
+            # Historical plots fetch new committed rows on their own timer;
+            # telemetry updates must never replace them with the rolling buffer.
 
     def build_temperature_page(self) -> QWidget:
         self.pid_page = PidPage()
@@ -915,6 +928,8 @@ class MainWindowPagesMixin:
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if ret == QMessageBox.Yes:
+            for dialog in list(self.plot_dialogs.values()):
+                dialog.close()
             self.adc_db.close()
             try:
                 archive = archive_database(self.database_path)
