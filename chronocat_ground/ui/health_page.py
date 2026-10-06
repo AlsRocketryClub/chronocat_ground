@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -34,7 +35,10 @@ class HealthTile(QLabel):
         super().__init__()
         self.setObjectName("healthTile")
         self.setAlignment(Qt.AlignCenter)
-        self.setFixedSize(86, 44)
+        # Grow wider rather than clip if a value is ever longer than usual.
+        self.setMinimumWidth(86)
+        self.setFixedHeight(44)
+        self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._shown: HealthItem | None = None
 
     def show_item(self, item: HealthItem) -> None:
@@ -42,7 +46,7 @@ class HealthTile(QLabel):
             return
         self._shown = item
         self.setText(f"{item.label}\n{item.value or '—'}")
-        tooltip = [item.name, item.value] + ([item.reason] if item.reason else [])
+        tooltip = [item.name, item.value, item.detail, item.reason]
         self.setToolTip("\n".join(part for part in tooltip if part))
         self.setProperty("state", item.state)
         self.style().unpolish(self)

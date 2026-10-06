@@ -57,6 +57,8 @@ class HealthItem:
     subgroup: str = ""
     # Groups whose own items already explain this problem when they show one.
     explained_by: str = ""
+    # Extra context for the tooltip only; tiles show just the short value.
+    detail: str = ""
 
     @property
     def is_problem(self) -> bool:
@@ -200,6 +202,15 @@ def _board_items(packet: TelemetryPacket | None) -> list[HealthItem]:
     ]
 
 
+def format_rate(cps: float) -> str:
+    """Count rate in at most ~5 characters, without scientific notation."""
+    if cps >= 1000:
+        return f"{cps:.0f}"
+    if cps >= 10:
+        return f"{cps:.1f}"
+    return f"{cps:.3g}" if cps >= 0.001 else f"{cps:.4f}"
+
+
 def temperature_name(sensor_id: int) -> str:
     label = TEMP_SENSOR_LABELS[sensor_id]
     if sensor_id in AMBIENT_SENSOR_IDS:
@@ -267,7 +278,8 @@ def _geiger_items(packet: TelemetryPacket | None) -> list[HealthItem]:
         if reading is None or not reading.valid:
             items.append(HealthItem(key, "GEIGER", label, name, WARNING, "—", "no response"))
             continue
-        value = f"{reading.dose_rate_cps:.3g} cps · {reading.hv_voltage} V"
+        value = f"{format_rate(reading.dose_rate_cps)} cps"
+        detail = f"HV {reading.hv_voltage} V"
         # Unrecognised bits count as faults rather than being ignored.
         faults = reading.error_flags & ~(GEIGER_NOTICE_FLAGS | GEIGER_CALIBRATION_FLAGS)
         notices = reading.error_flags & GEIGER_NOTICE_FLAGS
@@ -279,8 +291,8 @@ def _geiger_items(packet: TelemetryPacket | None) -> list[HealthItem]:
         else:
             state, reason = OK, ""
         if calibration:
-            value += " · " + geiger_error_names(calibration)
-        items.append(HealthItem(key, "GEIGER", label, name, state, value, reason))
+            detail += f"; {geiger_error_names(calibration)}"
+        items.append(HealthItem(key, "GEIGER", label, name, state, value, reason, detail=detail))
     return items
 
 
@@ -376,3 +388,4 @@ class HealthEventLog:
 
         self.events.extend(new_events)
         return new_events
+

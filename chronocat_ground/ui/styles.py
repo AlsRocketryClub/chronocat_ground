@@ -166,6 +166,7 @@ QPushButton:disabled {
     color: #555555;
 }
 #healthTile {
+    padding: 0 6px;
     background: #eeeeee;
     border: 1px solid #b5b5b5;
     color: #555555;
@@ -191,8 +192,7 @@ QPushButton:disabled {
     color: #444444;
     font-size: 11px;
     font-weight: 700;
-    letter-spacing: 1px;
-    min-width: 72px;
+    min-width: 84px;
 }
 #healthSubgroupLabel {
     color: #666666;

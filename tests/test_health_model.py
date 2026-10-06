@@ -10,6 +10,7 @@ from chronocat_ground.health_model import (
     HealthEventLog,
     active_issues,
     evaluate_health,
+    format_rate,
     link_status,
 )
 from chronocat_ground.protocol import parse_telemetry_packet
@@ -58,6 +59,17 @@ class HealthModelTest(unittest.TestCase):
         hv = items_for(packet(geiger_2_flags=1))["geiger:1"]
         self.assertEqual((hv.state, hv.reason), (ERROR, "HV error"))
 
+    def test_geiger_tile_value_stays_short_with_details_in_tooltip(self) -> None:
+        geiger = items_for(packet(geiger_2_flags=64))["geiger:1"]
+        self.assertTrue(geiger.value.endswith(" cps"))
+        self.assertLessEqual(len(geiger.value), 10)
+        self.assertIn("HV", geiger.detail)
+        self.assertIn("calibration", geiger.detail)
+        self.assertEqual(
+            [format_rate(rate) for rate in (12345.678, 123.45, 9.876, 0.0123)],
+            ["12346", "123.5", "9.88", "0.0123"],
+        )
+
     def test_watchdog_reset_flag_is_reported(self) -> None:
         reset = items_for(packet(flags=0x0007 | (1 << 4)))["reset"]
         self.assertEqual((reset.state, reset.value), (WARNING, "watchdog"))
@@ -89,3 +101,4 @@ class HealthModelTest(unittest.TestCase):
             "F2_U4 (H10) ok (25.0 °C)",
             "H10 (F2_U4) ok (4%)",
         ])
+
