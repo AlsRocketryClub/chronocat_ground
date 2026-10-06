@@ -4,8 +4,9 @@ Minimal PySide6 desktop chronocat_ground app for Chronocat firmware.
 
 ## Features
 
-- Receives UDP telemetry on port `5005`.
-- Connects to the firmware TCP command server on `192.168.1.50:5006`.
+- Receives UDP telemetry on port `5005`. The firmware sends it to `172.16.18.100`, so the
+  ground-station computer must use that address on the experiment network.
+- Connects to the firmware TCP command server on `172.16.18.101:5006`.
 - Shows packet counter, firmware timestamp, flags, health, sensor masks, AD7177 raw ADC telemetry, Geiger telemetry, source address, packet count, and packet age.
 - Shows top-bar telemetry state alongside TCP connection and SD logger state.
 - Sends binary command packets for ping, telemetry on, telemetry off, and telemetry status.
