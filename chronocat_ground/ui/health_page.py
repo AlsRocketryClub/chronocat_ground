@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..health_model import ERROR, GROUPS, OK, WARNING, HealthEvent, HealthItem, Issue
-from .widgets import Panel
+from .widgets import PAGE_SPACING, Panel
 
 _EVENT_COLORS = {
     ERROR: ("#f5d8d8", "#702525"),
@@ -58,7 +58,7 @@ class HealthPage(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(PAGE_SPACING)
 
         self.issues_panel = Panel()
         self.issues_title = QLabel()

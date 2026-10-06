@@ -12,7 +12,7 @@ from ..plot_widget import SERIES_COLORS, PlotWidget
 from ..protocol import HEATER_SENSOR_IDS, TEMP_SENSOR_LABELS, AMBIENT_SENSOR_IDS, PidTelemetryPacket, TelemetryPacket
 from ..sample_layout import SAMPLE_COLUMNS
 from ..telemetry_history import TelemetryHistorySnapshot, adc_point_for_mode
-from .widgets import Panel
+from .widgets import PAGE_SPACING, Panel
 
 _BOARDS = (("F1", range(0, 6)), ("F2", range(6, 12)))
 # Compact so the whole summary fits one screen; double-click opens the full plot.
@@ -32,7 +32,7 @@ class DashboardPage(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(PAGE_SPACING)
         layout.addWidget(self._build_status(open_health))
         layout.addWidget(self._build_radiation(open_geiger_plot))
         layout.addWidget(self._build_samples())
@@ -89,7 +89,7 @@ class DashboardPage(QWidget):
     def _build_samples(self) -> QWidget:
         panel = Panel("SAMPLES")
         columns = QHBoxLayout()
-        columns.setSpacing(16)
+        columns.setSpacing(PAGE_SPACING)
         self.sample_values: dict[int, tuple[QLabel, str]] = {}
         self.sample_plots: list[tuple[PlotWidget, tuple]] = []
         for material, channels in SAMPLE_COLUMNS:

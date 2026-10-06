@@ -95,7 +95,7 @@ class PlotWidget(pg.PlotWidget):
         self._min_y_range = min_y_range
         self._min_x_range = min_x_range
         self._monitor_mode = monitor_mode
-        self._monitor_y_range: tuple[float, float] | None = None
+        self._view_range: tuple[float, float, float, float] | None = None
         self._wall_clock_axis.setRelative(not absolute_time)
 
         if on_click is not None:
@@ -378,7 +378,9 @@ class PlotWidget(pg.PlotWidget):
 
         self._draw_bands()
 
-        if self._first_draw:
+        if not self._interactive:
+            self._fit_view(x, y)
+        elif self._first_draw:
             self._first_draw = False
             if self._y_range is not None:
                 self.enableAutoRange(x=True, y=False)
@@ -395,21 +397,33 @@ class PlotWidget(pg.PlotWidget):
             if self._min_x_range is not None:
                 self.plotItem.vb.setLimits(minXRange=self._min_x_range)
 
-        if self._monitor_mode:
-            y_min = float(y.min())
-            y_max = float(y.max())
-            if self._min_y_range is not None and y_max - y_min < self._min_y_range:
-                mid = (y_min + y_max) / 2
-                y_min = mid - self._min_y_range / 2
-                y_max = mid + self._min_y_range / 2
-            if self._y_range is not None:
-                y_min = max(y_min, self._y_range[0])
-                y_max = min(y_max, self._y_range[1])
-            if (y_min, y_max) != self._monitor_y_range:
-                self._monitor_y_range = (y_min, y_max)
-                self.setYRange(y_min, y_max, padding=0)
-
         self._update_stats()
+
+    def _fit_view(self, x: np.ndarray, y: np.ndarray) -> None:
+        """Embedded plots fill their area: x spans exactly the data, y the data
+        (and any error bands) plus a small margin so lines do not touch the frame."""
+        band_y = np.array(
+            [point[2] for _index, upper, lower in self._band_points for point in (*upper, *lower)],
+            dtype=float,
+        )
+        band_y = band_y[np.isfinite(band_y)]
+        y_min = float(min(y.min(), band_y.min())) if band_y.size else float(y.min())
+        y_max = float(max(y.max(), band_y.max())) if band_y.size else float(y.max())
+        if self._min_y_range is not None and y_max - y_min < self._min_y_range:
+            middle = (y_min + y_max) / 2
+            y_min, y_max = middle - self._min_y_range / 2, middle + self._min_y_range / 2
+        margin = 0.04 * (y_max - y_min) if y_max > y_min else max(abs(y_max) * 0.05, 1e-9)
+        y_min, y_max = y_min - margin, y_max + margin
+        if self._y_range is not None:
+            y_min, y_max = max(y_min, self._y_range[0]), min(y_max, self._y_range[1])
+        x_min, x_max = float(x.min()), float(x.max())
+        if x_max <= x_min:
+            x_min -= 0.5
+            x_max += 0.5
+        view = (x_min, x_max, y_min, y_max)
+        if view != self._view_range:
+            self._view_range = view
+            self.setRange(xRange=(x_min, x_max), yRange=(y_min, y_max), padding=0)
 
     def _update_stats(self) -> None:
         values = [p[2] for _label, points in self._series_points for p in points if math.isfinite(p[2])]

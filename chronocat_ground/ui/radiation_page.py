@@ -10,7 +10,7 @@ from ..health_model import ERROR, OK, UNKNOWN, WARNING, HealthItem, format_rate
 from ..plot_widget import SERIES_COLORS, PlotWidget
 from ..protocol import GEIGER_CALIBRATION_FLAGS, TelemetryPacket, geiger_error_names
 from ..telemetry_history import TelemetryHistorySnapshot
-from .widgets import Panel
+from .widgets import PAGE_SPACING, Panel
 
 _WINDOWS = (("5 min", 300.0), ("1 h", 3600.0))
 _SERIES = ("Geiger 1", "Geiger 2")
@@ -83,10 +83,10 @@ class RadiationPage(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(PAGE_SPACING)
 
         detectors = QHBoxLayout()
-        detectors.setSpacing(12)
+        detectors.setSpacing(PAGE_SPACING)
         self.detectors = [_DetectorPanel(counter_id) for counter_id in range(2)]
         for panel in self.detectors:
             detectors.addWidget(panel, 1)

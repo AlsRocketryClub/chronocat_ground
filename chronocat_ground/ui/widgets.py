@@ -20,6 +20,10 @@ from ..plot_widget import PlotWidget
 from ..sample_layout import SampleChannel
 
 
+# Gap between panels and around the window; small so content gets the space.
+PAGE_SPACING = 6
+
+
 class Panel(QFrame):
     """The standard bordered container used by application pages."""
 
@@ -28,7 +32,7 @@ class Panel(QFrame):
         self.setObjectName("panel")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(10, 10, 10, 10)
+        self.layout.setContentsMargins(8, 8, 8, 8)
         self.layout.setSpacing(8)
 
         if title is not None:

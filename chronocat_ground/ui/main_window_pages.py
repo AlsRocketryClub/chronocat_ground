@@ -49,7 +49,7 @@ from .dashboard_page import DashboardPage
 from .diagnostics_page import DiagnosticsPage
 from .radiation_page import RadiationPage
 from .health_page import HealthPage
-from .widgets import Panel, SampleCard
+from .widgets import PAGE_SPACING, Panel, SampleCard
 from .status_widgets import StatusIndicator
 
 
@@ -89,13 +89,13 @@ class MainWindowPagesMixin:
         root = QWidget()
         root.setObjectName("appShell")
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(PAGE_SPACING, PAGE_SPACING, PAGE_SPACING, PAGE_SPACING)
+        layout.setSpacing(PAGE_SPACING)
 
         layout.addWidget(self.build_topbar())
 
         body = QHBoxLayout()
-        body.setSpacing(12)
+        body.setSpacing(PAGE_SPACING)
         layout.addLayout(body, 1)
 
         self.pages = QStackedWidget()
@@ -338,7 +338,7 @@ class MainWindowPagesMixin:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(PAGE_SPACING)
 
         self.sample_cards = [SampleCard(SAMPLE_CHANNELS[slot]) for slot in sorted(SAMPLE_CHANNELS)]
         for card in self.sample_cards:
@@ -346,7 +346,7 @@ class MainWindowPagesMixin:
 
         # One column per material, channels top to bottom in ADC order.
         columns = QHBoxLayout()
-        columns.setSpacing(12)
+        columns.setSpacing(PAGE_SPACING)
         for index, (material, channels) in enumerate(SAMPLE_COLUMNS):
             material_panel = Panel()
             # Fixed height so both columns' cards line up despite the unit switch.
@@ -552,7 +552,7 @@ class MainWindowPagesMixin:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(PAGE_SPACING)
 
         connection_panel = Panel("CONNECTION")
         connection_grid = QGridLayout()

@@ -31,6 +31,7 @@ from .protocol import (
     heater_pid_averages,
 )
 from .ui.pid_widgets import HeaterOverviewRow, SENSOR_NAMES
+from .ui.widgets import PAGE_SPACING
 
 
 class PidPage(QWidget):
@@ -58,7 +59,7 @@ class PidPage(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(10)
+        root.setSpacing(PAGE_SPACING)
 
         root.addWidget(self._build_header())
 

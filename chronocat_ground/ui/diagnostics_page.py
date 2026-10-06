@@ -22,7 +22,7 @@ from ..protocol import (
     telemetry_health_name,
 )
 from ..sample_layout import SAMPLE_CHANNELS
-from .widgets import Panel, ValueTable
+from .widgets import PAGE_SPACING, Panel, ValueTable
 
 _FLAG_NAMES = (
     (TELEMETRY_FLAG_ENABLED, "telemetry enabled"),
@@ -68,7 +68,7 @@ class DiagnosticsPage(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(PAGE_SPACING)
 
         self.packet_table = _table(
             [(name, "—") for name in (
@@ -107,7 +107,7 @@ class DiagnosticsPage(QWidget):
         )
 
         top = QGridLayout()
-        top.setSpacing(12)
+        top.setSpacing(PAGE_SPACING)
         top.addWidget(_panel("PACKET", self.packet_table), 0, 0)
         top.addWidget(_panel("SYSTEM", self.system_table), 0, 1)
         top.addWidget(_panel("GEIGER", self.geiger_table), 1, 0)
