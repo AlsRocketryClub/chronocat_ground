@@ -49,6 +49,7 @@ TELEMETRY_FLAG_ENABLED = 1 << 0
 TELEMETRY_FLAG_TCP_LISTENING = 1 << 1
 TELEMETRY_FLAG_SD_LOG_ACTIVE = 1 << 2
 TELEMETRY_FLAG_SD_LOG_ERROR = 1 << 3
+TELEMETRY_FLAG_PREVIOUS_WATCHDOG_RESET = 1 << 4
 
 TELEMETRY_HEALTH_NAMES = {
     0: "ok",
@@ -67,6 +68,11 @@ GEIGER_ERROR_NAMES = {
     64: "calibration: no statistics reset",
     128: "calibration: no background deduction",
 }
+# The detector manual describes 8 as normal at the very first power-on and
+# 64/128 as calibration modes that "do not represent an error"; every other
+# flag is a fault.
+GEIGER_NOTICE_FLAGS = 8
+GEIGER_CALIBRATION_FLAGS = 64 | 128
 
 HEATER_SENSOR_IDS = (3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8)
 
@@ -85,12 +91,6 @@ TEMP_SENSOR_I2C_ADDRESSES = (
     0x4B, 0x4B, 0x4B, 0x4B,
 )
 TEMP_SENSOR_MUX_SIDES = (0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1)
-TEMP_SENSOR_DISPLAY_NAMES = tuple(
-    f"Ambient {TEMP_SENSOR_LABELS[index]}"
-    if index in AMBIENT_SENSOR_IDS
-    else f"TMP117-{index + 1}"
-    for index in range(TELEMETRY_TEMP_COUNT)
-)
 
 PID_RESULT_NAMES = {
     0: "disabled",

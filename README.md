@@ -239,7 +239,16 @@ Flags:
 ```text
 bit 0 telemetry enabled
 bit 1 TCP server listening
+bit 2 SD log active
+bit 3 SD log error
+bit 4 previous reset was a watchdog reset
 ```
+
+The Health page lists active issues worst first, shows every monitored item as
+a coloured tile (hover for details), and keeps a log of each item's changes
+between ok and a problem, plus board restarts detected from the uptime.
+Geiger flags 64/128 (calibration modes) are shown but not treated as faults,
+and flag 8 is a warning because the detector sets it on its first power-on.
 
 Masks:
 

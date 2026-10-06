@@ -29,7 +29,6 @@ from .protocol import (
     COMMAND_HEATER_RETURN_TO_PID,
     COMMAND_HEATER_ALL_OFF,
     DEFAULT_TELEMETRY_PORT,
-    TEMP_SENSOR_DISPLAY_NAMES,
     TEMP_SENSOR_LABELS,
     CommandResponse,
     CombinedTelemetryPacket,
@@ -49,7 +48,6 @@ from .protocol import (
     geiger_error_names,
     heater_pid_averages,
     status_name,
-    TELEMETRY_FLAG_ENABLED,
     TELEMETRY_FLAG_SD_LOG_ACTIVE,
     TELEMETRY_FLAG_SD_LOG_ERROR,
     telemetry_health_name,
@@ -60,6 +58,7 @@ from .pid_page import PidPage
 from .pid_profiles import PidProfile, profile_by_name
 from .telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY, TelemetryCsvLogger
 from .telemetry_db import DEFAULT_DATABASE_PATH, TelemetryDb
+from .health_model import HealthEventLog, active_issues, evaluate_health, link_status
 from .sample_layout import SAMPLE_CHANNELS
 from .telemetry_history import TelemetryHistory, adc_point_for_mode
 from .telemetry_receiver import TelemetryReceiver
@@ -97,17 +96,6 @@ class PendingPidOperation:
     step: int = 0
 
 
-def tri_state(healthy_count: int, total_count: int) -> str:
-    """Red when nothing is healthy, yellow when some but not all is, green when all is."""
-    if total_count <= 0:
-        return "unknown"
-    if healthy_count <= 0:
-        return "error"
-    if healthy_count >= total_count:
-        return "healthy"
-    return "warning"
-
-
 class MainWindow(MainWindowPagesMixin, QMainWindow):
     def __init__(self, database_path: str | Path = DEFAULT_DATABASE_PATH) -> None:
         super().__init__()
@@ -140,6 +128,10 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.pending_pid_operation: PendingPidOperation | None = None
         self.pid_page: PidPage | None = None
         self.geiger_xder_values: dict[int, float | None] = {0: None, 1: None}
+        self.health_events = HealthEventLog()
+        self._health_packet: TelemetryPacket | None = None
+        self._health_pid: PidTelemetryPacket | None = None
+        self._receiver_error = ""
 
         self.telemetry_receiver = TelemetryReceiver(DEFAULT_TELEMETRY_PORT)
         self.telemetry_receiver.packet_received.connect(self.on_telemetry_packet)
@@ -247,13 +239,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.host_input.setEnabled(not command_in_progress)
         self.port_input.setEnabled(not command_in_progress)
 
-        self.health_table.set_value("Uplink", "Connected" if connected else "Disconnected")
-        self.health_table.set_state("Uplink", "healthy" if connected else "error")
-        if self.last_telemetry_time is None:
-            self.system_health_section.set_status(
-                f"WAITING FOR DOWNLINK  ·  UPLINK {'CONNECTED' if connected else 'DISCONNECTED'}",
-                "unknown" if connected else "warning",
-            )
+        self.refresh_health()
 
         for button in (
             self.ping_button,
@@ -893,7 +879,11 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
         self.update_geiger_detail_table(self.radiation_table, geiger_1, 1)
         self.update_geiger_detail_table(self.radiation_table, geiger_2, 2)
-        self.update_health_tables(packet, combined_packet, tcp_state, health)
+        self._health_packet = packet
+        if combined_packet is not None:
+            self._health_pid = combined_packet.pid
+        self._receiver_error = ""
+        self.refresh_health(uptime_ms=packet.timestamp)
 
         if self.csv_logger is not None and self.csv_logger.active:
             try:
@@ -925,152 +915,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             state = "off"
             tooltip = "Firmware SD temperature logging is not active"
         self.sd_log_indicator.set_status(text, state, tooltip)
-
-    def update_health_tables(
-        self,
-        packet: TelemetryPacket,
-        combined_packet: CombinedTelemetryPacket | None,
-        tcp_state: str,
-        health: str,
-    ) -> None:
-        """Project the latest downlink into compact, color-coded health tables."""
-        telemetry_enabled = bool(packet.flags & TELEMETRY_FLAG_ENABLED)
-        tcp_healthy = packet.tcp_status == 4
-        firmware_healthy = packet.health_code == 0
-        sd_error = bool(packet.flags & TELEMETRY_FLAG_SD_LOG_ERROR)
-        sd_active = bool(packet.flags & TELEMETRY_FLAG_SD_LOG_ACTIVE)
-
-        self.health_table.set_value("Downlink", "receiving")
-        self.health_table.set_state("Downlink", "healthy")
-        self.health_table.set_value("Last Telemetry", "now")
-        self.health_table.set_state("Last Telemetry", "healthy")
-        self.health_table.set_value("Firmware Health", health)
-        self.health_table.set_state("Firmware Health", "healthy" if firmware_healthy else "error")
-        self.health_table.set_value("TCP Server", tcp_state)
-        self.health_table.set_state("TCP Server", "healthy" if tcp_healthy else "error")
-        if sd_error:
-            sd_text, sd_state = "error", "error"
-        elif sd_active:
-            sd_text, sd_state = "logging", "healthy"
-        else:
-            sd_text, sd_state = "off", "warning"
-        self.health_table.set_value("SD Temperature Logger", sd_text)
-        self.health_table.set_state("SD Temperature Logger", sd_state)
-        system_state = (
-            "error"
-            if not firmware_healthy or not tcp_healthy or sd_error
-            else "healthy" if self.client.connected else "warning"
-        )
-        self.system_health_section.set_status(
-            f"FIRMWARE {health.upper()}  ·  DOWNLINK LIVE  ·  SD {sd_text.upper()}",
-            system_state,
-        )
-
-        valid_temperature_count = 0
-        for index, raw_value in enumerate(packet.temperatures):
-            valid = packet.temperature_valid(index)
-            temperature = packet.temperature_c(index)
-            if valid:
-                valid_temperature_count += 1
-                value = f"{temperature:.2f} C"
-                state = "error" if temperature is not None and temperature >= 65.0 else "healthy"
-            else:
-                value = f"invalid (raw {raw_value})"
-                state = "warning"
-            name = TEMP_SENSOR_DISPLAY_NAMES[index]
-            self.health_temperature_table.set_value(name, value, 1)
-            self.health_temperature_table.set_value(name, "OK" if state == "healthy" else state, 2)
-            self.health_temperature_table.set_state(name, state, 2)
-        self.health_table.set_value(
-            "Temperature Sensors", f"{valid_temperature_count}/{len(packet.temperatures)} valid"
-        )
-        self.health_table.set_state(
-            "Temperature Sensors",
-            "healthy" if valid_temperature_count == len(packet.temperatures) else "warning",
-        )
-        self.temperature_health_section.set_status(
-            f"{valid_temperature_count} OF {len(packet.temperatures)} SENSORS VALID",
-            "healthy" if valid_temperature_count == len(packet.temperatures) else "warning",
-        )
-
-        valid_adc_count = 0
-        for reading in packet.ad7177_readings:
-            valid = packet.os_adc_valid(reading.slot)
-            has_error = reading.has_error
-            if valid and not has_error:
-                valid_adc_count += 1
-                state = "healthy"
-                value = f"{reading.voltage:.6f} V"
-            elif has_error:
-                state = "error"
-                value = f"{reading.voltage:.6f} V ({ad7177_status_names(reading.status)})"
-            else:
-                state = "warning"
-                value = f"stale {reading.voltage:.6f} V"
-            name = f"ADC{reading.adc_index} CH{reading.channel_index}"
-            self.health_adc_table.set_value(name, value, 1)
-            self.health_adc_table.set_value(name, "OK" if state == "healthy" else state, 2)
-            self.health_adc_table.set_state(name, state, 2)
-        adc_state = tri_state(valid_adc_count, len(packet.ad7177_readings))
-        self.health_table.set_value("AD7177 Channels", f"{valid_adc_count}/{len(packet.ad7177_readings)} healthy")
-        self.health_table.set_state("AD7177 Channels", adc_state)
-        self.adc_health_section.set_status(
-            f"{valid_adc_count} OF {len(packet.ad7177_readings)} CHANNELS HEALTHY",
-            adc_state,
-        )
-
-        healthy_geigers = 0
-        for counter_id in range(2):
-            reading = packet.geiger_reading(counter_id)
-            row = f"Geiger {counter_id + 1}"
-            if reading is None or not reading.valid:
-                dose_rate, hv, state = "—", "—", "warning"
-            else:
-                dose_rate = f"{reading.dose_rate_cps:.9g} CPS"
-                hv = f"{reading.hv_voltage} V"
-                state = "error" if reading.error_flags else "healthy"
-                if state == "healthy":
-                    healthy_geigers += 1
-            self.health_geiger_table.set_value(row, dose_rate, 1)
-            self.health_geiger_table.set_value(row, hv, 2)
-            self.health_geiger_table.set_value(row, "OK" if state == "healthy" else state, 3)
-            self.health_geiger_table.set_state(row, state, 3)
-        geiger_state = tri_state(healthy_geigers, 2)
-        self.health_table.set_value("Geiger Detectors", f"{healthy_geigers}/2 healthy")
-        self.health_table.set_state("Geiger Detectors", geiger_state)
-        self.radiation_health_section.set_status(
-            f"{healthy_geigers} OF 2 DETECTORS HEALTHY",
-            geiger_state,
-        )
-
-        heater_count = 0
-        healthy_heaters = 0
-        if combined_packet is not None:
-            for heater_id, reading in enumerate(combined_packet.pid.heaters):
-                heater_count += 1
-                if reading.result >= 7:
-                    state = "error"
-                elif not reading.sensor_mapped or not reading.sensor_valid or reading.result >= 5:
-                    state = "warning"
-                else:
-                    state = "healthy"
-                    healthy_heaters += 1
-                row = f"H{heater_id}"
-                value = "—" if reading.temperature_c is None else f"{reading.temperature_c:.2f} C / {reading.duty_permille / 10.0:.1f}%"
-                self.health_heater_table.set_value(row, value, 2)
-                self.health_heater_table.set_value(row, "OK" if state == "healthy" else state, 3)
-                self.health_heater_table.set_state(row, state, 3)
-        heater_text = "not present" if combined_packet is None else f"{healthy_heaters}/{heater_count} healthy"
-        heater_state = "unknown" if combined_packet is None else tri_state(healthy_heaters, heater_count)
-        self.health_table.set_value("Heater / PID Records", heater_text)
-        self.health_table.set_state("Heater / PID Records", heater_state)
-        self.heater_health_section.set_status(
-            heater_text.upper(),
-            heater_state,
-        )
-        self.health_table.setToolTip(
-            f"Telemetry {'enabled' if telemetry_enabled else 'disabled'}; packet {packet.counter}"
-        )
 
     def set_telemetry_status(self, status: str) -> None:
         labels = {
@@ -1151,10 +995,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.sd_log_indicator.set_status(
             "UNKNOWN", "unknown", "Downlink is stale; SD logging state can't be confirmed"
         )
-        self.health_table.set_value("SD Temperature Logger", "unknown")
-        self.health_table.set_state("SD Temperature Logger", "unknown")
-        self.health_table.set_value("TCP Server", "unknown")
-        self.health_table.set_state("TCP Server", "unknown")
 
     def update_telemetry_age(self) -> None:
         if self.client.connected and not self.client.check_connection():
@@ -1163,24 +1003,16 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
         if self.last_telemetry_time is None:
             self.set_telemetry_status("waiting")
-            self.health_table.set_value("Downlink", f"waiting on UDP {DEFAULT_TELEMETRY_PORT}")
-            self.health_table.set_state("Downlink", "unknown")
-            self.system_health_section.set_status("WAITING FOR DOWNLINK", "unknown")
             self._mark_downlink_derived_status_unknown()
+            self.refresh_health()
             return
 
         age = time.monotonic() - self.last_telemetry_time
         age_text = f"{age:.1f}s ago"
         self.telemetry_table.set_value("Last Seen", age_text)
-        self.health_table.set_value("Last Telemetry", age_text)
-        self.health_table.set_state("Last Telemetry", "healthy" if age < 2.5 else "warning")
-        self.health_table.set_value("Downlink", "receiving" if age < 2.5 else "stale")
-        self.health_table.set_state("Downlink", "healthy" if age < 2.5 else "warning")
         if age >= 2.5:
-            self.system_health_section.set_status(
-                f"DOWNLINK STALE  ·  LAST PACKET {age_text.upper()}", "warning"
-            )
             self._mark_downlink_derived_status_unknown()
+        self.refresh_health()
 
         active = age < 2.5
         self.set_telemetry_status("receiving" if active else "stale")
@@ -1191,9 +1023,18 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
     def on_receiver_error(self, message: str) -> None:
         self.log(message)
         self.set_telemetry_status("error")
-        self.health_table.set_value("Downlink", message)
-        self.health_table.set_state("Downlink", "error")
-        self.system_health_section.set_status("DOWNLINK ERROR", "error")
+        self._receiver_error = message
+        self.refresh_health()
+
+    def refresh_health(self, uptime_ms: int | None = None) -> None:
+        """Re-evaluate every health item; uptime is passed only with a new packet."""
+        if not hasattr(self, "health_page"):
+            return
+        age = None if self.last_telemetry_time is None else time.monotonic() - self.last_telemetry_time
+        link = link_status(self.client.connected, age, self._receiver_error)
+        items = evaluate_health(self._health_packet, self._health_pid, link)
+        events = self.health_events.update(items, datetime.now(), uptime_ms)
+        self.health_page.show_health(items, active_issues(items), events)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._closing = True

@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QHeaderView,
-    QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -165,59 +164,6 @@ class ValueTable(QTableWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._schedule_content_height_update()
-
-
-class HealthSummaryCard(QFrame):
-    """A fixed-height subsystem summary that selects a shared detail view."""
-
-    details_requested = Signal()
-
-    def __init__(self, title: str) -> None:
-        super().__init__()
-        self.setObjectName("healthSummary")
-        self.setFixedHeight(96)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setCursor(Qt.PointingHandCursor)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(5)
-
-        header = QHBoxLayout()
-        title_label = QLabel(title)
-        title_label.setObjectName("healthSectionTitle")
-        header.addWidget(title_label)
-        header.addStretch(1)
-        self.details_button = QPushButton("Details")
-        self.details_button.setObjectName("healthDetailsButton")
-        self.details_button.clicked.connect(
-            lambda _checked=False: self.details_requested.emit()
-        )
-        header.addWidget(self.details_button)
-        layout.addLayout(header)
-
-        self.status_label = QLabel("WAITING")
-        self.status_label.setObjectName("healthSectionStatus")
-        self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
-
-        self.set_status("WAITING", "unknown")
-
-    def set_status(self, text: str, state: str) -> None:
-        self.status_label.setText(text)
-        self.setProperty("state", state)
-        self.style().unpolish(self)
-        self.style().polish(self)
-
-    def set_selected(self, selected: bool) -> None:
-        self.setProperty("selected", selected)
-        self.style().unpolish(self)
-        self.style().polish(self)
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.LeftButton:
-            self.details_requested.emit()
-        super().mouseReleaseEvent(event)
 
 
 class SampleCard(QFrame):

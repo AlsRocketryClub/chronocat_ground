@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from ..pid_page import PidPage
 from ..plot_widget import HistoryPlotWidget, PlotWidget
 from ..plot_history import PlotHistoryLoader
+from ..health_model import evaluate_health, link_status
 from ..sample_layout import SAMPLE_CHANNELS, SAMPLE_COLUMNS
 from ..protocol import (
     AD7177_BIPOLAR_MIDSCALE,
@@ -39,17 +40,15 @@ from ..protocol import (
     COMMAND_TELEMETRY_STATUS,
     DEFAULT_COMMAND_PORT,
     DEFAULT_DEVICE_HOST,
-    DEFAULT_TELEMETRY_PORT,
-    TEMP_SENSOR_DISPLAY_NAMES,
     VALUE_OFF,
     VALUE_ON,
 )
 from ..telemetry_db import TelemetryDb, archive_database
 from ..telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY
 from .board_map import BoardMapWidget
-from .widgets import HealthSummaryCard, Panel, SampleCard, StatCard, ValueTable
+from .health_page import HealthPage
+from .widgets import Panel, SampleCard, StatCard, ValueTable
 from .status_widgets import StatusIndicator
-from .pid_widgets import SENSOR_NAMES
 
 
 def raw24_to_volts(raw24: int) -> float:
@@ -714,111 +713,8 @@ class MainWindowPagesMixin:
         return self.pid_page
 
     def build_health_page(self) -> QWidget:
-        page = QWidget()
-        self.health_page = page
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-        self.health_table = ValueTable(
-            [
-                ("Uplink", "Disconnected"),
-                ("Downlink", f"waiting on UDP {DEFAULT_TELEMETRY_PORT}"),
-                ("Last Telemetry", "—"),
-                ("Firmware Health", "—"),
-                ("TCP Server", "—"),
-                ("SD Temperature Logger", "—"),
-                ("Temperature Sensors", "—"),
-                ("AD7177 Channels", "—"),
-                ("Geiger Detectors", "—"),
-                ("Heater / PID Records", "—"),
-            ],
-            ("Subsystem", "State"),
-        )
-        self.health_table.expand_to_contents()
-
-        self.health_geiger_table = ValueTable(
-            [("Geiger 1", "—", "—", "unknown"), ("Geiger 2", "—", "—", "unknown")],
-            ("Detector", "Dose rate", "HV", "State"),
-        )
-        self.health_geiger_table.expand_to_contents()
-
-        self.health_temperature_table = ValueTable(
-            [(name, "—", "unknown") for name in TEMP_SENSOR_DISPLAY_NAMES],
-            ("Sensor", "Reading", "State"),
-        )
-        self.health_temperature_table.expand_to_contents()
-
-        self.health_adc_table = ValueTable(
-            [
-                (f"ADC{index // 3} CH{index % 3}", "—", "unknown")
-                for index in range(12)
-            ],
-            ("Channel", "Reading", "State"),
-        )
-        self.health_adc_table.expand_to_contents()
-
-        self.health_heater_table = ValueTable(
-            [(f"H{index}", SENSOR_NAMES[index], "—", "unknown") for index in range(12)],
-            ("Heater", "Sensor", "Reading", "State"),
-        )
-        self.health_heater_table.expand_to_contents()
-
-        self.system_health_section = HealthSummaryCard("SYSTEM")
-        self.temperature_health_section = HealthSummaryCard("TEMPERATURE SENSORS")
-        self.adc_health_section = HealthSummaryCard("SAMPLE CHANNELS")
-        self.radiation_health_section = HealthSummaryCard("RADIATION DETECTORS")
-        self.heater_health_section = HealthSummaryCard("HEATER / PID")
-        self.health_details = {
-            "System": (self.system_health_section, self.health_table),
-            "Temperature Sensors": (
-                self.temperature_health_section,
-                self.health_temperature_table,
-            ),
-            "Sample Channels": (self.adc_health_section, self.health_adc_table),
-            "Radiation Detectors": (
-                self.radiation_health_section,
-                self.health_geiger_table,
-            ),
-            "Heater / PID": (self.heater_health_section, self.health_heater_table),
-        }
-
-        health_grid = QGridLayout()
-        health_grid.setSpacing(10)
-        health_grid.setColumnStretch(0, 1)
-        health_grid.setColumnStretch(1, 1)
-        for index, (title, (card, _table)) in enumerate(self.health_details.items()):
-            card.details_requested.connect(
-                lambda title=title: self._show_health_details(title)
-            )
-            health_grid.addWidget(card, index // 2, index % 2)
-        layout.addLayout(health_grid)
-
-        self.health_detail_panel = Panel()
-        detail_header = QHBoxLayout()
-        detail_label = QLabel("DETAILS")
-        detail_label.setObjectName("healthDetailLabel")
-        self.health_detail_title = QLabel()
-        self.health_detail_title.setObjectName("healthDetailTitle")
-        detail_header.addWidget(detail_label)
-        detail_header.addWidget(self.health_detail_title)
-        detail_header.addStretch(1)
-        self.health_detail_panel.layout.addLayout(detail_header)
-
-        self.health_detail_stack = QStackedWidget()
-        for _card, table in self.health_details.values():
-            self.health_detail_stack.addWidget(table)
-        self.health_detail_panel.layout.addWidget(self.health_detail_stack)
-        layout.addWidget(self.health_detail_panel)
-        self._show_health_details("System")
-        layout.addStretch(1)
-        return page
-
-    def _show_health_details(self, title: str) -> None:
-        selected_card, selected_table = self.health_details[title]
-        self.health_detail_title.setText(title.upper())
-        self.health_detail_stack.setCurrentWidget(selected_table)
-        for card, _table in self.health_details.values():
-            card.set_selected(card is selected_card)
+        self.health_page = HealthPage(evaluate_health(None, None, link_status(False, None)))
+        return self.health_page
 
     def build_boards_page(self) -> QWidget:
         page = QWidget()

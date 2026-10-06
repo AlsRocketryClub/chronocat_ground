@@ -165,53 +165,66 @@ QPushButton:disabled {
 #statusIndicator[status="off"] {
     color: #555555;
 }
-#healthSummary {
-    background: #f3f3f3;
-    border: 2px solid #999999;
+#healthTile {
+    background: #eeeeee;
+    border: 1px solid #b5b5b5;
+    color: #555555;
+    font-size: 11px;
+    font-weight: 600;
 }
-#healthSummary[state="healthy"] {
-    background: #eef6ee;
+#healthTile[state="ok"] {
+    background: #d8ead8;
     border-color: #6e9f6e;
+    color: #1f4d1f;
 }
-#healthSummary[state="warning"] {
-    background: #fff8df;
+#healthTile[state="warning"] {
+    background: #fff0c7;
     border-color: #c49a37;
+    color: #6b5200;
 }
-#healthSummary[state="error"] {
-    background: #fbeaea;
-    border-color: #b36a6a;
+#healthTile[state="error"] {
+    background: #f5d8d8;
+    border: 2px solid #b36a6a;
+    color: #702525;
 }
-#healthSummary[selected="true"] {
-    border: 3px solid #3f6f9f;
-}
-#healthSectionTitle {
+#healthGroupLabel {
     color: #444444;
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 1px;
+    min-width: 72px;
 }
-#healthSectionStatus {
-    color: #111111;
-    font-size: 16px;
-    font-weight: 700;
-    min-height: 24px;
-}
-#healthDetailsButton {
-    background: transparent;
-    padding: 2px 6px;
-    min-width: 82px;
-    font-size: 11px;
-}
-#healthDetailLabel {
+#healthSubgroupLabel {
     color: #666666;
-    font-size: 11px;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 0 2px 0 8px;
+}
+#healthIssuesBanner {
+    background: #eeeeee;
+    color: #444444;
+    font-size: 14px;
     font-weight: 700;
     letter-spacing: 1px;
+    padding: 8px 10px;
 }
-#healthDetailTitle {
+#healthIssuesBanner[state="ok"] {
+    background: #d8ead8;
+    color: #1f4d1f;
+}
+#healthIssuesBanner[state="warning"] {
+    background: #fff0c7;
+    color: #6b5200;
+}
+#healthIssuesBanner[state="error"] {
+    background: #f5d8d8;
+    color: #702525;
+}
+#healthIssue {
     color: #111111;
-    font-size: 16px;
-    font-weight: 700;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 2px 10px;
 }
 #telemetryState {
     padding: 10px;
