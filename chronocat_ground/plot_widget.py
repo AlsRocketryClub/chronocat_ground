@@ -143,6 +143,9 @@ class PlotWidget(pg.PlotWidget):
         self._curves = [self._curve]
         self._legend = None
         self._series_points: list[tuple[str, list[tuple[float, float, float]]]] = []
+        self._band_points: list = []
+        self._bands: list = []
+        self._last_series_args: tuple = ((), None)
 
         # Empty label
         self._empty_label = QLabel(empty_text, self)
@@ -194,10 +197,25 @@ class PlotWidget(pg.PlotWidget):
     def set_points(self, points: Sequence[tuple]) -> None:
         self.set_series((('', points),))
 
-    def set_series(self, series: Sequence[tuple[str, Sequence[tuple]]]) -> None:
-        """Set one or more aligned histories, keeping the inline chart compact."""
+    def set_time_window(self, seconds: float | None) -> None:
+        """Show only the newest `seconds` of history (None shows everything held)."""
+        self._time_window_s = seconds
+        self.set_series(*self._last_series_args)
+
+    def set_series(
+        self,
+        series: Sequence[tuple[str, Sequence[tuple]]],
+        bands: dict[str, Sequence[tuple]] | None = None,
+    ) -> None:
+        """Set one or more aligned histories, keeping the inline chart compact.
+
+        `bands` maps a series label to its ± error history (same timestamps as the
+        series); each is drawn as a shaded band around that series.
+        """
+        self._last_series_args = (series, bands)
         if not series or not any(points for _label, points in series):
             self._series_points = []
+            self._band_points = []
             self._points = []
             self._update_empty()
             self._redraw()
@@ -216,6 +234,7 @@ class PlotWidget(pg.PlotWidget):
 
         if not any(math.isfinite(val) for _label, points in raw_series for _mono, _wall, val in points):
             self._series_points = []
+            self._band_points = []
             self._points = []
             self._update_empty()
             self._redraw()
@@ -224,16 +243,28 @@ class PlotWidget(pg.PlotWidget):
         if self._abs_time:
             max_wall = max(wall for _label, points in raw_series for _mono, wall, val in points if math.isfinite(val))
             self._wall_clock_axis.setWallRef(max_wall)
-            self._series_points = [
-                (label, self._points_with_gaps([(wall - max_wall, wall, val) for _mono, wall, val in points]))
-                for label, points in raw_series
-            ]
+
+            def relative(points):
+                return self._points_with_gaps([(wall - max_wall, wall, val) for _mono, wall, val in points])
         else:
             max_mono = max(mono for _label, points in raw_series for mono, _wall, val in points if math.isfinite(val))
-            self._series_points = [
-                (label, self._points_with_gaps([(mono - max_mono, wall, val) for mono, wall, val in points]))
-                for label, points in raw_series
-            ]
+            window = self._time_window_s
+
+            def relative(points):
+                shifted = [(mono - max_mono, wall, val) for mono, wall, val in points]
+                if window is not None:
+                    shifted = [point for point in shifted if point[0] >= -window]
+                return self._points_with_gaps(shifted)
+
+        self._series_points = [(label, relative(points)) for label, points in raw_series]
+        self._band_points = []
+        for index, (label, points) in enumerate(raw_series):
+            errors = (bands or {}).get(label)
+            if not errors or len(errors) != len(points):
+                continue
+            upper = [(m, w, v + e[2]) for (m, w, v), e in zip(points, errors)]
+            lower = [(m, w, v - e[2]) for (m, w, v), e in zip(points, errors)]
+            self._band_points.append((index, relative(upper), relative(lower)))
 
         self._points = next(
             (
@@ -286,6 +317,30 @@ class PlotWidget(pg.PlotWidget):
         for curve, (label, _points) in zip(self._curves, self._series_points):
             self._legend.addItem(curve, label)
 
+    def _draw_bands(self) -> None:
+        while len(self._bands) < len(self._band_points):
+            upper, lower = pg.PlotDataItem(), pg.PlotDataItem()
+            fill = pg.FillBetweenItem(upper, lower)
+            fill.setZValue(-10)
+            self.addItem(fill)
+            self._bands.append((upper, lower, fill))
+        for index, (upper, lower, fill) in enumerate(self._bands):
+            if index >= len(self._band_points):
+                upper.setData([], [])
+                lower.setData([], [])
+                continue
+            series_index, upper_points, lower_points = self._band_points[index]
+            for item, points in ((upper, upper_points), (lower, lower_points)):
+                item.setData(
+                    np.array([point[0] for point in points]),
+                    np.array([point[2] for point in points]),
+                    connect="finite",
+                )
+            color = QColor(SERIES_COLORS[series_index % len(SERIES_COLORS)])
+            color.setAlpha(45)
+            fill.setBrush(pg.mkBrush(color))
+            fill.setPen(pg.mkPen(None))
+
     def _update_empty(self) -> None:
         point_count = sum(sum(math.isfinite(point[2]) for point in points) for _label, points in self._series_points)
         visible = point_count < 2
@@ -297,6 +352,8 @@ class PlotWidget(pg.PlotWidget):
         if len(finite_points) < 2:
             for curve in self._curves:
                 curve.setData([], [])
+            self._band_points = []
+            self._draw_bands()
             return
 
         x_values = [point[0] for point in finite_points]
@@ -318,6 +375,8 @@ class PlotWidget(pg.PlotWidget):
                     np.array([point[2] for point in points]),
                     connect="finite",
                 )
+
+        self._draw_bands()
 
         if self._first_draw:
             self._first_draw = False

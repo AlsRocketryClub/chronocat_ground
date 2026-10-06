@@ -10,6 +10,8 @@ from .telemetry_db import TelemetryDb
 
 
 HISTORY_LENGTH = 300
+# The Radiation page offers a one-hour window; at 1 Hz that is 3600 points.
+GEIGER_HISTORY_LENGTH = 3600
 
 
 def adc_point_for_mode(
@@ -26,6 +28,9 @@ class TelemetryHistorySnapshot:
 
     packet_count: int
     geiger_points: tuple[Sequence[tuple[float, float, float]], ...]
+    # Absolute statistical error (cps) and total dose (Sv), aligned with geiger_points.
+    geiger_error_points: tuple[Sequence[tuple[float, float, float]], ...]
+    geiger_dose_points: tuple[Sequence[tuple[float, float, float]], ...]
     adc_points: tuple[Sequence[tuple[float, float, float, int]], ...]
 
 
@@ -36,7 +41,10 @@ class TelemetryHistory:
         self._database = database
         self._history_length = history_length
         self.packet_count = 0
-        self._geiger_points = [deque(maxlen=history_length), deque(maxlen=history_length)]
+        geiger_length = max(history_length, GEIGER_HISTORY_LENGTH)
+        self._geiger_points = [deque(maxlen=geiger_length) for _ in range(2)]
+        self._geiger_error_points = [deque(maxlen=geiger_length) for _ in range(2)]
+        self._geiger_dose_points = [deque(maxlen=geiger_length) for _ in range(2)]
         self._adc_points = [deque(maxlen=history_length) for _ in range(TELEMETRY_OS_ADC_COUNT)]
         self.database_error: str | None = None
 
@@ -52,10 +60,21 @@ class TelemetryHistory:
         for counter_id in range(2):
             reading = packet.geiger_reading(counter_id)
             if reading is None or not reading.valid:
-                self._geiger_points[counter_id].append((received_monotonic, received_wall, math.nan))
+                for points in (self._geiger_points, self._geiger_error_points, self._geiger_dose_points):
+                    points[counter_id].append((received_monotonic, received_wall, math.nan))
                 continue
             self._geiger_points[counter_id].append(
                 (received_monotonic, received_wall, reading.dose_rate_cps)
+            )
+            self._geiger_error_points[counter_id].append(
+                (
+                    received_monotonic,
+                    received_wall,
+                    reading.dose_rate_cps * reading.stat_error_percent / 100.0,
+                )
+            )
+            self._geiger_dose_points[counter_id].append(
+                (received_monotonic, received_wall, reading.total_dose_sv)
             )
             geiger_rows.append(
                 (
@@ -101,13 +120,20 @@ class TelemetryHistory:
         return TelemetryHistorySnapshot(
             self.packet_count,
             tuple(self._geiger_points),
+            tuple(self._geiger_error_points),
+            tuple(self._geiger_dose_points),
             tuple(self._adc_points),
         )
 
     def clear(self) -> None:
         """Drop the in-memory history so a new database starts from a clean slate."""
         self.packet_count = 0
-        for points in (*self._geiger_points, *self._adc_points):
+        for points in (
+            *self._geiger_points,
+            *self._geiger_error_points,
+            *self._geiger_dose_points,
+            *self._adc_points,
+        ):
             points.clear()
 
     def set_database(self, database: TelemetryDb) -> None:

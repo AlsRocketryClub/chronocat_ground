@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..pid_page import PidPage
-from ..plot_widget import HistoryPlotWidget, PlotWidget
+from ..plot_widget import HistoryPlotWidget
 from ..plot_history import PlotHistoryLoader
 from ..health_model import evaluate_health, link_status
 from ..sample_layout import SAMPLE_CHANNELS, SAMPLE_COLUMNS
@@ -46,8 +46,10 @@ from ..protocol import (
 from ..telemetry_db import TelemetryDb, archive_database
 from .board_map import BoardMapWidget
 from .dashboard_page import DashboardPage
+from .diagnostics_page import DiagnosticsPage
+from .radiation_page import RadiationPage
 from .health_page import HealthPage
-from .widgets import Panel, SampleCard, StatCard, ValueTable
+from .widgets import Panel, SampleCard
 from .status_widgets import StatusIndicator
 
 
@@ -226,89 +228,11 @@ class MainWindowPagesMixin:
         return self.dashboard
 
     def build_radiation_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-
-        cards = QGridLayout()
-        cards.setSpacing(8)
-        self.radiation_dose_rate_card = StatCard("GEIGER 1 DOSE RATE (CPS)")
-        self.radiation_total_dose_card = StatCard("GEIGER 1 TOTAL DOSE (Sv)")
-        self.radiation_hv_card = StatCard("GEIGER 1 HV (V)")
-        self.radiation_errors_card = StatCard("GEIGER 1 ERRORS")
-        self.radiation_2_dose_rate_card = StatCard("GEIGER 2 DOSE RATE (CPS)")
-        self.radiation_2_total_dose_card = StatCard("GEIGER 2 TOTAL DOSE (Sv)")
-        self.radiation_2_hv_card = StatCard("GEIGER 2 HV (V)")
-        self.radiation_2_errors_card = StatCard("GEIGER 2 ERRORS")
-        cards.addWidget(self.radiation_dose_rate_card, 0, 0)
-        cards.addWidget(self.radiation_total_dose_card, 0, 1)
-        cards.addWidget(self.radiation_hv_card, 0, 2)
-        cards.addWidget(self.radiation_errors_card, 0, 3)
-        cards.addWidget(self.radiation_2_dose_rate_card, 1, 0)
-        cards.addWidget(self.radiation_2_total_dose_card, 1, 1)
-        cards.addWidget(self.radiation_2_hv_card, 1, 2)
-        cards.addWidget(self.radiation_2_errors_card, 1, 3)
-        layout.addLayout(cards)
-
-        plots = QVBoxLayout()
-        plots.setSpacing(12)
-
-        geiger_1_panel = Panel("GEIGER 1 DOSE RATE")
-        geiger_1_header = QHBoxLayout()
-        self.radiation_plot_status = QLabel("0/300 points")
-        self.radiation_plot_status.setObjectName("smallNote")
-        geiger_1_header.addStretch(1)
-        geiger_1_header.addWidget(self.radiation_plot_status)
-        geiger_1_panel.layout.addLayout(geiger_1_header)
-        self.radiation_geiger_plot = PlotWidget(
-            "Dose rate (CPS)", "No data", hover_label="CPS", interactive=False
+        self.radiation = RadiationPage(
+            self.build_geiger_controls_panel(),
+            open_flight_history=lambda: self.show_geiger_dialog(),
         )
-        self.radiation_geiger_plot.on_double_click = lambda: self.show_geiger_dialog(0)
-        self.radiation_geiger_plot.setMinimumHeight(280)
-        geiger_1_panel.layout.addWidget(self.radiation_geiger_plot)
-        plots.addWidget(geiger_1_panel)
-
-        geiger_2_panel = Panel("GEIGER 2 DOSE RATE")
-        geiger_2_header = QHBoxLayout()
-        self.radiation_2_plot_status = QLabel("0/300 points")
-        self.radiation_2_plot_status.setObjectName("smallNote")
-        geiger_2_header.addStretch(1)
-        geiger_2_header.addWidget(self.radiation_2_plot_status)
-        geiger_2_panel.layout.addLayout(geiger_2_header)
-        self.radiation_geiger_2_plot = PlotWidget(
-            "Dose rate (CPS)", "No data", hover_label="CPS", interactive=False
-        )
-        self.radiation_geiger_2_plot.on_double_click = lambda: self.show_geiger_dialog(1)
-        self.radiation_geiger_2_plot.setMinimumHeight(280)
-        geiger_2_panel.layout.addWidget(self.radiation_geiger_2_plot)
-        plots.addWidget(geiger_2_panel)
-        layout.addLayout(plots)
-        layout.addWidget(self.build_geiger_controls_panel())
-
-        geiger_detail_rows = [
-            ("Valid", "—"),
-            ("Event ID", "—"),
-            ("Dose (CPS)", "—"),
-            ("Dose rate (CPS)", "—"),
-            ("Total dose (Sv)", "—"),
-            ("Dose time (s)", "—"),
-            ("Statistics time (s)", "—"),
-            ("HV (V)", "—"),
-            ("Statistical error (%)", "—"),
-            ("Statistical cell count", "—"),
-            ("Error flags", "—"),
-        ]
-        self.radiation_table = ValueTable(
-            [(name, "—", "—") for name, _value in geiger_detail_rows],
-            ("Metric", "Geiger 1", "Geiger 2"),
-        )
-        self.radiation_table.expand_to_contents()
-        table_panel = Panel("GEIGER PACKET DETAILS")
-        table_panel.layout.addWidget(self.radiation_table)
-        layout.addWidget(table_panel)
-        layout.addStretch(1)
-        return page
+        return self.radiation
 
     def build_geiger_controls_panel(self) -> Panel:
         controls_panel = Panel("GEIGER DETECTOR CONTROLS")
@@ -365,65 +289,6 @@ class MainWindowPagesMixin:
         controls_panel.layout.addLayout(xder_grid)
         return controls_panel
 
-    def build_samples_summary_panel(self) -> Panel:
-        samples_panel = Panel()
-        header = QHBoxLayout()
-        title = QLabel("SAMPLES")
-        title.setObjectName("panelTitle")
-        header.addWidget(title)
-        header.addStretch(1)
-        samples_panel.layout.addLayout(header)
-
-        rows = [
-            (channel.name, "—")
-            for _material, channels in SAMPLE_COLUMNS
-            for channel in channels
-        ]
-
-        self.samples_summary_table = ValueTable(rows, ("Sample", "Raw Value"))
-        self.samples_summary_table.expand_to_contents()
-        samples_panel.layout.addWidget(self.samples_summary_table)
-        return samples_panel
-
-    def build_telemetry_panel(self) -> Panel:
-        telemetry_panel = Panel()
-        header = QHBoxLayout()
-        title = QLabel("TELEMETRY PARAMETERS")
-        title.setObjectName("panelTitle")
-        header.addWidget(title)
-        header.addStretch(1)
-        telemetry_panel.layout.addLayout(header)
-        self.telemetry_table = ValueTable(
-            [
-                ("AD7177 Readings", "—"),
-                ("Temperature Measurements", "—"),
-                ("Average Heater Duty", "—"),
-                ("Subsystem Health Indicators", "—"),
-                ("Geiger 1 Valid", "—"),
-                ("Geiger 1 Dose Rate (CPS)", "—"),
-                ("Geiger 1 Total Dose (Sv)", "—"),
-                ("Geiger 1 HV Voltage", "—"),
-                ("Geiger 1 Error Flags", "—"),
-                ("Geiger 2 Valid", "—"),
-                ("Geiger 2 Dose Rate (CPS)", "—"),
-                ("Geiger 2 Total Dose (Sv)", "—"),
-                ("Geiger 2 HV Voltage", "—"),
-                ("Geiger 2 Error Flags", "—"),
-                ("Packet Timestamp (ms)", "—"),
-                ("Health Code", "—"),
-                ("Counter", "—"),
-                ("Flags", "—"),
-                ("Temperature Valid Mask", "—"),
-                ("ADC Valid Mask", "—"),
-                ("Source", "—"),
-                ("Last Seen", "—"),
-            ],
-            ("Parameter", "Value"),
-        )
-        self.telemetry_table.expand_to_contents()
-        telemetry_panel.layout.addWidget(self.telemetry_table)
-        return telemetry_panel
-
     def build_command_panel(self) -> Panel:
         command_frame = Panel("COMMAND UPLINK")
         self.ping_button = QPushButton("Ping")
@@ -450,63 +315,11 @@ class MainWindowPagesMixin:
 
         return command_frame
 
-    def build_packet_panel(self) -> Panel:
-        self.packet_table = ValueTable(
-            [
-                ("Magic Value", "CCTM"),
-                ("Version", "—"),
-                ("Message Type", "—"),
-                ("Flags", "—"),
-                ("Payload Length", "—"),
-                ("Packet Timestamp (ms)", "—"),
-                ("Counter", "—"),
-                ("Health Code", "—"),
-                ("Temperature Valid Mask", "—"),
-                ("Temperature Sensors", "—"),
-                ("ADC Valid Mask", "—"),
-                ("AD7177 Readings", "—"),
-                ("Geiger 1 Valid", "—"),
-                ("Geiger 1 Error Flags", "—"),
-                ("Geiger 1 Event ID", "—"),
-                ("Geiger 1 Dose CPS", "—"),
-                ("Geiger 1 Dose Rate CPS", "—"),
-                ("Geiger 1 Total Dose Sv", "—"),
-                ("Geiger 1 Dose Time Sec", "—"),
-                ("Geiger 1 Stats Time Sec", "—"),
-                ("Geiger 1 HV Voltage", "—"),
-                ("Geiger 1 Stat Error %", "—"),
-                ("Geiger 1 Stat Cell Count", "—"),
-                ("Geiger 2 Valid", "—"),
-                ("Geiger 2 Error Flags", "—"),
-                ("Geiger 2 Event ID", "—"),
-                ("Geiger 2 Dose CPS", "—"),
-                ("Geiger 2 Dose Rate CPS", "—"),
-                ("Geiger 2 Total Dose Sv", "—"),
-                ("Geiger 2 Dose Time Sec", "—"),
-                ("Geiger 2 Stats Time Sec", "—"),
-                ("Geiger 2 HV Voltage", "—"),
-                ("Geiger 2 Stat Error %", "—"),
-                ("Geiger 2 Stat Cell Count", "—"),
-                ("TCP Server", "—"),
-            ]
-        )
-        self.packet_table.expand_to_contents()
-        packet_panel = Panel("PACKET FIELDS")
-        packet_panel.layout.addWidget(self.packet_table)
-        return packet_panel
-
     def build_samples_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-
-        toggle_row = QHBoxLayout()
-        toggle_row.addStretch(1)
-        self.samples_display_toggle = QPushButton("Showing: Voltage")
-        self.samples_display_toggle.clicked.connect(self.toggle_samples_display_mode)
-        toggle_row.addWidget(self.samples_display_toggle)
-        layout.addLayout(toggle_row)
 
         self.sample_cards = [SampleCard(SAMPLE_CHANNELS[slot]) for slot in sorted(SAMPLE_CHANNELS)]
         for card in self.sample_cards:
@@ -515,8 +328,21 @@ class MainWindowPagesMixin:
         # One column per material, channels top to bottom in ADC order.
         columns = QHBoxLayout()
         columns.setSpacing(12)
-        for material, channels in SAMPLE_COLUMNS:
-            material_panel = Panel(material.upper())
+        for index, (material, channels) in enumerate(SAMPLE_COLUMNS):
+            material_panel = Panel()
+            # Fixed height so both columns' cards line up despite the unit switch.
+            header_widget = QWidget()
+            header_widget.setFixedHeight(26)
+            header = QHBoxLayout(header_widget)
+            header.setContentsMargins(0, 0, 0, 0)
+            title = QLabel(material.upper())
+            title.setObjectName("panelTitle")
+            header.addWidget(title)
+            header.addStretch(1)
+            if index == len(SAMPLE_COLUMNS) - 1:
+                # The unit switch sits in the last header instead of taking a row.
+                header.addWidget(self._build_samples_unit_switch())
+            material_panel.layout.addWidget(header_widget)
             for channel in channels:
                 material_panel.layout.addWidget(self.sample_cards[channel.slot])
             columns.addWidget(material_panel, 1)
@@ -524,6 +350,22 @@ class MainWindowPagesMixin:
 
         layout.addStretch(1)
         return page
+
+    def _build_samples_unit_switch(self) -> QWidget:
+        switch = QWidget()
+        row = QHBoxLayout(switch)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        self.samples_unit_buttons = {}
+        for mode, text in (("voltage", "Voltage"), ("raw", "Raw24")):
+            button = QPushButton(text)
+            button.setObjectName("segmentButton")
+            button.setCheckable(True)
+            button.setChecked(mode == self.samples_display_mode)
+            button.clicked.connect(lambda _checked=False, mode=mode: self.set_samples_display_mode(mode))
+            row.addWidget(button)
+            self.samples_unit_buttons[mode] = button
+        return switch
 
     def show_adc_graph_dialog(self, slot: int) -> None:
         try:
@@ -747,16 +589,6 @@ class MainWindowPagesMixin:
         return page
 
     def build_diagnostics_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-
-        layout.addWidget(self.build_samples_summary_panel())
-        layout.addWidget(self.build_telemetry_panel())
-        layout.addWidget(self.build_command_panel())
-        layout.addWidget(self.build_packet_panel())
-
         log_panel = Panel("OPERATOR LOG")
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("logView")
@@ -764,9 +596,8 @@ class MainWindowPagesMixin:
         self.log_view.setMaximumBlockCount(300)
         self.log_view.setMinimumHeight(220)
         log_panel.layout.addWidget(self.log_view)
-        layout.addWidget(log_panel)
-        layout.addStretch(1)
-        return page
+        self.diagnostics = DiagnosticsPage(self.build_command_panel(), log_panel)
+        return self.diagnostics
 
     def _format_db_info(self, db_size: int, db_count: int) -> str:
         if db_size >= 1_048_576:
@@ -822,15 +653,10 @@ class MainWindowPagesMixin:
         self._last_adc_packet = None
         self._last_adc_history = None
         self.dashboard.clear()
+        self.radiation.clear()
         self.packet_loss.clear()
-        for plot in (
-            self.radiation_geiger_plot,
-            self.radiation_geiger_2_plot,
-            *(card.plot for card in self.sample_cards),
-        ):
-            plot.set_points([])
-        self.radiation_plot_status.setText("0/300 points")
-        self.radiation_2_plot_status.setText("0/300 points")
+        for card in self.sample_cards:
+            card.plot.set_points([])
         self.pid_page.clear_history()
 
     def _on_reset_board(self) -> None:

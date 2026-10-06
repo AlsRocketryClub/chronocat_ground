@@ -80,6 +80,8 @@ class DashboardPage(QWidget):
         self.geiger_plot = PlotWidget("Dose rate (CPS)", "No data", hover_label="CPS", interactive=False)
         self.geiger_plot.on_double_click = open_geiger_plot
         self.geiger_plot.setFixedHeight(_PLOT_HEIGHT)
+        # History holds an hour for the Radiation page; the summary shows 5 min.
+        self.geiger_plot.set_time_window(300)
         row.addWidget(self.geiger_plot, 1)
         panel.layout.addLayout(row)
         return panel

@@ -37,35 +37,6 @@ class Panel(QFrame):
             self.layout.addWidget(title_label)
 
 
-class StatCard(QFrame):
-    """A compact title/value/subtitle metric card."""
-
-    def __init__(self, title: str, subtitle: str = "", value: str = "—") -> None:
-        super().__init__()
-        self.setObjectName("panel")
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-
-        self.title_label = QLabel(title)
-        self.title_label.setObjectName("kpiLabel")
-
-        self.value_label = QLabel(value)
-        self.value_label.setObjectName("kpiValue")
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(2)
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.value_label)
-        if subtitle:
-            self.subtitle_label = QLabel(subtitle)
-            self.subtitle_label.setObjectName("kpiSub")
-            self.subtitle_label.setWordWrap(True)
-            layout.addWidget(self.subtitle_label)
-
-    def set_value(self, value: str) -> None:
-        self.value_label.setText(value)
-
-
 class ValueTable(QTableWidget):
     """Read-only two-column table with stable label-based updates."""
 

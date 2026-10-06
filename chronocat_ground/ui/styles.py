@@ -200,6 +200,38 @@ QPushButton:disabled {
     font-weight: 700;
     padding: 0 2px 0 8px;
 }
+#segmentButton {
+    padding: 3px 12px;
+    font-size: 11px;
+}
+#segmentButton:checked {
+    background: #3f6f9f;
+    border-color: #3f6f9f;
+    color: #ffffff;
+}
+#radiationStatus {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 2px 8px;
+    background: #eeeeee;
+    color: #555555;
+}
+#radiationStatus[state="ok"] {
+    background: #d8ead8;
+    color: #1f4d1f;
+}
+#radiationStatus[state="warning"] {
+    background: #fff0c7;
+    color: #6b5200;
+}
+#radiationStatus[state="error"] {
+    background: #f5d8d8;
+    color: #702525;
+}
+#radiationSummary {
+    color: #222222;
+    font-size: 13px;
+}
 #dashboardBanner {
     background: #eeeeee;
     color: #444444;

@@ -46,13 +46,10 @@ from .protocol import (
     encode_heater_target_signed_c,
     geiger_reset_actions_name,
     geiger_error_names,
-    heater_pid_averages,
     status_name,
     TELEMETRY_FLAG_SD_LOG_ACTIVE,
     TELEMETRY_FLAG_SD_LOG_ERROR,
-    telemetry_health_name,
     telemetry_value_name,
-    tcp_status_name,
 )
 from .pid_page import PidPage
 from .pid_profiles import PidProfile, profile_by_name
@@ -63,14 +60,13 @@ from .health_model import (
     PacketLossTracker,
     active_issues,
     evaluate_health,
-    format_rate,
     format_uptime,
     link_status,
 )
 from .sample_layout import SAMPLE_CHANNELS
 from .telemetry_history import TelemetryHistory, adc_point_for_mode
 from .telemetry_receiver import TelemetryReceiver
-from .ui.widgets import SampleCard, StatCard, ValueTable
+from .ui.widgets import SampleCard
 from .ui.styles import APPLICATION_STYLE
 from .ui.main_window_pages import MainWindowPagesMixin
 
@@ -610,98 +606,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             return "ok"
         return geiger_error_names(reading.error_flags)
 
-    def update_geiger_cards(
-        self,
-        reading: GeigerReading | None,
-        dose_rate_card: StatCard,
-        total_dose_card: StatCard,
-        hv_card: StatCard,
-        errors_card: StatCard,
-    ) -> None:
-        if reading is None or not reading.valid:
-            state = "unavailable" if reading is None else "invalid"
-            dose_rate_card.set_value(state)
-            total_dose_card.set_value(state)
-            hv_card.set_value(state)
-            errors_card.set_value(state)
-            return
-
-        dose_rate_card.set_value(format_rate(reading.dose_rate_cps))
-        total_dose_card.set_value(f"{reading.total_dose_sv:.9g}")
-        hv_card.set_value(str(reading.hv_voltage))
-        errors_card.set_value(self.geiger_error_text(reading))
-
-    def update_geiger_detail_table(
-        self, table: ValueTable, reading: GeigerReading | None, column: int
-    ) -> None:
-        if reading is None or not reading.valid:
-            state = "unavailable" if reading is None else "invalid"
-            table.set_value("Valid", state, column)
-            for name in (
-                "Event ID",
-                "Dose (CPS)",
-                "Dose rate (CPS)",
-                "Total dose (Sv)",
-                "Dose time (s)",
-                "Statistics time (s)",
-                "HV (V)",
-                "Statistical error (%)",
-                "Statistical cell count",
-                "Error flags",
-            ):
-                table.set_value(name, "—", column)
-            return
-
-        table.set_value("Valid", str(reading.valid), column)
-        table.set_value("Event ID", str(reading.event_id), column)
-        table.set_value("Dose (CPS)", f"{reading.dose_cps:.17g}", column)
-        table.set_value("Dose rate (CPS)", f"{reading.dose_rate_cps:.9g}", column)
-        table.set_value("Total dose (Sv)", f"{reading.total_dose_sv:.9g}", column)
-        table.set_value("Dose time (s)", str(reading.dose_time_sec), column)
-        table.set_value("Statistics time (s)", str(reading.stats_time_sec), column)
-        table.set_value("HV (V)", str(reading.hv_voltage), column)
-        table.set_value("Statistical error (%)", str(reading.stat_error_percent), column)
-        table.set_value("Statistical cell count", str(reading.stat_cell_count), column)
-        table.set_value(
-            "Error flags",
-            f"0x{reading.error_flags:04x} ({self.geiger_error_text(reading)})",
-            column,
-        )
-
-    def update_packet_geiger_fields(
-        self, number: int, reading: GeigerReading | None
-    ) -> None:
-        prefix = f"Geiger {number}"
-        if reading is None or not reading.valid:
-            state = "unavailable" if reading is None else "invalid"
-            self.packet_table.set_value(f"{prefix} Valid", state)
-            for suffix in (
-                "Error Flags",
-                "Event ID",
-                "Dose CPS",
-                "Dose Rate CPS",
-                "Total Dose Sv",
-                "Dose Time Sec",
-                "Stats Time Sec",
-                "HV Voltage",
-                "Stat Error %",
-                "Stat Cell Count",
-            ):
-                self.packet_table.set_value(f"{prefix} {suffix}", "—")
-            return
-
-        self.packet_table.set_value(f"{prefix} Valid", str(reading.valid))
-        self.packet_table.set_value(f"{prefix} Error Flags", f"0x{reading.error_flags:04x}")
-        self.packet_table.set_value(f"{prefix} Event ID", str(reading.event_id))
-        self.packet_table.set_value(f"{prefix} Dose CPS", f"{reading.dose_cps:.17g}")
-        self.packet_table.set_value(f"{prefix} Dose Rate CPS", f"{reading.dose_rate_cps:.9g}")
-        self.packet_table.set_value(f"{prefix} Total Dose Sv", f"{reading.total_dose_sv:.9g}")
-        self.packet_table.set_value(f"{prefix} Dose Time Sec", str(reading.dose_time_sec))
-        self.packet_table.set_value(f"{prefix} Stats Time Sec", str(reading.stats_time_sec))
-        self.packet_table.set_value(f"{prefix} HV Voltage", str(reading.hv_voltage))
-        self.packet_table.set_value(f"{prefix} Stat Error %", str(reading.stat_error_percent))
-        self.packet_table.set_value(f"{prefix} Stat Cell Count", str(reading.stat_cell_count))
-
     def on_telemetry_packet(
         self,
         packet: TelemetryPacket | PidTelemetryPacket | CombinedTelemetryPacket,
@@ -751,102 +655,22 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.update_sd_log_status(packet.flags)
         self.set_telemetry_status("receiving")
 
-        tcp_state = tcp_status_name(packet.tcp_status)
-        health = telemetry_health_name(packet.health_code)
-        flags = f"0x{packet.flags:04x}"
-        temp_summary = self.format_temperature_summary(packet)
-        adc_summary = self.format_adc_summary(packet)
-
         self.packet_loss.record(packet.counter)
-        geiger_1 = packet.geiger_reading(0)
-        geiger_2 = packet.geiger_reading(1)
-        self.update_geiger_cards(
-            geiger_1,
-            self.radiation_dose_rate_card,
-            self.radiation_total_dose_card,
-            self.radiation_hv_card,
-            self.radiation_errors_card,
-        )
-        self.update_geiger_cards(
-            geiger_2,
-            self.radiation_2_dose_rate_card,
-            self.radiation_2_total_dose_card,
-            self.radiation_2_hv_card,
-            self.radiation_2_errors_card,
-        )
-        self.radiation_geiger_plot.set_points(history.geiger_points[0])
-        self.radiation_geiger_2_plot.set_points(history.geiger_points[1])
-        self.radiation_plot_status.setText(f"{len(history.geiger_points[0])}/300 points")
-        self.radiation_2_plot_status.setText(f"{len(history.geiger_points[1])}/300 points")
-
         self._last_adc_packet = packet
         self.board_map.set_temperatures(packet)
         self._last_adc_history = history
         self.refresh_sample_cards()
         self.update_plot_dialogs()
-
-        self.telemetry_table.set_value("AD7177 Readings", adc_summary)
-        self.telemetry_table.set_value("Temperature Measurements", temp_summary)
-        heater_duty = f"{packet.heater_duty_permille / 10.0:.1f}%"
-        if combined_packet is not None:
-            _, average_duty = heater_pid_averages(combined_packet.pid.heaters)
-            heater_duty = "—" if average_duty is None else f"{average_duty / 10.0:.1f}%"
-        self.telemetry_table.set_value("Average Heater Duty", str(heater_duty))
-        self.telemetry_table.set_value("Subsystem Health Indicators", health)
-        for number, reading in ((1, geiger_1), (2, geiger_2)):
-            prefix = f"Geiger {number}"
-            if reading is None or not reading.valid:
-                state = "unavailable" if reading is None else "invalid"
-                self.telemetry_table.set_value(f"{prefix} Valid", state)
-                self.telemetry_table.set_value(f"{prefix} Dose Rate (CPS)", "—")
-                self.telemetry_table.set_value(f"{prefix} Total Dose (Sv)", "—")
-                self.telemetry_table.set_value(f"{prefix} HV Voltage", "—")
-                self.telemetry_table.set_value(f"{prefix} Error Flags", "—")
-            else:
-                self.telemetry_table.set_value(f"{prefix} Valid", str(reading.valid))
-                self.telemetry_table.set_value(
-                    f"{prefix} Dose Rate (CPS)", f"{reading.dose_rate_cps:.9g}"
-                )
-                self.telemetry_table.set_value(
-                    f"{prefix} Total Dose (Sv)", f"{reading.total_dose_sv:.9g}"
-                )
-                self.telemetry_table.set_value(f"{prefix} HV Voltage", str(reading.hv_voltage))
-                self.telemetry_table.set_value(
-                    f"{prefix} Error Flags",
-                    f"0x{reading.error_flags:04x} ({self.geiger_error_text(reading)})",
-                )
-        self.telemetry_table.set_value("Packet Timestamp (ms)", str(packet.timestamp))
-        self.telemetry_table.set_value("Health Code", health)
-        self.telemetry_table.set_value("Counter", str(packet.counter))
-        self.telemetry_table.set_value("Flags", flags)
-        self.telemetry_table.set_value("Temperature Valid Mask", f"0x{packet.temperature_valid_mask:04x}")
-        self.telemetry_table.set_value("ADC Valid Mask", f"0x{packet.os_adc_valid_mask:04x}")
-        self.telemetry_table.set_value("Source", source)
-        self.telemetry_table.set_value("Last Seen", "now")
-
-        self.packet_table.set_value("Version", str(packet.version))
-        self.packet_table.set_value("Message Type", str(packet.message_type))
-        self.packet_table.set_value("Flags", flags)
-        self.packet_table.set_value("Payload Length", str(packet.payload_length))
-        self.packet_table.set_value("Packet Timestamp (ms)", str(packet.timestamp))
-        self.packet_table.set_value("Counter", str(packet.counter))
-        self.packet_table.set_value("Health Code", health)
-        self.packet_table.set_value("Temperature Valid Mask", f"0x{packet.temperature_valid_mask:04x}")
-        self.packet_table.set_value("Temperature Sensors", temp_summary)
-        self.packet_table.set_value("ADC Valid Mask", f"0x{packet.os_adc_valid_mask:04x}")
-        self.packet_table.set_value("AD7177 Readings", adc_summary)
-        self.update_packet_geiger_fields(1, geiger_1)
-        self.update_packet_geiger_fields(2, geiger_2)
-        self.packet_table.set_value("TCP Server", tcp_state)
-
-        self.update_geiger_detail_table(self.radiation_table, geiger_1, 1)
-        self.update_geiger_detail_table(self.radiation_table, geiger_2, 2)
+        self.diagnostics.show_packet(
+            packet, combined_packet.pid if combined_packet is not None else None, source
+        )
         self._health_packet = packet
         if combined_packet is not None:
             self._health_pid = combined_packet.pid
         self._receiver_error = ""
         self.refresh_health(uptime_ms=packet.timestamp)
         self.dashboard.show_packet(packet, self._health_pid, history, self._health_items)
+        self.radiation.show_packet(packet, history, self._health_items)
 
         if self.csv_logger is not None and self.csv_logger.active:
             try:
@@ -886,27 +710,10 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         text, tooltip = labels.get(status, labels["error"])
         self.telemetry_indicator.set_status(text, status, tooltip)
 
-    def format_temperature_summary(self, packet: TelemetryPacket) -> str:
-        valid_count = sum(1 for index in range(len(packet.temperatures)) if packet.temperature_valid(index))
-        return f"{valid_count}/{len(packet.temperatures)} valid"
-
-    def format_adc_summary(self, packet: TelemetryPacket) -> str:
-        active_count = sum(
-            1 for reading in packet.ad7177_readings if packet.os_adc_valid(reading.slot)
-        )
-        first = packet.ad7177_reading(0)
-        return (
-            f"{active_count}/{len(packet.os_adc_readings)} valid; "
-            f"ADC0 CH0 {first.voltage:.6f} V (raw24=0x{first.raw24:06x}) status=0x{first.status:02x}"
-        )
-
-    def toggle_samples_display_mode(self) -> None:
-        self.samples_display_mode = (
-            "raw" if self.samples_display_mode == "voltage" else "voltage"
-        )
-        self.samples_display_toggle.setText(
-            "Showing: Raw24" if self.samples_display_mode == "raw" else "Showing: Voltage"
-        )
+    def set_samples_display_mode(self, mode: str) -> None:
+        self.samples_display_mode = mode
+        for button_mode, button in self.samples_unit_buttons.items():
+            button.setChecked(button_mode == mode)
         self.refresh_sample_cards()
 
     def refresh_sample_cards(self) -> None:
@@ -918,7 +725,8 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         axis_label, axis_hover = ("Raw24", "Raw24") if mode == "raw" else ("Volts (V)", "Volts")
         # Rebuilding twelve plots is the expensive part, so it waits until the
         # Samples page is shown; switch_view refreshes it on arrival.
-        samples_visible = self.pages.currentIndex() == self.samples_page_index
+        if self.pages.currentIndex() != self.samples_page_index:
+            return
         for reading in packet.ad7177_readings:
             channel = SAMPLE_CHANNELS.get(reading.slot)
             if channel is None:
@@ -927,12 +735,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             value_text = (
                 f"0x{reading.raw24:06x}" if mode == "raw" else f"{reading.voltage:.6f} V"
             )
-            self.samples_summary_table.set_value(
-                channel.name,
-                value_text if valid else f"INVALID/STALE (last {value_text})",
-            )
-            if not samples_visible:
-                continue
             card = self.sample_cards[reading.slot]
             card.set_value_axis(axis_label, axis_hover)
             card.set_points(
@@ -969,7 +771,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
         age = time.monotonic() - self.last_telemetry_time
         age_text = f"{age:.1f}s ago"
-        self.telemetry_table.set_value("Last Seen", age_text)
+        self.diagnostics.show_age(age_text)
         if age >= 2.5:
             self._mark_downlink_derived_status_unknown()
         self.refresh_health()
