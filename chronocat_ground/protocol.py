@@ -18,6 +18,7 @@ from .protocol_formatting import (
     ad7177_status_names,
     command_name,
     geiger_error_names,
+    geiger_flag_counter,
     geiger_reset_actions_name,
     status_name,
     tcp_status_name,

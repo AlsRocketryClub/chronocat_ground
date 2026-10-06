@@ -18,6 +18,7 @@ from ..protocol import (
     TelemetryPacket,
     ad7177_status_names,
     geiger_error_names,
+    geiger_flag_counter,
     tcp_status_name,
     telemetry_health_name,
 )
@@ -32,8 +33,8 @@ _FLAG_NAMES = (
     (TELEMETRY_FLAG_PREVIOUS_WATCHDOG_RESET, "previous reset by watchdog"),
 )
 _GEIGER_FIELDS = (
-    "Valid", "Counter ID", "Error flags", "Event ID", "Dose (CPS)", "Dose rate (CPS)",
-    "Total dose (Sv)", "Dose time (s)", "Statistics time (s)", "HV (V)",
+    "Valid", "Counter ID", "Error flags", "Event ID", "User dose (since reset)", "Dose rate (CPS)",
+    "Total before last reset (Sv)", "Dose time (s)", "Statistics time (s)", "HV (V)",
     "Statistical error (%)", "Statistical cells",
 )
 _HEATER_COLUMNS = (
@@ -156,7 +157,8 @@ class DiagnosticsPage(QWidget):
                 continue
             for name, value in zip(_GEIGER_FIELDS, (
                 _yes(reading.valid), str(reading.counter_id),
-                f"0x{reading.error_flags:04x} ({geiger_error_names(reading.error_flags)})",
+                f"0x{reading.error_flags:04x} ({geiger_error_names(reading.error_flags)}; "
+                f"counter {geiger_flag_counter(reading.error_flags)})",
                 str(reading.event_id), f"{reading.dose_cps:.6g}", f"{reading.dose_rate_cps:.6g}",
                 f"{reading.total_dose_sv:.6g}", str(reading.dose_time_sec), str(reading.stats_time_sec),
                 str(reading.hv_voltage), str(reading.stat_error_percent), str(reading.stat_cell_count),

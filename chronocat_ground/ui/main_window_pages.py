@@ -662,6 +662,10 @@ class MainWindowPagesMixin:
                 return
             self.adc_db = TelemetryDb(self.database_path, async_writes=True)
             self.telemetry_history.set_database(self.adc_db)
+            # The coefficients never change, so the new database keeps them.
+            for detector_id, value in self.geiger_xder_values.items():
+                if value is not None:
+                    self.adc_db.save_xder(detector_id, value, self.geiger_xder_read_wall[detector_id])
             self.clear_session_history()
             self._refresh_db_info()
             self.log(f"Database archived to {archive}, new database created")
@@ -673,6 +677,7 @@ class MainWindowPagesMixin:
         self._last_adc_history = None
         self.dashboard.clear()
         self.radiation.clear()
+        self.session_dose.clear()
         self.packet_loss.clear()
         for card in self.sample_cards:
             card.plot.set_points([])

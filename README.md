@@ -246,11 +246,28 @@ bit 3 SD log error
 bit 4 previous reset was a watchdog reset
 ```
 
+Dose: each Geiger detector has an individual coefficient, xDER, read once with
+command 0x50 (the detector's "P" structure) and stored in the telemetry database,
+so it survives restarts and archiving. The ground station reads any missing
+coefficient automatically on Connect. Dose rate (Sv/h) = cps × xDER, shown in
+µSv/h; once both coefficients are known the dose-rate plots switch to µSv/h.
+The detector's user dose ("Dose", zeroed by "reset dose") converts as
+Dose × xDER / 3600; "total before last reset" is the detector's own total, which
+only changes when the dose is reset (the cleared amount moves into it).
+The "this session" dose is integrated on the ground from the received rate,
+skipping downlink gaps longer than 5 s. A failed or non-positive read never
+replaces a stored coefficient. The firmware must decode xDER as TI float
+(firmware commit 922b278 or later) for the value to be correct.
+
 The Health page lists active issues worst first, shows every monitored item as
 a coloured tile (hover for details), and keeps a log of each item's changes
 between ok and a problem, plus board restarts detected from the uptime.
-Geiger flags 64/128 (calibration modes) are shown but not treated as faults,
-and flag 8 is a warning because the detector sets it on its first power-on.
+Geiger flags follow the manufacturer's corrected table: only the low byte holds
+flags (the high byte is a counter). 0x01 HV undervoltage after pumping, 0x02 no
+gamma pulse for 10 min and 0x04 flash write error are faults; 0x08 detector
+reset and the temporary modes 0x20/0x40/0x80 (no dose accumulation, no tail
+rejection, no background subtraction) are warnings; 0x10 statistics reset is
+normal.
 
 Masks:
 

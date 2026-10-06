@@ -33,7 +33,6 @@ from .protocol import (
     CommandResponse,
     CombinedTelemetryPacket,
     PidTelemetryPacket,
-    GeigerReading,
     TelemetryPacket,
     ad7177_status_names,
     command_name,
@@ -45,7 +44,6 @@ from .protocol import (
     encode_heater_target_c,
     encode_heater_target_signed_c,
     geiger_reset_actions_name,
-    geiger_error_names,
     status_name,
     TELEMETRY_FLAG_SD_LOG_ACTIVE,
     TELEMETRY_FLAG_SD_LOG_ERROR,
@@ -63,6 +61,7 @@ from .health_model import (
     format_uptime,
     link_status,
 )
+from .dosimetry import SessionDose, is_plausible_xder
 from .sample_layout import SAMPLE_CHANNELS
 from .telemetry_history import TelemetryHistory, adc_point_for_mode
 from .telemetry_receiver import TelemetryReceiver
@@ -132,6 +131,9 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.pending_pid_operation: PendingPidOperation | None = None
         self.pid_page: PidPage | None = None
         self.geiger_xder_values: dict[int, float | None] = {0: None, 1: None}
+        self.geiger_xder_read_wall: dict[int, float | None] = {0: None, 1: None}
+        self._xder_reads_pending: list[int] = []
+        self.session_dose = SessionDose()
         self.health_events = HealthEventLog()
         self._health_packet: TelemetryPacket | None = None
         self._health_pid: PidTelemetryPacket | None = None
@@ -150,6 +152,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.apply_style()
         self.setCentralWidget(self.build_ui())
         self.fit_action_buttons()
+        self._load_stored_xder()
 
         self.switch_view(VIEW_DASHBOARD)
         self.update_connection_state()
@@ -187,6 +190,11 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.connection_pending = False
         self.log(f"Connected to {host}:{port}")
         self.update_connection_state()
+        # Coefficients only need reading once; fetch any not yet stored.
+        self._xder_reads_pending = [
+            detector_id for detector_id, value in self.geiger_xder_values.items() if value is None
+        ]
+        QTimer.singleShot(0, self._read_next_pending_xder)
 
     def connection_failed(self, message: str) -> None:
         self.connection_pending = False
@@ -278,21 +286,20 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         if request.command == COMMAND_GEIGER_READ_XDER:
             detector_id = request.arg1
             if response.status != 0:
-                self.geiger_xder_values[detector_id] = None
-                self.set_geiger_xder_display(
-                    detector_id, f"failed: {status_name(response.status)}"
-                )
+                self._xder_read_failed(detector_id, status_name(response.status))
             else:
                 try:
                     value = decode_float32_args(response.arg1, response.arg2)
                 except ValueError as exc:
-                    self.geiger_xder_values[detector_id] = None
-                    self.set_geiger_xder_display(detector_id, f"invalid: {exc}")
+                    self._xder_read_failed(detector_id, f"invalid value ({exc})")
                 else:
-                    self.geiger_xder_values[detector_id] = value
-                    self.set_geiger_xder_display(detector_id, f"{value:.9g}")
-                    self.log(f"Geiger {detector_id + 1} xDER: {value:.9g}")
+                    if is_plausible_xder(value):
+                        self._store_xder(detector_id, value, time.time())
+                        self.log(f"Geiger {detector_id + 1} xDER: {value:.9g} Sv/h per cps (stored)")
+                    else:
+                        self._xder_read_failed(detector_id, f"unusable value {value:.9g}")
             self.log_response(response)
+            QTimer.singleShot(0, self._read_next_pending_xder)
             return
 
         if (
@@ -367,9 +374,8 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
     def command_failed(self, request: CommandRequest, message: str) -> None:
         if request.command == COMMAND_GEIGER_READ_XDER:
-            self.geiger_xder_values[request.arg1] = None
-            self.set_geiger_xder_display(request.arg1, f"failed: {message}")
-            self.log(f"Geiger {request.arg1 + 1} xDER command failed: {message}")
+            self._xder_read_failed(request.arg1, message)
+            QTimer.singleShot(0, self._read_next_pending_xder)
         if self.pending_pid_operation is not None:
             self._fail_pid_operation(f"PID operation failed: {message}", disconnect=True)
             return
@@ -396,6 +402,35 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         label = self.geiger_xder_labels.get(detector_id)
         if label is not None:
             label.setText(value)
+
+    def _load_stored_xder(self) -> None:
+        """Use coefficients read in an earlier session; they never change."""
+        for detector_id, (value, read_wall) in self.adc_db.load_xder().items():
+            if detector_id in self.geiger_xder_values and is_plausible_xder(value):
+                self._store_xder(detector_id, value, read_wall, persist=False)
+
+    def _store_xder(self, detector_id: int, value: float, read_wall: float, persist: bool = True) -> None:
+        self.geiger_xder_values[detector_id] = value
+        self.geiger_xder_read_wall[detector_id] = read_wall
+        if persist:
+            self.adc_db.save_xder(detector_id, value, read_wall)
+        read_at = datetime.fromtimestamp(read_wall).strftime("%Y-%m-%d %H:%M")
+        self.set_geiger_xder_display(detector_id, f"{value:.6g} Sv/h per cps  (read {read_at})")
+        self._update_dose_units()
+
+    def _xder_read_failed(self, detector_id: int, reason: str) -> None:
+        """A failed read keeps a known coefficient; it only reports the failure."""
+        self.log(f"Geiger {detector_id + 1} xDER read failed: {reason}")
+        if self.geiger_xder_values.get(detector_id) is None:
+            self.set_geiger_xder_display(detector_id, f"not read ({reason})")
+
+    def _read_next_pending_xder(self) -> None:
+        if self._xder_reads_pending and not self.command_dispatcher.busy and self.client.connected:
+            self.read_geiger_xder(self._xder_reads_pending.pop(0))
+
+    def _update_dose_units(self) -> None:
+        self.radiation.set_xder(dict(self.geiger_xder_values))
+        self.dashboard.set_xder(dict(self.geiger_xder_values))
 
     def send_geiger_command(self, command: int, action: str, timeout: float | None = None) -> None:
         self.log(f"Sending Geiger command: {action}")
@@ -596,16 +631,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             )
         self.log(text)
 
-    @staticmethod
-    def geiger_error_text(reading: GeigerReading | None) -> str:
-        if reading is None:
-            return "unavailable"
-        if not reading.valid:
-            return "invalid"
-        if not reading.error_flags:
-            return "ok"
-        return geiger_error_names(reading.error_flags)
-
     def on_telemetry_packet(
         self,
         packet: TelemetryPacket | PidTelemetryPacket | CombinedTelemetryPacket,
@@ -656,6 +681,14 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.set_telemetry_status("receiving")
 
         self.packet_loss.record(packet.counter)
+        for detector_id in range(2):
+            reading = packet.geiger_reading(detector_id)
+            self.session_dose.record(
+                detector_id,
+                received_monotonic,
+                reading.dose_rate_cps if reading is not None and reading.valid else None,
+                self.geiger_xder_values.get(detector_id),
+            )
         self._last_adc_packet = packet
         self.board_map.set_temperatures(packet)
         self._last_adc_history = history
@@ -670,7 +703,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self._receiver_error = ""
         self.refresh_health(uptime_ms=packet.timestamp)
         self.dashboard.show_packet(packet, self._health_pid, history, self._health_items)
-        self.radiation.show_packet(packet, history, self._health_items)
+        self.radiation.show_packet(packet, history, self._health_items, self.session_dose)
 
         if self.csv_logger is not None and self.csv_logger.active:
             try:

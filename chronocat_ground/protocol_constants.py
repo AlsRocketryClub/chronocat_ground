@@ -57,22 +57,25 @@ TELEMETRY_HEALTH_NAMES = {
     2: "temperature sensor error",
 }
 
+# Detector status flags, from the manufacturer's corrected table (detector
+# source code). Only the low byte holds flags; the high byte is a counter.
+GEIGER_FLAG_MASK = 0x00FF
 GEIGER_ERROR_NAMES = {
-    0: "ok",
-    1: "HV error",
-    2: "GM counter error",
-    4: "technological parameters range error",
-    8: "technological parameters initialization error",
-    16: "INFO-flash writing error",
-    32: "history writing error",
-    64: "calibration: no statistics reset",
-    128: "calibration: no background deduction",
+    0x01: "HV undervoltage after pumping",
+    0x02: "no gamma pulse for 10 min",
+    0x04: "flash write error",
+    0x08: "detector reset",
+    0x10: "statistics reset",
+    0x20: "mode: no dose accumulation",
+    0x40: "mode: no tail rejection",
+    0x80: "mode: no background subtraction",
 }
-# The detector manual describes 8 as normal at the very first power-on and
-# 64/128 as calibration modes that "do not represent an error"; every other
-# flag is a fault.
-GEIGER_NOTICE_FLAGS = 8
-GEIGER_CALIBRATION_FLAGS = 64 | 128
+GEIGER_FAULT_FLAGS = 0x01 | 0x02 | 0x04
+# The detector restarted, or runs a temporary mode that changes how it
+# measures: not faults, but worth noticing.
+GEIGER_NOTICE_FLAGS = 0x08 | 0x20 | 0x40 | 0x80
+# A statistics reset is normal operation.
+GEIGER_INFO_FLAGS = 0x10
 
 HEATER_SENSOR_IDS = (3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8)
 

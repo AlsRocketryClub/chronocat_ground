@@ -54,18 +54,20 @@ class HealthModelTest(unittest.TestCase):
         self.assertIn("ADC1 not responding (all 3 channels)", issues)
         self.assertFalse(any("CH0 (" in text for text in issues))
 
-    def test_geiger_calibration_flags_are_not_faults(self) -> None:
-        self.assertEqual(items_for(packet(geiger_2_flags=64 | 128))["geiger:1"].state, OK)
-        self.assertEqual(items_for(packet(geiger_2_flags=8))["geiger:1"].state, WARNING)
-        hv = items_for(packet(geiger_2_flags=1))["geiger:1"]
-        self.assertEqual((hv.state, hv.reason), (ERROR, "HV error"))
+    def test_geiger_flags_follow_the_corrected_table(self) -> None:
+        # A statistics reset is normal, and the high byte is a counter, not flags.
+        self.assertEqual(items_for(packet(geiger_2_flags=0x0310))["geiger:1"].state, OK)
+        for notice in (0x08, 0x20, 0x40, 0x80):
+            self.assertEqual(items_for(packet(geiger_2_flags=notice))["geiger:1"].state, WARNING)
+        hv = items_for(packet(geiger_2_flags=0x01))["geiger:1"]
+        self.assertEqual((hv.state, hv.reason), (ERROR, "HV undervoltage after pumping"))
 
     def test_geiger_tile_value_stays_short_with_details_in_tooltip(self) -> None:
-        geiger = items_for(packet(geiger_2_flags=64))["geiger:1"]
+        geiger = items_for(packet(geiger_2_flags=0x10))["geiger:1"]
         self.assertTrue(geiger.value.endswith(" cps"))
         self.assertLessEqual(len(geiger.value), 10)
         self.assertIn("HV", geiger.detail)
-        self.assertIn("calibration", geiger.detail)
+        self.assertIn("statistics reset", geiger.detail)
         self.assertEqual(
             [format_rate(rate) for rate in (12345.678, 123.45, 9.876, 0.0123)],
             ["12346", "123.5", "9.88", "0.0123"],

@@ -14,7 +14,8 @@ from datetime import datetime
 from .heater_safety import MAX_SAFE_TEMPERATURE_C
 from .protocol import (
     AMBIENT_SENSOR_IDS,
-    GEIGER_CALIBRATION_FLAGS,
+    GEIGER_FAULT_FLAGS,
+    GEIGER_INFO_FLAGS,
     GEIGER_NOTICE_FLAGS,
     HEATER_SENSOR_IDS,
     TELEMETRY_FLAG_PREVIOUS_WATCHDOG_RESET,
@@ -280,18 +281,17 @@ def _geiger_items(packet: TelemetryPacket | None) -> list[HealthItem]:
             continue
         value = f"{format_rate(reading.dose_rate_cps)} cps"
         detail = f"HV {reading.hv_voltage} V"
-        # Unrecognised bits count as faults rather than being ignored.
-        faults = reading.error_flags & ~(GEIGER_NOTICE_FLAGS | GEIGER_CALIBRATION_FLAGS)
+        faults = reading.error_flags & GEIGER_FAULT_FLAGS
         notices = reading.error_flags & GEIGER_NOTICE_FLAGS
-        calibration = reading.error_flags & GEIGER_CALIBRATION_FLAGS
+        info = reading.error_flags & GEIGER_INFO_FLAGS
         if faults:
             state, reason = ERROR, geiger_error_names(faults)
         elif notices:
-            state, reason = WARNING, geiger_error_names(notices) + " (normal at first power-on)"
+            state, reason = WARNING, geiger_error_names(notices)
         else:
             state, reason = OK, ""
-        if calibration:
-            detail += f"; {geiger_error_names(calibration)}"
+        if info:
+            detail += f"; {geiger_error_names(info)} (normal)"
         items.append(HealthItem(key, "GEIGER", label, name, state, value, reason, detail=detail))
     return items
 

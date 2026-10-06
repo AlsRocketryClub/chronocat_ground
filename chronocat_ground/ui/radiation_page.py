@@ -6,9 +6,17 @@ from collections.abc import Callable, Sequence
 
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from ..health_model import ERROR, OK, UNKNOWN, WARNING, HealthItem, format_rate
+from ..dosimetry import (
+    SessionDose,
+    dose_rate_usv_h,
+    format_dose_rate,
+    points_to_user_dose_usv,
+    points_to_usv_h,
+    user_dose_usv,
+)
+from ..health_model import ERROR, OK, UNKNOWN, WARNING, HealthItem, format_rate, format_uptime
 from ..plot_widget import SERIES_COLORS, PlotWidget
-from ..protocol import GEIGER_CALIBRATION_FLAGS, TelemetryPacket, geiger_error_names
+from ..protocol import GEIGER_FLAG_MASK, TelemetryPacket, geiger_error_names
 from ..telemetry_history import TelemetryHistorySnapshot
 from .widgets import PAGE_SPACING, Panel
 
@@ -49,7 +57,9 @@ class _DetectorPanel(Panel):
         self.detail.setWordWrap(True)
         self.layout.addWidget(self.detail)
 
-    def show_reading(self, reading, item: HealthItem | None) -> None:
+    def show_reading(
+        self, reading, item: HealthItem | None, xder: float | None, session_usv: float, session_s: float
+    ) -> None:
         state = item.state if item is not None else UNKNOWN
         _set_state(self.rate, state)
         _set_state(self.status, state)
@@ -65,16 +75,34 @@ class _DetectorPanel(Panel):
             self.detail.setText("")
             return
         error = reading.dose_rate_cps * reading.stat_error_percent / 100.0
-        self.rate.setText(f"{format_rate(reading.dose_rate_cps)} ± {format_rate(error)} cps")
-        self.summary.setText(f"HV {reading.hv_voltage} V  ·  total dose {reading.total_dose_sv:.4g} Sv")
+        cps = f"{format_rate(reading.dose_rate_cps)} ± {format_rate(error)} cps"
+        if xder is None:
+            self.rate.setText(cps)
+            self.summary.setText(
+                f"HV {reading.hv_voltage} V  ·  xDER not read yet: connect to convert to µSv/h"
+            )
+        else:
+            self.rate.setText(
+                f"{format_dose_rate(dose_rate_usv_h(reading.dose_rate_cps, xder))} ± "
+                f"{format_dose_rate(dose_rate_usv_h(error, xder))} µSv/h"
+            )
+            session = (
+                f"{format_dose_rate(session_usv)} µSv this session ({format_uptime(int(session_s * 1000))})"
+                if session_s else "session dose starts with the next packets"
+            )
+            self.summary.setText(f"{cps}  ·  HV {reading.hv_voltage} V  ·  {session}")
         parts = [
             f"Statistical error {reading.stat_error_percent} % over {reading.stat_cell_count} cells "
             f"and {reading.stats_time_sec} s",
             f"dose accumulated over {reading.dose_time_sec} s",
             f"event {reading.event_id}",
         ]
-        if reading.error_flags & GEIGER_CALIBRATION_FLAGS:
-            parts.append(geiger_error_names(reading.error_flags & GEIGER_CALIBRATION_FLAGS))
+        if xder is not None:
+            # "Dose" restarts at 0 on "reset dose"; the cleared amount moves into the total.
+            parts.append(f"user dose since reset {format_dose_rate(user_dose_usv(reading.dose_cps, xder))} µSv")
+        parts.append(f"total before last reset {reading.total_dose_sv:.4g} Sv")
+        if reading.error_flags & GEIGER_FLAG_MASK:
+            parts.append(f"flags: {geiger_error_names(reading.error_flags)}")
         self.detail.setText("  ·  ".join(parts))
 
 
@@ -121,8 +149,8 @@ class RadiationPage(QWidget):
         rate_panel.layout.addWidget(self.rate_plot)
         layout.addWidget(rate_panel)
 
-        dose_panel = Panel("TOTAL DOSE")
-        self.dose_plot = PlotWidget("Total dose (Sv)", "No data", hover_label="Sv", interactive=False)
+        dose_panel = Panel("USER DOSE (SINCE LAST RESET)")
+        self.dose_plot = PlotWidget("Dose (counts)", "No data", hover_label="counts", interactive=False)
         self.dose_plot.setFixedHeight(200)
         dose_panel.layout.addWidget(self.dose_plot)
         layout.addWidget(dose_panel)
@@ -130,6 +158,14 @@ class RadiationPage(QWidget):
         layout.addWidget(controls)
         layout.addStretch(1)
         self.set_time_window(_WINDOWS[0][1])
+        self._xder: dict[int, float | None] = {0: None, 1: None}
+
+    def set_xder(self, xder: dict[int, float | None]) -> None:
+        self._xder = xder
+
+    def _in_dose_units(self) -> bool:
+        """Plot in µSv/h only when both detectors convert, so lines never mix units."""
+        return all(value is not None for value in self._xder.values())
 
     def set_time_window(self, seconds: float) -> None:
         for window, button in self.window_buttons.items():
@@ -138,16 +174,36 @@ class RadiationPage(QWidget):
         self.dose_plot.set_time_window(seconds)
 
     def show_packet(
-        self, packet: TelemetryPacket, history: TelemetryHistorySnapshot, items: Sequence[HealthItem]
+        self,
+        packet: TelemetryPacket,
+        history: TelemetryHistorySnapshot,
+        items: Sequence[HealthItem],
+        session: SessionDose,
     ) -> None:
         by_key = {item.key: item for item in items}
         for counter_id, panel in enumerate(self.detectors):
-            panel.show_reading(packet.geiger_reading(counter_id), by_key.get(f"geiger:{counter_id}"))
-        self.rate_plot.set_series(
-            tuple(zip(_SERIES, history.geiger_points)),
-            bands=dict(zip(_SERIES, history.geiger_error_points)),
-        )
-        self.dose_plot.set_series(tuple(zip(_SERIES, history.geiger_dose_points)))
+            panel.show_reading(
+                packet.geiger_reading(counter_id),
+                by_key.get(f"geiger:{counter_id}"),
+                self._xder[counter_id],
+                session.dose_usv[counter_id],
+                session.covered_s[counter_id],
+            )
+        rates, errors = list(history.geiger_points), list(history.geiger_error_points)
+        if self._in_dose_units():
+            rates = [points_to_usv_h(points, self._xder[i]) for i, points in enumerate(rates)]
+            errors = [points_to_usv_h(points, self._xder[i]) for i, points in enumerate(errors)]
+            self.rate_plot.set_y_label("Dose rate (µSv/h)", "µSv/h")
+        else:
+            self.rate_plot.set_y_label("Dose rate (CPS)", "CPS")
+        self.rate_plot.set_series(tuple(zip(_SERIES, rates)), bands=dict(zip(_SERIES, errors)))
+        doses = list(history.geiger_dose_points)
+        if self._in_dose_units():
+            doses = [points_to_user_dose_usv(points, self._xder[i]) for i, points in enumerate(doses)]
+            self.dose_plot.set_y_label("User dose (µSv)", "µSv")
+        else:
+            self.dose_plot.set_y_label("Dose (counts)", "counts")
+        self.dose_plot.set_series(tuple(zip(_SERIES, doses)))
 
     def clear(self) -> None:
         self.rate_plot.set_series(())

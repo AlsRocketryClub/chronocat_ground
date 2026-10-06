@@ -28,7 +28,8 @@ class TelemetryHistorySnapshot:
 
     packet_count: int
     geiger_points: tuple[Sequence[tuple[float, float, float]], ...]
-    # Absolute statistical error (cps) and total dose (Sv), aligned with geiger_points.
+    # Absolute statistical error (cps) and the detector's user dose ("Dose",
+    # zeroed by "reset dose"), aligned with geiger_points.
     geiger_error_points: tuple[Sequence[tuple[float, float, float]], ...]
     geiger_dose_points: tuple[Sequence[tuple[float, float, float]], ...]
     adc_points: tuple[Sequence[tuple[float, float, float, int]], ...]
@@ -74,7 +75,7 @@ class TelemetryHistory:
                 )
             )
             self._geiger_dose_points[counter_id].append(
-                (received_monotonic, received_wall, reading.total_dose_sv)
+                (received_monotonic, received_wall, reading.dose_cps)
             )
             geiger_rows.append(
                 (

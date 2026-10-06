@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from ..dosimetry import dose_rate_usv_h, format_dose_rate, points_to_usv_h
 from ..health_model import ERROR, OK, UNKNOWN, WARNING, HealthItem, Issue, format_rate
 from ..plot_widget import SERIES_COLORS, PlotWidget
 from ..protocol import HEATER_SENSOR_IDS, TEMP_SENSOR_LABELS, AMBIENT_SENSOR_IDS, PidTelemetryPacket, TelemetryPacket
@@ -38,6 +39,10 @@ class DashboardPage(QWidget):
         layout.addWidget(self._build_samples())
         layout.addWidget(self._build_thermal())
         layout.addStretch(1)
+        self._xder: dict[int, float | None] = {0: None, 1: None}
+
+    def set_xder(self, xder: dict[int, float | None]) -> None:
+        self._xder = xder
 
     # --- construction -------------------------------------------------------
 
@@ -193,12 +198,22 @@ class DashboardPage(QWidget):
                 value.setText("no response")
                 detail.setText("")
             else:
-                value.setText(f"{format_rate(reading.dose_rate_cps)} cps")
-                detail.setText(f"HV {reading.hv_voltage} V · total {reading.total_dose_sv:.3g} Sv")
+                xder = self._xder[counter_id]
+                cps = f"{format_rate(reading.dose_rate_cps)} cps"
+                if xder is None:
+                    value.setText(cps)
+                    detail.setText(f"HV {reading.hv_voltage} V · xDER not read")
+                else:
+                    value.setText(f"{format_dose_rate(dose_rate_usv_h(reading.dose_rate_cps, xder))} µSv/h")
+                    detail.setText(f"{cps} · HV {reading.hv_voltage} V")
             _set_state(value, states.get(f"geiger:{counter_id}", UNKNOWN))
-        self.geiger_plot.set_series(
-            (("Geiger 1", history.geiger_points[0]), ("Geiger 2", history.geiger_points[1]))
-        )
+        rates = list(history.geiger_points)
+        if all(value is not None for value in self._xder.values()):
+            rates = [points_to_usv_h(points, self._xder[i]) for i, points in enumerate(rates)]
+            self.geiger_plot.set_y_label("Dose rate (µSv/h)", "µSv/h")
+        else:
+            self.geiger_plot.set_y_label("Dose rate (CPS)", "CPS")
+        self.geiger_plot.set_series((("Geiger 1", rates[0]), ("Geiger 2", rates[1])))
 
     def _show_samples(self, packet: TelemetryPacket, history: TelemetryHistorySnapshot, states: dict) -> None:
         readings = {reading.slot: reading for reading in packet.ad7177_readings}

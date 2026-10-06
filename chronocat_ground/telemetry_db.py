@@ -102,6 +102,13 @@ class TelemetryDb:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_temperature_ts ON temperature(ts_ms)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_temperature_slot ON temperature(slot)")
 
+        # Each detector's dose-rate coefficient; it never changes, so one row each.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS geiger_calibration ("
+            "counter_id INT PRIMARY KEY, xder REAL NOT NULL, read_wall REAL NOT NULL"
+            ")"
+        )
+
     def _create_composite_indexes(self, connection: sqlite3.Connection | None = None) -> None:
         conn = self.conn if connection is None else connection
         conn.execute(
@@ -230,6 +237,18 @@ class TelemetryDb:
             (timestamp_ms, received_wall, slot, temperature_c),
         )
         self.conn.commit()
+
+    def save_xder(self, counter_id: int, xder: float, read_wall: float) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO geiger_calibration (counter_id, xder, read_wall) VALUES (?, ?, ?)",
+            (counter_id, xder, read_wall),
+        )
+        self.conn.commit()
+
+    def load_xder(self) -> dict[int, tuple[float, float]]:
+        """Stored coefficients as {counter_id: (xder, read_wall)}."""
+        rows = self.conn.execute("SELECT counter_id, xder, read_wall FROM geiger_calibration").fetchall()
+        return {counter_id: (xder, read_wall) for counter_id, xder, read_wall in rows}
 
     def query_adc(self, slot: int, cutoff_ms: int = 0, limit: int | None = None) -> List[Tuple[float, float]]:
         self.flush()

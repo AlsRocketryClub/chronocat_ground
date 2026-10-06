@@ -29,6 +29,7 @@ from chronocat_ground.protocol import (
     decode_heater_target_signed_c,
     decode_float32_args,
     geiger_error_names,
+    geiger_flag_counter,
     parse_telemetry_packet,
     telemetry_health_name,
     build_command,
@@ -655,11 +656,13 @@ class TelemetryProtocolTests(unittest.TestCase):
             self.assertEqual(raised.exception.errno, errno.EIO)
             self.assertFalse(logger.active)
 
-    def test_geiger_error_names_match_detector_documentation(self) -> None:
-        self.assertEqual(geiger_error_names(0x0002), "GM counter error")
-        self.assertEqual(geiger_error_names(0x0020), "history writing error")
-        self.assertIn("calibration: no statistics reset", geiger_error_names(0x0040))
-        self.assertIn("unknown bits 0x0100", geiger_error_names(0x0100))
+    def test_geiger_error_names_match_corrected_detector_table(self) -> None:
+        self.assertEqual(geiger_error_names(0x0002), "no gamma pulse for 10 min")
+        self.assertEqual(geiger_error_names(0x0010), "statistics reset")
+        self.assertEqual(geiger_error_names(0x0081), "HV undervoltage after pumping, mode: no background subtraction")
+        # The high byte is the detector's counter, not flags.
+        self.assertEqual(geiger_error_names(0x0500), "ok")
+        self.assertEqual(geiger_flag_counter(0x0510), 5)
 
     def test_cli_accepts_geiger_only(self) -> None:
         args = build_parser().parse_args(["--geiger-only", "--overwrite", "--out", "test.csv"])
