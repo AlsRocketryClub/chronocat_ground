@@ -36,7 +36,7 @@ class HealthTile(QLabel):
         self.setObjectName("healthTile")
         self.setAlignment(Qt.AlignCenter)
         # Grow wider rather than clip if a value is ever longer than usual.
-        self.setMinimumWidth(86)
+        self.setMinimumWidth(82)
         self.setFixedHeight(44)
         self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._shown: HealthItem | None = None

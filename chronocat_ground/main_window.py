@@ -116,7 +116,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.command_dispatcher.busy_changed.connect(self._on_command_busy_changed)
         self.connection_pending = False
         self.last_telemetry_time: float | None = None
-        self.view_buttons: dict[str, QPushButton] = {}
+        self.view_buttons: dict[str, list[QPushButton]] = {}
         self.database_path = Path(database_path)
         self.adc_db = TelemetryDb(self.database_path, async_writes=True)
         self.telemetry_history = TelemetryHistory(self.adc_db)
@@ -152,6 +152,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.apply_style()
         self.setCentralWidget(self.build_ui())
         self.fit_action_buttons()
+        self.apply_saved_navigation()
         self._load_stored_xder()
 
         self.switch_view(VIEW_DASHBOARD)

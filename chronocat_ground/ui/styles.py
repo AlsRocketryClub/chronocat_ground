@@ -106,12 +106,21 @@ QPushButton:disabled {
 #navTab, #navTabActive {
     background: transparent;
     border: none;
-    border-bottom: 3px solid transparent;
-    padding: 4px 12px;
+    border-bottom: 2px solid transparent;
+    padding: 3px 8px;
     font-size: 12px;
     font-weight: 600;
     color: #444444;
-    letter-spacing: 1px;
+}
+#navSide, #navSideActive {
+    text-align: left;
+    background: #ffffff;
+    border: 1px solid #7f7f7f;
+    font-weight: 400;
+}
+#navSideActive {
+    background: #d9d9d9;
+    font-weight: 700;
 }
 #navTab:hover {
     color: #111111;
@@ -200,7 +209,7 @@ QPushButton:disabled {
     color: #444444;
     font-size: 11px;
     font-weight: 700;
-    min-width: 84px;
+    min-width: 76px;
 }
 #healthSubgroupLabel {
     color: #666666;

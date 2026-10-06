@@ -4,7 +4,7 @@ import os
 import sqlite3
 from functools import partial
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QSettings, QTimer, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
@@ -65,7 +65,7 @@ VIEW_HEALTH = "HEALTH"
 VIEW_BOARDS = "BOARDS"
 VIEW_DIAGNOSTICS = "DIAGNOSTICS"
 VIEW_SETTINGS = "SETTINGS"
-# Tab order; also the order pages are added to the stack.
+# Page order in the stack.
 VIEWS = (
     VIEW_DASHBOARD,
     VIEW_RADIATION,
@@ -76,6 +76,14 @@ VIEWS = (
     VIEW_DIAGNOSTICS,
     VIEW_SETTINGS,
 )
+# Tabs sit in two rows beside the title; each tuple is one row.
+TAB_ROWS = (
+    (VIEW_DASHBOARD, VIEW_SAMPLES, VIEW_HEALTH, VIEW_DIAGNOSTICS),
+    (VIEW_RADIATION, VIEW_TEMPERATURE, VIEW_BOARDS, VIEW_SETTINGS),
+)
+NAV_TOP = "top"
+NAV_SIDE = "side"
+_NAV_SETTING = "layout/navigation"
 _HEALTH_DOT_COLORS = {
     "ok": "#4f9a4f",
     "warning": "#d4a017",
@@ -97,6 +105,7 @@ class MainWindowPagesMixin:
         body = QHBoxLayout()
         body.setSpacing(PAGE_SPACING)
         layout.addLayout(body, 1)
+        body.addWidget(self.build_side_nav())
 
         self.pages = QStackedWidget()
         self.pages.setObjectName("pages")
@@ -120,7 +129,7 @@ class MainWindowPagesMixin:
         topbar_layout.setSpacing(8)
 
         title_row = QHBoxLayout()
-        title_row.setSpacing(16)
+        title_row.setSpacing(12)
 
         script_dir = os.path.dirname(os.path.dirname(__file__))
         logo_path = os.path.join(script_dir, "CHRONO-CAT_logo.png")
@@ -140,7 +149,9 @@ class MainWindowPagesMixin:
         header.setObjectName("title")
         title_box.addWidget(eyebrow)
         title_box.addWidget(header)
-        title_row.addLayout(title_box, 1)
+        title_row.addLayout(title_box)
+        title_row.addWidget(self.build_tabs())
+        title_row.addStretch(1)
 
         # Host and port live in Settings; the top bar keeps only the actions.
         self.host_input = QLineEdit(DEFAULT_DEVICE_HOST)
@@ -183,7 +194,6 @@ class MainWindowPagesMixin:
         title_row.addWidget(self.sd_log_indicator)
 
         topbar_layout.addLayout(title_row)
-        topbar_layout.addLayout(self.build_tabs())
 
         return topbar
 
@@ -203,18 +213,52 @@ class MainWindowPagesMixin:
         target = f"{self.host_input.text().strip()}:{self.port_input.text().strip()}"
         self.connection_target_label.setText(f"Board {target}")
 
-    def build_tabs(self) -> QHBoxLayout:
-        tabs = QHBoxLayout()
-        tabs.setSpacing(4)
+    def _add_nav_button(self, view: str, object_name: str) -> QPushButton:
+        button = QPushButton(view)
+        button.setObjectName(object_name)
+        button.clicked.connect(lambda _checked=False, selected=view: self.switch_view(selected))
+        self.view_buttons.setdefault(view, []).append(button)
+        return button
+
+    def build_tabs(self) -> QWidget:
+        """Two rows of tabs beside the title: compact, but needs a wide window."""
+        self.top_nav = QWidget()
+        tabs = QGridLayout(self.top_nav)
+        tabs.setContentsMargins(0, 0, 0, 0)
+        tabs.setHorizontalSpacing(2)
+        tabs.setVerticalSpacing(0)
+        for row, views in enumerate(TAB_ROWS):
+            for column, view in enumerate(views):
+                tabs.addWidget(self._add_nav_button(view, "navTab"), row, column)
+        return self.top_nav
+
+    def build_side_nav(self) -> Panel:
+        """A vertical sidebar: wider overall, but fits narrow windows."""
+        self.side_nav = Panel()
+        self.side_nav.setFixedWidth(150)
         for view in VIEWS:
-            button = QPushButton(view)
-            button.setObjectName("navTab")
-            button.clicked.connect(lambda _checked=False, selected=view: self.switch_view(selected))
-            self.view_buttons[view] = button
-            tabs.addWidget(button)
-        tabs.addStretch(1)
+            self.side_nav.layout.addWidget(self._add_nav_button(view, "navSide"))
+        self.side_nav.layout.addStretch(1)
+        return self.side_nav
+
+    def nav_settings(self) -> QSettings:
+        # INI so tests can point it at a temporary folder.
+        return QSettings(QSettings.IniFormat, QSettings.UserScope, "Chronocat", "Ground Station")
+
+    def apply_saved_navigation(self) -> None:
+        saved = self.nav_settings().value(_NAV_SETTING, NAV_TOP)
+        self.set_navigation_style(saved if saved in (NAV_TOP, NAV_SIDE) else NAV_TOP, save=False)
         self.set_health_dot("unknown")
-        return tabs
+
+    def set_navigation_style(self, style: str, save: bool = True) -> None:
+        """Show the page tabs in the top bar or as a sidebar; only one is visible."""
+        self.navigation_style = style
+        self.top_nav.setVisible(style == NAV_TOP)
+        self.side_nav.setVisible(style == NAV_SIDE)
+        for button_style, button in self.navigation_style_buttons.items():
+            button.setChecked(button_style == style)
+        if save:
+            self.nav_settings().setValue(_NAV_SETTING, style)
 
     def set_health_dot(self, state: str) -> None:
         """Colour the dot on the HEALTH tab so problems show from any page."""
@@ -229,7 +273,8 @@ class MainWindowPagesMixin:
         painter.setBrush(QColor(_HEALTH_DOT_COLORS.get(state, _HEALTH_DOT_COLORS["unknown"])))
         painter.drawEllipse(0, 0, 10, 10)
         painter.end()
-        self.view_buttons[VIEW_HEALTH].setIcon(QIcon(pixmap))
+        for button in self.view_buttons[VIEW_HEALTH]:
+            button.setIcon(QIcon(pixmap))
 
     def scroll_page(self, page: QWidget) -> QScrollArea:
         scroll = QScrollArea()
@@ -571,6 +616,28 @@ class MainWindowPagesMixin:
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(PAGE_SPACING)
 
+        layout_panel = Panel("LAYOUT")
+        layout_row = QHBoxLayout()
+        layout_row.addWidget(QLabel("Page navigation"))
+        self.navigation_style_buttons = {}
+        for style, text in ((NAV_TOP, "Tabs in top bar"), (NAV_SIDE, "Sidebar")):
+            button = QPushButton(text)
+            button.setObjectName("segmentButton")
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked=False, style=style: self.set_navigation_style(style))
+            layout_row.addWidget(button)
+            self.navigation_style_buttons[style] = button
+        layout_row.addStretch(1)
+        layout_panel.layout.addLayout(layout_row)
+        layout_note = QLabel(
+            "The top-bar tabs need a window at least ~1400 px wide; the sidebar fits "
+            "narrower screens (~1015 px). Remembered between sessions."
+        )
+        layout_note.setObjectName("smallNote")
+        layout_note.setWordWrap(True)
+        layout_panel.layout.addWidget(layout_note)
+        layout.addWidget(layout_panel)
+
         connection_panel = Panel("CONNECTION")
         connection_grid = QGridLayout()
         connection_grid.setHorizontalSpacing(8)
@@ -717,7 +784,9 @@ class MainWindowPagesMixin:
         if view == VIEW_SAMPLES:
             # Sample plots are only refreshed while visible; catch up now.
             self.refresh_sample_cards()
-        for name, button in self.view_buttons.items():
-            button.setObjectName("navTabActive" if name == view else "navTab")
-            button.style().unpolish(button)
-            button.style().polish(button)
+        for name, buttons in self.view_buttons.items():
+            for button in buttons:
+                base = "navSide" if button.parentWidget() is self.side_nav else "navTab"
+                button.setObjectName(f"{base}Active" if name == view else base)
+                button.style().unpolish(button)
+                button.style().polish(button)

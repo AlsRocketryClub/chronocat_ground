@@ -39,7 +39,8 @@ _SEVERITY = {ERROR: 0, WARNING: 1, UNKNOWN: 2, OK: 3}
 STALE_AFTER_S = 2.5
 
 GROUPS = (
-    "SYSTEM", "BOARD", "TEMP F1", "TEMP F2", "SAMPLES F1", "SAMPLES F2", "GEIGER", "HEATERS",
+    "SYSTEM", "BOARD", "TEMP F1", "TEMP F2", "SAMPLES F1", "SAMPLES F2", "GEIGER",
+    "HEATERS F1", "HEATERS F2",
 )
 _FIRMWARE_SHORT = {0: "ok", 1: "TCP down", 2: "temp error"}
 _TCP_LISTENING = 4
@@ -300,20 +301,22 @@ def _heater_items(pid: PidTelemetryPacket | None) -> list[HealthItem]:
     items = []
     for heater_id in range(len(HEATER_SENSOR_IDS)):
         key, label = f"heater:{heater_id}", f"H{heater_id}"
+        # One row per board (H0-H5 on F1, H6-H11 on F2), like the sensors.
+        group = "HEATERS F1" if heater_id < len(HEATER_SENSOR_IDS) // 2 else "HEATERS F2"
         name = f"H{heater_id} ({TEMP_SENSOR_LABELS[HEATER_SENSOR_IDS[heater_id]]})"
         if pid is None or heater_id >= len(pid.heaters):
-            items.append(HealthItem(key, "HEATERS", label, name, UNKNOWN))
+            items.append(HealthItem(key, group, label, name, UNKNOWN))
             continue
         reading = pid.heaters[heater_id]
         value = f"{reading.duty_permille / 10.0:.0f}%"
         if reading.result >= 7:
-            items.append(HealthItem(key, "HEATERS", label, name, ERROR, value, reading.result_name))
+            items.append(HealthItem(key, group, label, name, ERROR, value, reading.result_name))
         elif reading.result >= 5 or not reading.sensor_mapped:
-            items.append(HealthItem(key, "HEATERS", label, name, WARNING, value, reading.result_name))
+            items.append(HealthItem(key, group, label, name, WARNING, value, reading.result_name))
         elif not reading.sensor_valid:
-            items.append(HealthItem(key, "HEATERS", label, name, WARNING, value, "no sensor reading; held off"))
+            items.append(HealthItem(key, group, label, name, WARNING, value, "no sensor reading; held off"))
         else:
-            items.append(HealthItem(key, "HEATERS", label, name, OK, value))
+            items.append(HealthItem(key, group, label, name, OK, value))
     return items
 
 
