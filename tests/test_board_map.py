@@ -17,7 +17,7 @@ class BoardMapTest(unittest.TestCase):
                          ("diF-TES-ADT", "I2C4", "ADC0 + ADC1", "H0–H5"))
         self.assertEqual((second.material, second.bus, second.adc_text, second.heater_text),
                          ("TIPs-pentacene", "I2C1", "ADC2 + ADC3", "H6–H11"))
-        self.assertEqual(sorted(labels(first.sensor_ids)), ["U0", "U1", "U2", "U3", "U4", "U5", "U6", "U7"])
+        self.assertEqual(sorted(labels(first.sensor_ids)), [f"F1_U{index}" for index in range(8)])
         self.assertTrue(all(label.startswith("F2_") for label in labels(second.sensor_ids)))
 
     def test_pairs_put_left_and_right_sensors_on_their_adc_channels(self) -> None:
@@ -30,9 +30,9 @@ class BoardMapTest(unittest.TestCase):
             for pair in BOARDS[0].pairs
         }
         self.assertEqual(pairs, {
-            1: (["U4", "U3"], "ADC0 CH0", "ADC0 CH1"),
-            2: (["U0", "U1"], "ADC0 CH2", "ADC1 CH0"),
-            3: (["U5", "U2"], "ADC1 CH1", "ADC1 CH2"),
+            1: (["F1_U4", "F1_U3"], "ADC0 CH0", "ADC0 CH1"),
+            2: (["F1_U0", "F1_U1"], "ADC0 CH2", "ADC1 CH0"),
+            3: (["F1_U5", "F1_U2"], "ADC1 CH1", "ADC1 CH2"),
         })
 
     def test_widget_paints_without_telemetry(self) -> None:

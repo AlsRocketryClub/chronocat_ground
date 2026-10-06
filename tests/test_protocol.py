@@ -212,12 +212,12 @@ class TelemetryProtocolTests(unittest.TestCase):
         fields = csv_fieldnames()
         row = combined_packet_to_row(packet, datetime(2026, 1, 1), "device")
 
-        for label in ("u7", "u6", "f2_u7", "f2_u6"):
+        for label in ("f1_u7", "f1_u6", "f2_u7", "f2_u6"):
             self.assertIn(f"ambient_{label}_temp_c", fields)
             self.assertIn(f"ambient_{label}_temp_valid", fields)
-        self.assertEqual(row["ambient_u7_temp_c"], "21.00")
-        self.assertEqual(row["ambient_u7_temp_valid"], 1)
-        self.assertEqual(row["ambient_u6_temp_valid"], 0)
+        self.assertEqual(row["ambient_f1_u7_temp_c"], "21.00")
+        self.assertEqual(row["ambient_f1_u7_temp_valid"], 1)
+        self.assertEqual(row["ambient_f1_u6_temp_valid"], 0)
         self.assertEqual(row["ambient_f2_u6_temp_c"], "24.00")
 
     def test_signed_deci_degree_command_bounds_and_round_trip(self) -> None:

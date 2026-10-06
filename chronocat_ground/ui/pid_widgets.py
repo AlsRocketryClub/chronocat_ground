@@ -4,23 +4,11 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel
 
 from ..heater_safety import HEATER_SENSOR_IDS
-from ..protocol import HeaterPidReading
+from ..protocol import TEMP_SENSOR_LABELS, HeaterPidReading
 
 
-SENSOR_NAMES = (
-    "U3",
-    "U4",
-    "U5",
-    "U0",
-    "U1",
-    "U2",
-    "F2_U3",
-    "F2_U4",
-    "F2_U5",
-    "F2_U0",
-    "F2_U1",
-    "F2_U2",
-)
+# Heater feedback sensors are the first twelve, in firmware order.
+SENSOR_NAMES = TEMP_SENSOR_LABELS[:12]
 
 
 class HeaterOverviewRow(QFrame):

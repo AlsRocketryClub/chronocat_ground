@@ -40,7 +40,7 @@ class SampleChannel:
 
 # (material, first ADC on the board, sensor label prefix of the board)
 _BOARDS = (
-    ("diF-TES-ADT", 0, ""),
+    ("diF-TES-ADT", 0, "F1_"),
     ("TIPs-pentacene", 2, "F2_"),
 )
 

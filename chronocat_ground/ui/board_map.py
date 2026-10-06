@@ -25,7 +25,8 @@ from ..protocol import (
 )
 from ..sample_layout import SAMPLE_COLUMNS, SampleChannel
 
-# Spot centres as fractions of the drawn board, keyed by label without "F2_".
+# Spot centres as fractions of the drawn board, keyed by label without the
+# F1_/F2_ board prefix.
 _SPOT_POSITIONS = {
     "U5": (0.20, 0.11),
     "U2": (0.80, 0.11),
@@ -94,7 +95,7 @@ def _build_boards() -> tuple[_Board, ...]:
             devices = {channel.device: channel for channel in channels if channel.pair == pair_number}
             left, right = devices["a"].temperature_sensor_ids
             pairs.append(_Pair(pair_number, left, right, devices["a"], devices["b"]))
-        prefix = "F2_" if number == 2 else ""
+        prefix = f"F{number}_"
         sensor_ids = tuple(
             TEMP_SENSOR_LABELS.index(prefix + label) for label in _SPOT_POSITIONS
         )
@@ -106,7 +107,7 @@ BOARDS = _build_boards()
 
 
 def _base_label(sensor_id: int) -> str:
-    return TEMP_SENSOR_LABELS[sensor_id].removeprefix("F2_")
+    return TEMP_SENSOR_LABELS[sensor_id].split("_", 1)[1]
 
 
 class BoardMapWidget(QWidget):

@@ -15,12 +15,12 @@ class SampleLayoutTest(unittest.TestCase):
         self.assertEqual(
             [describe(slot) for slot in range(6)],
             [
-                ("diF-TES-ADT 1a", "ADC0 CH0", ("U4", "U3")),
-                ("diF-TES-ADT 1b", "ADC0 CH1", ("U4", "U3")),
-                ("diF-TES-ADT 2a", "ADC0 CH2", ("U0", "U1")),
-                ("diF-TES-ADT 2b", "ADC1 CH0", ("U0", "U1")),
-                ("diF-TES-ADT 3a", "ADC1 CH1", ("U5", "U2")),
-                ("diF-TES-ADT 3b", "ADC1 CH2", ("U5", "U2")),
+                ("diF-TES-ADT 1a", "ADC0 CH0", ("F1_U4", "F1_U3")),
+                ("diF-TES-ADT 1b", "ADC0 CH1", ("F1_U4", "F1_U3")),
+                ("diF-TES-ADT 2a", "ADC0 CH2", ("F1_U0", "F1_U1")),
+                ("diF-TES-ADT 2b", "ADC1 CH0", ("F1_U0", "F1_U1")),
+                ("diF-TES-ADT 3a", "ADC1 CH1", ("F1_U5", "F1_U2")),
+                ("diF-TES-ADT 3b", "ADC1 CH2", ("F1_U5", "F1_U2")),
             ],
         )
 

@@ -130,7 +130,8 @@ and TCP status. Legacy `geiger_*` columns remain aliases for Geiger 1; explicit 
 In full CSV logs, temperature columns are named by the mapped heater, for example
 `heater_9_temp_c` / `heater_9_temp_valid` for the F2_U3 sensor. The four ambient
 sensors (12-15) are not mapped to heaters and are named by board label, for example
-`ambient_u7_temp_c` and `ambient_f2_u6_temp_c`. Heater-page duty
+`ambient_f1_u7_temp_c` and `ambient_f2_u6_temp_c`. Sensor labels carry their
+board, F1_ (diF-TES-ADT) or F2_ (TIPs-pentacene). Heater-page duty
 readouts and plots use percent; the manual-duty control and commands remain in integer permille.
 
 The Dashboard view also plots a rolling average of the error-free AD7177

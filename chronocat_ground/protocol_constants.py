@@ -73,9 +73,9 @@ HEATER_SENSOR_IDS = (3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8)
 # Board labels in firmware sensor order. 12-15 measure ambient temperature only
 # and are not mapped to any heater.
 TEMP_SENSOR_LABELS = (
-    "U3", "U4", "U5", "U0", "U1", "U2",
+    "F1_U3", "F1_U4", "F1_U5", "F1_U0", "F1_U1", "F1_U2",
     "F2_U3", "F2_U4", "F2_U5", "F2_U0", "F2_U1", "F2_U2",
-    "U7", "U6", "F2_U7", "F2_U6",
+    "F1_U7", "F1_U6", "F2_U7", "F2_U6",
 )
 AMBIENT_SENSOR_IDS = (12, 13, 14, 15)
 # I2C address and mux side (B0/B1) per sensor, mirroring the firmware table.
