@@ -5,6 +5,7 @@ import math
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QBoxLayout,
     QDoubleSpinBox,
     QComboBox,
     QFrame,
@@ -34,6 +35,40 @@ from .ui.pid_widgets import HeaterOverviewRow, SENSOR_NAMES
 from .ui.widgets import PAGE_SPACING
 
 
+class _GlobalControlsPanel(QFrame):
+    """Controls and status in one row; status moves below only when the row is too narrow."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.row = QBoxLayout(QBoxLayout.LeftToRight, self)
+        self._controls: QWidget | None = None
+        self._status_labels: tuple[QLabel, ...] = ()
+
+    def set_parts(self, controls: QWidget, status_labels: tuple[QLabel, ...]) -> None:
+        self._controls = controls
+        self._status_labels = status_labels
+        self.fit()
+
+    def fit(self) -> None:
+        if self._controls is None:
+            return
+        margins = self.row.contentsMargins()
+        status_width = max(
+            label.fontMetrics().horizontalAdvance(label.text()) for label in self._status_labels
+        )
+        needed = (
+            self._controls.sizeHint().width() + self.row.spacing() + status_width
+            + margins.left() + margins.right()
+        )
+        direction = QBoxLayout.LeftToRight if needed <= self.width() else QBoxLayout.TopToBottom
+        if self.row.direction() != direction:
+            self.row.setDirection(direction)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.fit()
+
+
 class PidPage(QWidget):
     target_requested = Signal(int, float)
     gain_requested = Signal(int, str, float)
@@ -61,7 +96,8 @@ class PidPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(PAGE_SPACING)
 
-        root.addWidget(self._build_header())
+        self.global_controls = self._build_header()
+        root.addWidget(self.global_controls)
 
         workspace = QSplitter(Qt.Horizontal)
         workspace.setChildrenCollapsible(False)
@@ -78,13 +114,15 @@ class PidPage(QWidget):
         self._update_detail()
 
     def _build_header(self) -> QFrame:
-        panel = QFrame()
+        panel = _GlobalControlsPanel()
         panel.setObjectName("pidGlobalControls")
-        layout = QVBoxLayout(panel)
+        layout = panel.row
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(7)
 
-        controls = QHBoxLayout()
+        controls_widget = QWidget()
+        controls = QHBoxLayout(controls_widget)
+        controls.setContentsMargins(0, 0, 0, 0)
         controls.setSpacing(8)
         controls.setAlignment(Qt.AlignVCenter)
         controls.addWidget(QLabel("Setpoint"))
@@ -111,16 +149,23 @@ class PidPage(QWidget):
         self.all_off_button.clicked.connect(self.all_off_requested.emit)
         controls.addWidget(self.all_off_button)
         controls.addStretch(1)
-        layout.addLayout(controls)
 
-        status_row = QHBoxLayout()
+        # Summary and command feedback stack at the right end of the control
+        # row, so the box stays one row tall even while feedback is shown.
+        status_widget = QWidget()
+        status = QVBoxLayout(status_widget)
+        status.setContentsMargins(0, 0, 0, 0)
+        status.setSpacing(0)
         self.summary_label = QLabel("No PID data")
         self.summary_label.setObjectName("pidSummary")
         self.global_status = QLabel("")
         self.global_status.setObjectName("smallNote")
-        status_row.addWidget(self.global_status, 1)
-        status_row.addWidget(self.summary_label)
-        layout.addLayout(status_row)
+        for label in (self.summary_label, self.global_status):
+            label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            status.addWidget(label)
+        layout.addWidget(controls_widget)
+        layout.addWidget(status_widget, 1)
+        panel.set_parts(controls_widget, (self.summary_label, self.global_status))
         return panel
 
     def _build_overview(self) -> QFrame:
@@ -391,6 +436,7 @@ class PidPage(QWidget):
     def set_command_status(self, text: str) -> None:
         self.command_status.setText(text)
         self.global_status.setText(text)
+        self.global_controls.fit()
 
     def set_global_operation_busy(self, busy: bool) -> None:
         self._global_operation_busy = busy
@@ -465,6 +511,7 @@ class PidPage(QWidget):
             self.global_status.setText("PID enabled on all mapped heaters")
         else:
             self.all_pid_button.setText("Enable PID")
+        self.global_controls.fit()
         self._update_detail()
 
     def _update_detail(self) -> None:
