@@ -39,6 +39,19 @@ class PlotWidgetTest(unittest.TestCase):
         self.assertFalse(wheel_accepted(plot, 150, 80), "plot area kept the wheel")
         plot.close()
 
+    def test_plots_share_a_y_extent_and_return_to_their_own(self) -> None:
+        low, high = PlotWidget("V", monitor_mode=True), PlotWidget("V", monitor_mode=True)
+        low.set_points([(t, t, 0.001 * t) for t in range(10)])
+        high.set_points([(t, t, 5.0 + 0.001 * t) for t in range(10)])
+        own_low = low.plotItem.vb.viewRange()[1]
+
+        for plot in (low, high):
+            plot.set_shared_y_extent((0.0, 5.009))
+        self.assertEqual(low.plotItem.vb.viewRange()[1], high.plotItem.vb.viewRange()[1])
+
+        low.set_shared_y_extent(None)
+        self.assertEqual(low.plotItem.vb.viewRange()[1], own_low)
+
     def test_invalid_samples_and_long_pauses_insert_line_breaks(self) -> None:
         points = PlotWidget._points_with_gaps(
             [

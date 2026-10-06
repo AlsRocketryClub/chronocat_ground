@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import math
 import time
 
 from PySide6.QtCore import QTimer
@@ -761,6 +762,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         # Samples page is shown; switch_view refreshes it on arrival.
         if self.pages.currentIndex() != self.samples_page_index:
             return
+        values: list[float] = []
         for reading in packet.ad7177_readings:
             channel = SAMPLE_CHANNELS.get(reading.slot)
             if channel is None:
@@ -771,9 +773,9 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             )
             card = self.sample_cards[reading.slot]
             card.set_value_axis(axis_label, axis_hover)
-            card.set_points(
-                [adc_point_for_mode(entry, mode) for entry in history.adc_points[reading.slot]]
-            )
+            points = [adc_point_for_mode(entry, mode) for entry in history.adc_points[reading.slot]]
+            values.extend(point[2] for point in points if math.isfinite(point[2]))
+            card.set_points(points)
             card.set_reading(
                 value_text,
                 f"0x{reading.status:02x} ({ad7177_status_names(reading.status)})",
@@ -785,6 +787,14 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                     for sensor_id in channel.temperature_sensor_ids
                 ]
             )
+        # "Same scale": every plot spans the lowest to highest value of all channels.
+        shared = (
+            (min(values), max(values))
+            if self.samples_same_scale_button.isChecked() and values
+            else None
+        )
+        for card in self.sample_cards:
+            card.plot.set_shared_y_extent(shared)
 
     def _mark_downlink_derived_status_unknown(self) -> None:
         """Data that only arrives over a stale downlink can't be trusted; say so."""

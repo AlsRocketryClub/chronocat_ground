@@ -430,6 +430,15 @@ class MainWindowPagesMixin:
             button.clicked.connect(lambda _checked=False, mode=mode: self.set_samples_display_mode(mode))
             row.addWidget(button)
             self.samples_unit_buttons[mode] = button
+        row.addSpacing(8)
+        self.samples_same_scale_button = QPushButton("Same scale")
+        self.samples_same_scale_button.setObjectName("segmentButton")
+        self.samples_same_scale_button.setCheckable(True)
+        self.samples_same_scale_button.setToolTip(
+            "Give all twelve plots one y-range, spanning every channel's data, so they compare directly"
+        )
+        self.samples_same_scale_button.toggled.connect(lambda _checked: self.refresh_sample_cards())
+        row.addWidget(self.samples_same_scale_button)
         return switch
 
     def show_adc_graph_dialog(self, slot: int) -> None:

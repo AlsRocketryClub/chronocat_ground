@@ -96,6 +96,9 @@ class PlotWidget(pg.PlotWidget):
         self._min_x_range = min_x_range
         self._monitor_mode = monitor_mode
         self._view_range: tuple[float, float, float, float] | None = None
+        # When set, embedded plots use this y extent instead of their own data's,
+        # so several plots can share one scale.
+        self._shared_y_extent: tuple[float, float] | None = None
         self._wall_clock_axis.setRelative(not absolute_time)
 
         if on_click is not None:
@@ -196,6 +199,13 @@ class PlotWidget(pg.PlotWidget):
 
     def set_points(self, points: Sequence[tuple]) -> None:
         self.set_series((('', points),))
+
+    def set_shared_y_extent(self, extent: tuple[float, float] | None) -> None:
+        """Use a y extent shared with other plots (None returns to this plot's own data)."""
+        if extent == self._shared_y_extent:
+            return
+        self._shared_y_extent = extent
+        self._redraw()
 
     def set_time_window(self, seconds: float | None) -> None:
         """Show only the newest `seconds` of history (None shows everything held)."""
@@ -409,6 +419,8 @@ class PlotWidget(pg.PlotWidget):
         band_y = band_y[np.isfinite(band_y)]
         y_min = float(min(y.min(), band_y.min())) if band_y.size else float(y.min())
         y_max = float(max(y.max(), band_y.max())) if band_y.size else float(y.max())
+        if self._shared_y_extent is not None:
+            y_min, y_max = self._shared_y_extent
         if self._min_y_range is not None and y_max - y_min < self._min_y_range:
             middle = (y_min + y_max) / 2
             y_min, y_max = middle - self._min_y_range / 2, middle + self._min_y_range / 2
