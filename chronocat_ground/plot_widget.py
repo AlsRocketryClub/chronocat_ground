@@ -90,6 +90,7 @@ class PlotWidget(pg.PlotWidget):
         self._min_y_range = min_y_range
         self._min_x_range = min_x_range
         self._monitor_mode = monitor_mode
+        self._monitor_y_range: tuple[float, float] | None = None
         self._wall_clock_axis.setRelative(not absolute_time)
 
         if on_click is not None:
@@ -179,9 +180,11 @@ class PlotWidget(pg.PlotWidget):
         self._on_double_click = callback
 
     def set_y_label(self, y_label: str, hover_label: str | None = None) -> None:
-        self.y_label = y_label
         self.hover_label = hover_label or y_label
-        self.setLabel("left", y_label)
+        # setLabel relayouts the plot, so only touch it when the label changes.
+        if y_label != self.y_label:
+            self.y_label = y_label
+            self.setLabel("left", y_label)
 
     def set_points(self, points: Sequence[tuple]) -> None:
         self.set_series((('', points),))
@@ -337,7 +340,9 @@ class PlotWidget(pg.PlotWidget):
             if self._y_range is not None:
                 y_min = max(y_min, self._y_range[0])
                 y_max = min(y_max, self._y_range[1])
-            self.setYRange(y_min, y_max, padding=0)
+            if (y_min, y_max) != self._monitor_y_range:
+                self._monitor_y_range = (y_min, y_max)
+                self.setYRange(y_min, y_max, padding=0)
 
         self._update_stats()
 
@@ -349,6 +354,15 @@ class PlotWidget(pg.PlotWidget):
         y = np.array(values)
         stats = f"min {y.min():.4g}  max {y.max():.4g}  mean {y.mean():.4g}"
         self._stats_label.setText(stats)
+        self._place_stats_label()
+
+    def _place_stats_label(self) -> None:
+        """Pin the stats overlay top-right, sized to its text so nothing is cut off."""
+        self._stats_label.adjustSize()
+        width = min(self._stats_label.width(), max(self.width() - 8, 0))
+        self._stats_label.setGeometry(
+            self.width() - width - 4, 4, width, self._stats_label.height()
+        )
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -356,8 +370,17 @@ class PlotWidget(pg.PlotWidget):
             return
         w, h = event.size().width(), event.size().height()
         self._empty_label.setGeometry(0, 0, w, h)
-        self._stats_label.setGeometry(w - 220, 4, 216, 30)
+        self._place_stats_label()
         self._tooltip_label.setGeometry(4, 4, 200, 40)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        # Embedded plots never zoom, so hand the wheel straight to the page.
+        # Going through pyqtgraph instead loses it over the axes: AxisItem
+        # accepts the event even when its ViewBox has mouse zoom disabled.
+        if not self._interactive:
+            event.ignore()
+            return
+        super().wheelEvent(event)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton:

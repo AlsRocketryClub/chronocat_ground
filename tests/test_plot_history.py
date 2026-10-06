@@ -27,7 +27,7 @@ class DialogHost(MainWindowPagesMixin, QWidget):
         self.samples_display_mode = "raw"
         self.sample_cards = [SimpleNamespace(
             toggle_button=QLabel("Sample"), reading_label=QLabel("123 Raw24"),
-            temperature_label=QLabel("20 C"),
+            status_label=QLabel("Status: 0x00 (ok)"),
         )]
         # Pop-out updates must not access the 300-point dashboard history.
         self.telemetry_history = None

@@ -30,6 +30,7 @@ from .protocol import (
     COMMAND_HEATER_ALL_OFF,
     DEFAULT_TELEMETRY_PORT,
     TEMP_SENSOR_DISPLAY_NAMES,
+    TEMP_SENSOR_LABELS,
     CommandResponse,
     CombinedTelemetryPacket,
     PidTelemetryPacket,
@@ -59,6 +60,7 @@ from .pid_page import PidPage
 from .pid_profiles import PidProfile, profile_by_name
 from .telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY, TelemetryCsvLogger
 from .telemetry_db import DEFAULT_DATABASE_PATH, TelemetryDb
+from .sample_layout import SAMPLE_CHANNELS
 from .telemetry_history import TelemetryHistory, adc_point_for_mode
 from .telemetry_receiver import TelemetryReceiver
 from .ui.widgets import SampleCard, StatCard, ValueTable
@@ -1109,29 +1111,38 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             return
         mode = self.samples_display_mode
         axis_label, axis_hover = ("Raw24", "Raw24") if mode == "raw" else ("Volts (V)", "Volts")
-        materials = ["TIPs-pentacene", "diF-TES-ADT", "Rubrene"]
-        device_types = ["Device 1a", "Device 2a", "Device 1b", "Device 2b"]
+        # Rebuilding twelve plots is the expensive part, so it waits until the
+        # Samples page is shown; switch_view refreshes it on arrival.
+        samples_visible = self.pages.currentIndex() == self.samples_page_index
         for reading in packet.ad7177_readings:
+            channel = SAMPLE_CHANNELS.get(reading.slot)
+            if channel is None:
+                continue
+            valid = packet.os_adc_valid(reading.slot)
             value_text = (
                 f"0x{reading.raw24:06x}" if mode == "raw" else f"{reading.voltage:.6f} V"
             )
-            if reading.slot < len(self.sample_cards):
-                points = [
-                    adc_point_for_mode(entry, mode)
-                    for entry in history.adc_points[reading.slot]
-                ]
-                self.sample_cards[reading.slot].set_value_axis(axis_label, axis_hover)
-                self.sample_cards[reading.slot].set_points(points)
-                self.sample_cards[reading.slot].set_reading(
-                    value_text,
-                    f"0x{reading.status:02x} ({ad7177_status_names(reading.status)})",
-                    packet.os_adc_valid(reading.slot),
-                )
-            ch = reading.slot % 3
-            dev_off = reading.slot // 3
             self.samples_summary_table.set_value(
-                f"{materials[ch]} {device_types[dev_off]}",
-                value_text if packet.os_adc_valid(reading.slot) else f"INVALID/STALE (last {value_text})",
+                channel.name,
+                value_text if valid else f"INVALID/STALE (last {value_text})",
+            )
+            if not samples_visible:
+                continue
+            card = self.sample_cards[reading.slot]
+            card.set_value_axis(axis_label, axis_hover)
+            card.set_points(
+                [adc_point_for_mode(entry, mode) for entry in history.adc_points[reading.slot]]
+            )
+            card.set_reading(
+                value_text,
+                f"0x{reading.status:02x} ({ad7177_status_names(reading.status)})",
+                valid,
+            )
+            card.set_temperatures(
+                [
+                    (TEMP_SENSOR_LABELS[sensor_id], packet.temperature_c(sensor_id))
+                    for sensor_id in channel.temperature_sensor_ids
+                ]
             )
 
     def _mark_downlink_derived_status_unknown(self) -> None:

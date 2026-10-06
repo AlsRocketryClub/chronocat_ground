@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..plot_widget import PlotWidget
-from ..protocol import AD7177_CHANNEL_COUNT
+from ..sample_layout import SampleChannel
 
 
 class Panel(QFrame):
@@ -221,27 +221,27 @@ class HealthSummaryCard(QFrame):
 
 
 class SampleCard(QFrame):
-    """One ADC sample card and its rolling plot."""
+    """One ADC sample channel, the temperatures of its two samples, and a rolling plot."""
 
     graph_requested = Signal(int)
 
-    def __init__(self, device_name: str, slot: int) -> None:
+    def __init__(self, channel: SampleChannel) -> None:
         super().__init__()
         self.setObjectName("sampleCard")
-        self.slot = slot
-        adc_index = slot // AD7177_CHANNEL_COUNT
-        channel_index = slot % AD7177_CHANNEL_COUNT
+        self.slot = channel.slot
 
-        self.toggle_button = QPushButton(device_name)
+        self.toggle_button = QPushButton(channel.name)
         self.toggle_button.setObjectName("sampleToggle")
         self.toggle_button.clicked.connect(lambda: self.graph_requested.emit(self.slot))
         self.toggle_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         self.reading_label = QLabel("Reading: —")
         self.reading_label.setObjectName("sampleMetric")
-        self.temperature_label = QLabel("Status: —")
-        self.temperature_label.setObjectName("sampleMetric")
-        self.meta_label = QLabel(f"ADC{adc_index} CH{channel_index}")
+        self.status_label = QLabel("Status: —")
+        self.status_label.setObjectName("sampleMetric")
+        self.temperatures_label = QLabel("Temperatures: —")
+        self.temperatures_label.setObjectName("sampleMetric")
+        self.meta_label = QLabel(channel.location)
         self.meta_label.setObjectName("smallNote")
 
         self.plot = PlotWidget(
@@ -259,17 +259,26 @@ class SampleCard(QFrame):
         layout.setSpacing(6)
         layout.addWidget(self.toggle_button)
         layout.addWidget(self.reading_label)
-        layout.addWidget(self.temperature_label)
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.temperatures_label)
         layout.addWidget(self.meta_label)
         layout.addWidget(self.plot)
 
     def set_reading(self, reading: str, status: str, valid: bool = True) -> None:
         if valid:
             self.reading_label.setText(f"Reading: {reading}")
-            self.temperature_label.setText(f"Status: {status}")
+            self.status_label.setText(f"Status: {status}")
         else:
             self.reading_label.setText(f"Reading: INVALID ({reading})")
-            self.temperature_label.setText(f"Status: INVALID/STALE; {status}")
+            self.status_label.setText(f"Status: INVALID/STALE; {status}")
+
+    def set_temperatures(self, temperatures: Sequence[tuple[str, float | None]]) -> None:
+        """Show each sample's sensor as `label value`, or `label —` when invalid."""
+        parts = [
+            f"{label} {value:.2f} °C" if value is not None else f"{label} —"
+            for label, value in temperatures
+        ]
+        self.temperatures_label.setText("Temperatures: " + "  ·  ".join(parts))
 
     def set_points(self, points: Sequence[tuple[float, float]]) -> None:
         self.plot.set_points(points)

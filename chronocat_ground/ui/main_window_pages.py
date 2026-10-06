@@ -26,9 +26,9 @@ from PySide6.QtWidgets import (
 from ..pid_page import PidPage
 from ..plot_widget import HistoryPlotWidget, PlotWidget
 from ..plot_history import PlotHistoryLoader
+from ..sample_layout import SAMPLE_CHANNELS, SAMPLE_COLUMNS
 from ..protocol import (
     AD7177_BIPOLAR_MIDSCALE,
-    AD7177_CHANNEL_COUNT,
     AD7177_VREF_VOLTS,
     COMMAND_GEIGER_CLEAR_HISTORY,
     COMMAND_GEIGER_RESET_ACCUMULATED_DOSE,
@@ -84,7 +84,7 @@ class MainWindowPagesMixin:
         self.pages.setObjectName("pages")
         self.pages.addWidget(self.scroll_page(self.build_dashboard_page()))
         self.pages.addWidget(self.scroll_page(self.build_radiation_page()))
-        self.pages.addWidget(self.scroll_page(self.build_samples_page()))
+        self.samples_page_index = self.pages.addWidget(self.scroll_page(self.build_samples_page()))
         self.pages.addWidget(self.scroll_page(self.build_temperature_page()))
         self.pages.addWidget(self.scroll_page(self.build_health_page()))
         self.pages.addWidget(self.scroll_page(self.build_diagnostics_page()))
@@ -411,15 +411,11 @@ class MainWindowPagesMixin:
         header.addStretch(1)
         samples_panel.layout.addLayout(header)
 
-        materials = ["TIPs-pentacene", "diF-TES-ADT", "Rubrene"]
-        device_types = ["Device 1a", "Device 2a", "Device 1b", "Device 2b"]
-        rows = []
-        for slot in range(12):
-            ch = slot % 3
-            dev_off = slot // 3
-            mat_name = materials[ch]
-            dev_name = device_types[dev_off]
-            rows.append((f"{mat_name} {dev_name}", "—"))
+        rows = [
+            (channel.name, "—")
+            for _material, channels in SAMPLE_COLUMNS
+            for channel in channels
+        ]
 
         self.samples_summary_table = ValueTable(rows, ("Sample", "Raw Value"))
         self.samples_summary_table.expand_to_contents()
@@ -549,38 +545,19 @@ class MainWindowPagesMixin:
         toggle_row.addWidget(self.samples_display_toggle)
         layout.addLayout(toggle_row)
 
-        materials = [
-            ("TIPs-pentacene", 0),
-            ("diF-TES-ADT", 1),
-            ("Rubrene", 2),
-        ]
-        device_types = ["Device 1a", "Device 2a", "Device 1b", "Device 2b"]
-
-        for slot in range(12):
-            ch = slot % 3
-            dev_off = slot // 3
-            mat_name = materials[ch][0]
-            name = f"{mat_name} {device_types[dev_off]}"
-            card = SampleCard(name, slot)
+        self.sample_cards = [SampleCard(SAMPLE_CHANNELS[slot]) for slot in sorted(SAMPLE_CHANNELS)]
+        for card in self.sample_cards:
             card.graph_requested.connect(self.show_adc_graph_dialog)
-            self.sample_cards.append(card)
 
-        for mat_name, ch in materials:
-            mat_panel = Panel(mat_name.upper())
-            grid = QGridLayout()
-            grid.setSpacing(8)
-
-            for slot, row, col in [
-                (ch, 0, 0),
-                (3 + ch, 0, 1),
-                (6 + ch, 1, 0),
-                (9 + ch, 1, 1),
-            ]:
-                card = self.sample_cards[slot]
-                grid.addWidget(card, row, col)
-
-            mat_panel.layout.addLayout(grid)
-            layout.addWidget(mat_panel)
+        # One column per material, channels top to bottom in ADC order.
+        columns = QHBoxLayout()
+        columns.setSpacing(12)
+        for material, channels in SAMPLE_COLUMNS:
+            material_panel = Panel(material.upper())
+            for channel in channels:
+                material_panel.layout.addWidget(self.sample_cards[channel.slot])
+            columns.addWidget(material_panel, 1)
+        layout.addLayout(columns)
 
         layout.addStretch(1)
         return page
@@ -589,10 +566,8 @@ class MainWindowPagesMixin:
         try:
             if not 0 <= slot < len(self.sample_cards):
                 return
-            card = self.sample_cards[slot]
-            adc_index = slot // AD7177_CHANNEL_COUNT
-            channel_index = slot % AD7177_CHANNEL_COUNT
-            title = f"{card.toggle_button.text()} / ADC{adc_index} CH{channel_index}"
+            channel = SAMPLE_CHANNELS[slot]
+            title = f"{channel.name} / {channel.location}"
             raw_mode = self.samples_display_mode == "raw"
 
             self.show_plot_dialog(
@@ -601,7 +576,7 @@ class MainWindowPagesMixin:
                 y_label="Raw24" if raw_mode else "Volts (V)",
                 hover_label="Raw24" if raw_mode else "Volts",
                 history_sources=(("adc", slot, raw_mode),),
-                latest_fn=lambda s=slot: f"{self.sample_cards[s].reading_label.text()} / {self.sample_cards[s].temperature_label.text()}",
+                latest_fn=lambda s=slot: f"{self.sample_cards[s].reading_label.text()} / {self.sample_cards[s].status_label.text()}",
             )
         except Exception as exc:
             self.log(f"Failed to open ADC graph: {exc}")
@@ -970,6 +945,9 @@ class MainWindowPagesMixin:
             VIEW_SETTINGS,
         ]
         self.pages.setCurrentIndex(order.index(view))
+        if view == VIEW_SAMPLES:
+            # Sample plots are only refreshed while visible; catch up now.
+            self.refresh_sample_cards()
         for name, button in self.view_buttons.items():
             button.setObjectName("navButtonActive" if name == view else "navButton")
             button.style().unpolish(button)
