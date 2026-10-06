@@ -7,7 +7,6 @@ from functools import partial
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -40,11 +39,11 @@ from ..protocol import (
     COMMAND_TELEMETRY_STATUS,
     DEFAULT_COMMAND_PORT,
     DEFAULT_DEVICE_HOST,
+    DEFAULT_TELEMETRY_PORT,
     VALUE_OFF,
     VALUE_ON,
 )
 from ..telemetry_db import TelemetryDb, archive_database
-from ..telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY
 from .board_map import BoardMapWidget
 from .health_page import HealthPage
 from .widgets import Panel, SampleCard, StatCard, ValueTable
@@ -125,6 +124,36 @@ class MainWindowPagesMixin:
         title_box.addWidget(header)
         title_row.addLayout(title_box, 1)
 
+        # Host and port live in Settings; the top bar keeps only the actions.
+        self.host_input = QLineEdit(DEFAULT_DEVICE_HOST)
+        self.port_input = QLineEdit(str(DEFAULT_COMMAND_PORT))
+
+        actions = QVBoxLayout()
+        actions.setSpacing(4)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        self.connect_button = QPushButton("Connect")
+        self.connect_button.clicked.connect(self.toggle_connection)
+        buttons.addWidget(self.connect_button)
+        self.csv_log_button = QPushButton("Start CSV logging")
+        self.csv_log_button.clicked.connect(self.toggle_csv_logging)
+        buttons.addWidget(self.csv_log_button)
+        actions.addLayout(buttons)
+        notes = QHBoxLayout()
+        notes.setSpacing(8)
+        self.connection_target_label = QLabel()
+        self.connection_target_label.setObjectName("smallNote")
+        notes.addWidget(self.connection_target_label)
+        notes.addStretch(1)
+        self.csv_log_status = QLabel("CSV off")
+        self.csv_log_status.setObjectName("smallNote")
+        notes.addWidget(self.csv_log_status)
+        actions.addLayout(notes)
+        title_row.addLayout(actions)
+        self.host_input.textChanged.connect(self._update_connection_target)
+        self.port_input.textChanged.connect(self._update_connection_target)
+        self._update_connection_target()
+
         self.connection_indicator = StatusIndicator("UPLINK", "DISCONNECTED")
         self.connection_indicator.set_status("DISCONNECTED", "disconnected")
         title_row.addWidget(self.connection_indicator)
@@ -137,43 +166,23 @@ class MainWindowPagesMixin:
 
         topbar_layout.addLayout(title_row)
 
-        control_row = QHBoxLayout()
-        control_row.setSpacing(8)
-
-        control_row.addWidget(QLabel("Host"))
-
-        self.host_input = QLineEdit(DEFAULT_DEVICE_HOST)
-        self.host_input.setMinimumWidth(120)
-        control_row.addWidget(self.host_input)
-
-        control_row.addWidget(QLabel("Port"))
-
-        self.port_input = QLineEdit(str(DEFAULT_COMMAND_PORT))
-        self.port_input.setMaximumWidth(80)
-        control_row.addWidget(self.port_input)
-
-        self.connect_button = QPushButton("Connect")
-        self.connect_button.clicked.connect(self.toggle_connection)
-        control_row.addWidget(self.connect_button)
-
-        self.csv_mode_combo = QComboBox()
-        self.csv_mode_combo.addItem("Full telemetry", CSV_MODE_FULL)
-        self.csv_mode_combo.addItem("Geiger only", CSV_MODE_GEIGER_ONLY)
-        control_row.addWidget(self.csv_mode_combo)
-
-        self.csv_log_button = QPushButton("Start CSV logging")
-        self.csv_log_button.clicked.connect(self.toggle_csv_logging)
-        control_row.addWidget(self.csv_log_button)
-
-        self.csv_log_status = QLabel("Off")
-        self.csv_log_status.setObjectName("smallNote")
-        control_row.addWidget(self.csv_log_status)
-
-        control_row.addStretch(1)
-
-        topbar_layout.addLayout(control_row)
-
         return topbar
+
+    def fit_action_buttons(self) -> None:
+        """Size each top-bar button for the longer label it toggles to.
+
+        Called once the window is built, so the stylesheet's font and padding apply.
+        """
+        for button, longest in ((self.connect_button, "Disconnect"), (self.csv_log_button, "Stop CSV logging")):
+            label = button.text()
+            button.ensurePolished()
+            button.setText(longest)
+            button.setMinimumWidth(button.sizeHint().width())
+            button.setText(label)
+
+    def _update_connection_target(self) -> None:
+        target = f"{self.host_input.text().strip()}:{self.port_input.text().strip()}"
+        self.connection_target_label.setText(f"Board {target}")
 
     def build_sidebar(self) -> Panel:
         sidebar = Panel()
@@ -732,6 +741,27 @@ class MainWindowPagesMixin:
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
+
+        connection_panel = Panel("CONNECTION")
+        connection_grid = QGridLayout()
+        connection_grid.setHorizontalSpacing(8)
+        connection_grid.addWidget(QLabel("Board IP"), 0, 0)
+        self.host_input.setMaximumWidth(200)
+        connection_grid.addWidget(self.host_input, 0, 1)
+        connection_grid.addWidget(QLabel("Command port"), 1, 0)
+        self.port_input.setMaximumWidth(200)
+        connection_grid.addWidget(self.port_input, 1, 1)
+        connection_grid.setColumnStretch(2, 1)
+        connection_panel.layout.addLayout(connection_grid)
+        connection_note = QLabel(
+            f"Commands go to the board over TCP. Telemetry arrives on UDP port "
+            f"{DEFAULT_TELEMETRY_PORT}; the firmware sends it to 172.16.18.100, so this "
+            "computer must use that address. Changes apply on the next Connect."
+        )
+        connection_note.setObjectName("smallNote")
+        connection_note.setWordWrap(True)
+        connection_panel.layout.addWidget(connection_note)
+        layout.addWidget(connection_panel)
 
         db_panel = Panel("ADC DATABASE")
         db_size = self.database_path.stat().st_size if self.database_path.exists() else 0

@@ -56,7 +56,7 @@ from .protocol import (
 )
 from .pid_page import PidPage
 from .pid_profiles import PidProfile, profile_by_name
-from .telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY, TelemetryCsvLogger
+from .telemetry_csv import CSV_MODE_FULL, TelemetryCsvLogger
 from .telemetry_db import DEFAULT_DATABASE_PATH, TelemetryDb
 from .health_model import HealthEventLog, active_issues, evaluate_health, link_status
 from .sample_layout import SAMPLE_CHANNELS
@@ -143,6 +143,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
         self.apply_style()
         self.setCentralWidget(self.build_ui())
+        self.fit_action_buttons()
 
         self.switch_view(VIEW_DASHBOARD)
         self.update_connection_state()
@@ -192,8 +193,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self.stop_csv_logging()
             return
 
-        csv_mode = self.csv_mode_combo.currentData()
-        self.csv_logger = TelemetryCsvLogger(mode=csv_mode, background_sync=True)
+        self.csv_logger = TelemetryCsvLogger(mode=CSV_MODE_FULL, background_sync=True)
         try:
             self.csv_logger.start()
         except OSError as exc:
@@ -203,14 +203,9 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             return
 
         self.csv_log_button.setText("Stop CSV logging")
-        self.csv_mode_combo.setEnabled(False)
-        self.csv_log_status.setText(
-            f"CSV ({self.csv_mode_combo.currentText()}): {self.csv_logger.path.name} (0)"
-        )
-        self.log(
-            f"CSV logging started ({self.csv_mode_combo.currentText()}): "
-            f"{self.csv_logger.path}"
-        )
+        self.csv_log_status.setText("CSV on (0)")
+        self.csv_log_status.setToolTip(str(self.csv_logger.path))
+        self.log(f"CSV logging started: {self.csv_logger.path}")
 
     def stop_csv_logging(self) -> None:
         if self.csv_logger is None:
@@ -219,9 +214,8 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         packet_count = self.csv_logger.packet_count
         self.csv_logger.stop()
         self.csv_logger = None
-        self.csv_mode_combo.setEnabled(True)
         self.csv_log_button.setText("Start CSV logging")
-        self.csv_log_status.setText(f"CSV logging stopped ({packet_count})")
+        self.csv_log_status.setText(f"CSV off ({packet_count} saved)")
         self.log(f"CSV logging stopped: {path} ({packet_count} packet(s))")
 
     def update_connection_state(self) -> None:
@@ -742,10 +736,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                     self.log(f"PID CSV logging failed: {exc}")
                     self.stop_csv_logging()
                 else:
-                    self.csv_log_status.setText(
-                        f"CSV ({self.csv_mode_combo.currentText()}): "
-                        f"{self.csv_logger.path.name} ({self.csv_logger.packet_count})"
-                    )
+                    self.csv_log_status.setText(f"CSV on ({self.csv_logger.packet_count})")
             return
 
         self.last_telemetry_time = received_monotonic
@@ -896,10 +887,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                 self.log(f"CSV logging failed: {exc}")
                 self.stop_csv_logging()
             else:
-                self.csv_log_status.setText(
-                    f"CSV ({self.csv_mode_combo.currentText()}): "
-                    f"{self.csv_logger.path.name} ({self.csv_logger.packet_count})"
-                )
+                self.csv_log_status.setText(f"CSV on ({self.csv_logger.packet_count})")
 
     def update_sd_log_status(self, flags: int) -> None:
         if (flags & TELEMETRY_FLAG_SD_LOG_ERROR) != 0:

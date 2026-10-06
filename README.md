@@ -47,9 +47,10 @@ python -m chronocat_ground.install_desktop
 This installs a launcher under `~/.local/share/applications` (or `XDG_DATA_HOME`).
 You can still launch the GUI with `chronocat_ground` from the terminal.
 
-The GUI has a `Start CSV Log` / `Stop CSV Log` toggle in the top bar. When enabled, it
-creates a timestamped CSV file in the current directory and writes each received telemetry
-packet to it. The file is flushed after every packet.
+The top bar has `Connect` and `Start CSV logging` buttons. CSV logging creates a
+timestamped CSV file in the current directory and writes every received telemetry packet
+to it in full; the file is flushed after every packet. The board IP and command port are
+set under Settings → Connection. For a Geiger-only CSV, use the CLI's `--geiger-only`.
 
 ## Raspberry Pi CLI Logging
 
