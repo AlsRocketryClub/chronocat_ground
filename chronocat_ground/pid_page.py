@@ -398,6 +398,23 @@ class PidPage(QWidget):
     def mapped_heater_ids(self) -> list[int]:
         return [heater_id for heater_id in range(HEATER_COUNT) if self._mapped_mask & (1 << heater_id)]
 
+    def clear_history(self) -> None:
+        """Empty the rolling heater plots; the latest readings stay until the next packet."""
+        for points in (
+            *self.temperature_history,
+            *self.output_history,
+            self.average_temperature_history,
+            self.average_duty_history,
+        ):
+            points.clear()
+        for plot in (
+            self.temperature_plot,
+            self.output_plot,
+            self.average_temperature_plot,
+            self.average_duty_plot,
+        ):
+            plot.set_points([])
+
     def update_packet(self, packet: PidTelemetryPacket, received_monotonic: float) -> None:
         valid_count = 0
         enabled_count = 0

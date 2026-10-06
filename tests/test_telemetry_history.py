@@ -76,6 +76,21 @@ class TelemetryHistoryTests(unittest.TestCase):
         self.assertEqual(database.query_adc(0), [])
         database.close()
 
+    def test_clear_drops_rolling_history_for_a_clean_slate(self) -> None:
+        database = TelemetryDb()
+        history = TelemetryHistory(database)
+        history.record(sample_packet(), 10.0, 20.0)
+        history.record(sample_packet(), 11.0, 21.0)
+
+        history.clear()
+        snapshot = history.record(sample_packet(), 12.0, 22.0)
+
+        self.assertEqual(snapshot.packet_count, 1)
+        self.assertEqual([point[0] for point in snapshot.adc_points[0]], [12.0])
+        self.assertEqual([point[0] for point in snapshot.geiger_points[0]], [12.0])
+        self.assertEqual([point[0] for point in snapshot.adc_average_points], [12.0])
+        database.close()
+
     def test_global_heater_interlock_requires_all_twelve_safe_sensors(self) -> None:
         self.assertFalse(all_heaters_safe(sample_packet()))
 

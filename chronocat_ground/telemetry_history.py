@@ -119,6 +119,12 @@ class TelemetryHistory:
             self._adc_average_points,
         )
 
+    def clear(self) -> None:
+        """Drop the in-memory history so a new database starts from a clean slate."""
+        self.packet_count = 0
+        for points in (*self._geiger_points, *self._adc_points, self._adc_average_points):
+            points.clear()
+
     def set_database(self, database: TelemetryDb) -> None:
         """Switch persistence after the active database has been archived."""
         self._database = database

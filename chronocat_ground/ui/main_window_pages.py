@@ -899,7 +899,8 @@ class MainWindowPagesMixin:
     def _on_clear_db(self) -> None:
         ret = QMessageBox.question(
             self, "Archive Database",
-            "Archive the current database and start a new one? Existing data is preserved.",
+            "Archive the current database and start a new one? Existing data is "
+            "preserved in the archive, and all plots are cleared.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if ret == QMessageBox.Yes:
@@ -919,8 +920,27 @@ class MainWindowPagesMixin:
                 return
             self.adc_db = TelemetryDb(self.database_path, async_writes=True)
             self.telemetry_history.set_database(self.adc_db)
+            self.clear_session_history()
             self._refresh_db_info()
             self.log(f"Database archived to {archive}, new database created")
+
+    def clear_session_history(self) -> None:
+        """Empty every rolling plot so the new database starts from a clean slate."""
+        self.telemetry_history.clear()
+        self._last_adc_packet = None
+        self._last_adc_history = None
+        for plot in (
+            self.monitoring_geiger_plot,
+            self.monitoring_adc_average_plot,
+            self.radiation_geiger_plot,
+            self.radiation_geiger_2_plot,
+            *(card.plot for card in self.sample_cards),
+        ):
+            plot.set_points([])
+        self.radiation_plot_status.setText("0/300 points")
+        self.radiation_2_plot_status.setText("0/300 points")
+        self.session_frame_count_card.set_value("0")
+        self.pid_page.clear_history()
 
     def _on_reset_board(self) -> None:
         ret = QMessageBox.question(
