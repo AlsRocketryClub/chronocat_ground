@@ -78,6 +78,13 @@ TEMP_SENSOR_LABELS = (
     "U7", "U6", "F2_U7", "F2_U6",
 )
 AMBIENT_SENSOR_IDS = (12, 13, 14, 15)
+# I2C address and mux side (B0/B1) per sensor, mirroring the firmware table.
+TEMP_SENSOR_I2C_ADDRESSES = (
+    0x48, 0x49, 0x4A, 0x48, 0x49, 0x4A,
+    0x48, 0x49, 0x4A, 0x48, 0x49, 0x4A,
+    0x4B, 0x4B, 0x4B, 0x4B,
+)
+TEMP_SENSOR_MUX_SIDES = (0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1)
 TEMP_SENSOR_DISPLAY_NAMES = tuple(
     f"Ambient {TEMP_SENSOR_LABELS[index]}"
     if index in AMBIENT_SENSOR_IDS

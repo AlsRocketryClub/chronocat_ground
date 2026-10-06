@@ -822,6 +822,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.radiation_2_plot_status.setText(f"{len(history.geiger_points[1])}/300 points")
 
         self._last_adc_packet = packet
+        self.board_map.set_temperatures(packet)
         self._last_adc_history = history
         self.refresh_sample_cards()
         if history.adc_average_points:

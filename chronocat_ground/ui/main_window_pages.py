@@ -46,6 +46,7 @@ from ..protocol import (
 )
 from ..telemetry_db import TelemetryDb, archive_database
 from ..telemetry_csv import CSV_MODE_FULL, CSV_MODE_GEIGER_ONLY
+from .board_map import BoardMapWidget
 from .widgets import HealthSummaryCard, Panel, SampleCard, StatCard, ValueTable
 from .status_widgets import StatusIndicator
 from .pid_widgets import SENSOR_NAMES
@@ -60,6 +61,7 @@ VIEW_RADIATION = "RADIATION"
 VIEW_SAMPLES = "SAMPLES"
 VIEW_TEMPERATURE = "HEATING"
 VIEW_HEALTH = "HEALTH"
+VIEW_BOARDS = "BOARDS"
 VIEW_DIAGNOSTICS = "DIAGNOSTICS"
 VIEW_SETTINGS = "SETTINGS"
 
@@ -87,6 +89,7 @@ class MainWindowPagesMixin:
         self.samples_page_index = self.pages.addWidget(self.scroll_page(self.build_samples_page()))
         self.pages.addWidget(self.scroll_page(self.build_temperature_page()))
         self.pages.addWidget(self.scroll_page(self.build_health_page()))
+        self.pages.addWidget(self.scroll_page(self.build_boards_page()))
         self.pages.addWidget(self.scroll_page(self.build_diagnostics_page()))
         self.pages.addWidget(self.scroll_page(self.build_settings_page()))
         body.addWidget(self.pages, 1)
@@ -185,6 +188,7 @@ class MainWindowPagesMixin:
             VIEW_SAMPLES,
             VIEW_TEMPERATURE,
             VIEW_HEALTH,
+            VIEW_BOARDS,
             VIEW_DIAGNOSTICS,
             VIEW_SETTINGS,
         ):
@@ -816,6 +820,17 @@ class MainWindowPagesMixin:
         for card, _table in self.health_details.values():
             card.set_selected(card is selected_card)
 
+    def build_boards_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        panel = Panel("BOARD MAP")
+        self.board_map = BoardMapWidget()
+        panel.layout.addWidget(self.board_map)
+        layout.addWidget(panel)
+        layout.addStretch(1)
+        return page
+
     def build_settings_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -961,6 +976,7 @@ class MainWindowPagesMixin:
             VIEW_SAMPLES,
             VIEW_TEMPERATURE,
             VIEW_HEALTH,
+            VIEW_BOARDS,
             VIEW_DIAGNOSTICS,
             VIEW_SETTINGS,
         ]
