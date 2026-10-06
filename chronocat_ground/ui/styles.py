@@ -27,7 +27,7 @@ QMessageBox QPushButton {
     background: #f4f4f4;
     border: 1px solid #8f8f8f;
 }
-#sidebar, #panel, #telemetryState, #sampleCard {
+#panel, #telemetryState, #sampleCard {
     background: #f8f8f8;
     border: 1px solid #7a7a7a;
     border-radius: 0px;
@@ -103,16 +103,24 @@ QPushButton:disabled {
     background: #eeeeee;
     border-color: #aaaaaa;
 }
-#navButton, #navButtonActive {
-    text-align: left;
-    background: #ffffff;
-    border: 1px solid #7f7f7f;
-    font-weight: 400;
-    min-width: 90px;
+#navTab, #navTabActive {
+    background: transparent;
+    border: none;
+    border-bottom: 3px solid transparent;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #444444;
+    letter-spacing: 1px;
 }
-#navButtonActive {
-    background: #d9d9d9;
+#navTab:hover {
+    color: #111111;
+    border-bottom-color: #b5b5b5;
+}
+#navTabActive {
+    color: #111111;
     font-weight: 700;
+    border-bottom-color: #3f6f9f;
 }
 #sampleToggle {
     text-align: left;

@@ -799,6 +799,12 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         issues = active_issues(items)
         self._health_items = items
         self.health_page.show_health(items, issues, events)
+        if any(issue.state == "error" for issue in issues):
+            self.set_health_dot("error")
+        elif issues:
+            self.set_health_dot("warning")
+        else:
+            self.set_health_dot("ok" if link.downlink == "receiving" else "unknown")
         self.dashboard.show_status(issues, items, self._link_summary(age))
 
     def _link_summary(self, packet_age_s: float | None) -> str:

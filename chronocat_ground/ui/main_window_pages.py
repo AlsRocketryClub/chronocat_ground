@@ -5,7 +5,7 @@ import sqlite3
 from functools import partial
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -65,6 +65,23 @@ VIEW_HEALTH = "HEALTH"
 VIEW_BOARDS = "BOARDS"
 VIEW_DIAGNOSTICS = "DIAGNOSTICS"
 VIEW_SETTINGS = "SETTINGS"
+# Tab order; also the order pages are added to the stack.
+VIEWS = (
+    VIEW_DASHBOARD,
+    VIEW_RADIATION,
+    VIEW_SAMPLES,
+    VIEW_TEMPERATURE,
+    VIEW_HEALTH,
+    VIEW_BOARDS,
+    VIEW_DIAGNOSTICS,
+    VIEW_SETTINGS,
+)
+_HEALTH_DOT_COLORS = {
+    "ok": "#4f9a4f",
+    "warning": "#d4a017",
+    "error": "#c0392b",
+    "unknown": "#b5b5b5",
+}
 
 
 class MainWindowPagesMixin:
@@ -80,8 +97,6 @@ class MainWindowPagesMixin:
         body = QHBoxLayout()
         body.setSpacing(12)
         layout.addLayout(body, 1)
-
-        body.addWidget(self.build_sidebar())
 
         self.pages = QStackedWidget()
         self.pages.setObjectName("pages")
@@ -168,6 +183,7 @@ class MainWindowPagesMixin:
         title_row.addWidget(self.sd_log_indicator)
 
         topbar_layout.addLayout(title_row)
+        topbar_layout.addLayout(self.build_tabs())
 
         return topbar
 
@@ -187,30 +203,33 @@ class MainWindowPagesMixin:
         target = f"{self.host_input.text().strip()}:{self.port_input.text().strip()}"
         self.connection_target_label.setText(f"Board {target}")
 
-    def build_sidebar(self) -> Panel:
-        sidebar = Panel()
-        sidebar.setObjectName("sidebar")
-        sidebar.setMinimumWidth(150)
-        sidebar.setMaximumWidth(210)
-
-        for view in (
-            VIEW_DASHBOARD,
-            VIEW_RADIATION,
-            VIEW_SAMPLES,
-            VIEW_TEMPERATURE,
-            VIEW_HEALTH,
-            VIEW_BOARDS,
-            VIEW_DIAGNOSTICS,
-            VIEW_SETTINGS,
-        ):
+    def build_tabs(self) -> QHBoxLayout:
+        tabs = QHBoxLayout()
+        tabs.setSpacing(4)
+        for view in VIEWS:
             button = QPushButton(view)
-            button.setObjectName("navButton")
+            button.setObjectName("navTab")
             button.clicked.connect(lambda _checked=False, selected=view: self.switch_view(selected))
             self.view_buttons[view] = button
-            sidebar.layout.addWidget(button)
+            tabs.addWidget(button)
+        tabs.addStretch(1)
+        self.set_health_dot("unknown")
+        return tabs
 
-        sidebar.layout.addStretch(1)
-        return sidebar
+    def set_health_dot(self, state: str) -> None:
+        """Colour the dot on the HEALTH tab so problems show from any page."""
+        if getattr(self, "_health_dot_state", None) == state:
+            return
+        self._health_dot_state = state
+        pixmap = QPixmap(10, 10)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(_HEALTH_DOT_COLORS.get(state, _HEALTH_DOT_COLORS["unknown"])))
+        painter.drawEllipse(0, 0, 10, 10)
+        painter.end()
+        self.view_buttons[VIEW_HEALTH].setIcon(QIcon(pixmap))
 
     def scroll_page(self, page: QWidget) -> QScrollArea:
         scroll = QScrollArea()
@@ -672,21 +691,11 @@ class MainWindowPagesMixin:
             self.send_command(COMMAND_SYSTEM_RESET, 0)
 
     def switch_view(self, view: str) -> None:
-        order = [
-            VIEW_DASHBOARD,
-            VIEW_RADIATION,
-            VIEW_SAMPLES,
-            VIEW_TEMPERATURE,
-            VIEW_HEALTH,
-            VIEW_BOARDS,
-            VIEW_DIAGNOSTICS,
-            VIEW_SETTINGS,
-        ]
-        self.pages.setCurrentIndex(order.index(view))
+        self.pages.setCurrentIndex(VIEWS.index(view))
         if view == VIEW_SAMPLES:
             # Sample plots are only refreshed while visible; catch up now.
             self.refresh_sample_cards()
         for name, button in self.view_buttons.items():
-            button.setObjectName("navButtonActive" if name == view else "navButton")
+            button.setObjectName("navTabActive" if name == view else "navTab")
             button.style().unpolish(button)
             button.style().polish(button)
