@@ -12,7 +12,7 @@ from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from chronocat_ground.plot_history import HISTORY_BATCH_SIZE, PlotHistoryLoader, read_history_batch
-from chronocat_ground.plot_widget import HistoryPlotWidget
+from chronocat_ground.plot_widget import SERIES_COLORS, HistoryPlotWidget
 from chronocat_ground.protocol import AD7177_BIPOLAR_MIDSCALE
 from chronocat_ground.telemetry_db import TelemetryDb
 from chronocat_ground.ui.main_window_pages import MainWindowPagesMixin
@@ -153,6 +153,41 @@ class PlotHistoryTest(unittest.TestCase):
             self.assertEqual(plot._curve.xData[-1], 36_011.0)
         finally:
             plot.close()
+
+    def test_dashboard_material_plot_pops_out_all_six_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "history.db"
+            db = TelemetryDb(path)
+            host = DialogHost(path)
+            wall = 1_700_000_000.0
+            count = 500
+            # TIPs-pentacene is ADC2/ADC3, slots 6-11.
+            db.conn.executemany(
+                "INSERT INTO adc VALUES (?, ?, ?, ?)",
+                [(i * 1000, slot, AD7177_BIPOLAR_MIDSCALE + slot * 1000, wall + i)
+                 for i in range(count) for slot in range(6, 12)],
+            )
+            db.conn.commit()
+            panel = host.build_dashboard_page()
+            try:
+                host.dashboard.sample_plots[1][0].on_double_click()
+                plot = host.plot_dialog_refs["samples_1"]["plot"]
+                self.wait_until(lambda: plot.sample_count == count * 6)
+                self.assertEqual(len(plot._curves), 6)
+                self.assertEqual(plot._history_names[0], "1a (ADC2 CH0)")
+                self.assertEqual(plot._history_names[5], "3b (ADC3 CH2)")
+                # Line colours match the Dashboard swatches.
+                self.assertEqual(
+                    [curve.opts["pen"].color().name() for curve in plot._curves],
+                    list(SERIES_COLORS),
+                )
+            finally:
+                for dialog in list(host.plot_dialogs.values()):
+                    dialog.close()
+                panel.close()
+                host.close()
+                db.close()
+                self.app.sendPostedEvents(None, QEvent.DeferredDelete)
 
     def test_combined_geiger_click_loads_both_counters_on_shared_time_axis(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

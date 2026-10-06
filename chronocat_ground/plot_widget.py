@@ -530,11 +530,12 @@ class HistoryPlotWidget(PlotWidget):
         self._origin: float | None = None
         if len(series_names) > 1:
             self._legend = self.addLegend(offset=(10, 10))
+            self._legend.setColumnCount(3 if len(series_names) > 4 else 1)
         for index, name in enumerate(series_names):
             curve = self._curve if index == 0 else self.plot()
             if index:
                 self._curves.append(curve)
-            curve.setPen(pg.mkPen(color=("#111111", "#3f6f9f")[index % 2], width=2))
+            curve.setPen(pg.mkPen(color=SERIES_COLORS[index % len(SERIES_COLORS)], width=2))
             curve.setClipToView(True)
             curve.setDownsampling(auto=True, method="peak")
             if self._legend is not None:

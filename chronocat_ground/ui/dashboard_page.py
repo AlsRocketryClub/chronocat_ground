@@ -29,14 +29,19 @@ def _set_state(widget: QWidget, state: str) -> None:
 
 
 class DashboardPage(QWidget):
-    def __init__(self, open_health: Callable[[], None], open_geiger_plot: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        open_health: Callable[[], None],
+        open_geiger_plot: Callable[[], None],
+        open_samples_plot: Callable[[int], None],
+    ) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(PAGE_SPACING)
         layout.addWidget(self._build_status(open_health))
         layout.addWidget(self._build_radiation(open_geiger_plot))
-        layout.addWidget(self._build_samples())
+        layout.addWidget(self._build_samples(open_samples_plot))
         layout.addWidget(self._build_thermal())
         layout.addStretch(1)
         self._xder: dict[int, float | None] = {0: None, 1: None}
@@ -91,18 +96,26 @@ class DashboardPage(QWidget):
         panel.layout.addLayout(row)
         return panel
 
-    def _build_samples(self) -> QWidget:
+    def _build_samples(self, open_samples_plot: Callable[[int], None]) -> QWidget:
         panel = Panel("SAMPLES")
         columns = QHBoxLayout()
         columns.setSpacing(PAGE_SPACING)
         self.sample_values: dict[int, tuple[QLabel, str]] = {}
         self.sample_plots: list[tuple[PlotWidget, tuple]] = []
-        for material, channels in SAMPLE_COLUMNS:
+        for material_index, (material, channels) in enumerate(SAMPLE_COLUMNS):
             column = QVBoxLayout()
             column.setSpacing(6)
+            header = QHBoxLayout()
             title = QLabel(material.upper())
             title.setObjectName("dashboardLabel")
-            column.addWidget(title)
+            header.addWidget(title)
+            header.addStretch(1)
+            pop_out = QPushButton("Pop out ↗")
+            pop_out.setObjectName("segmentButton")
+            pop_out.setToolTip("Open all six channels with their full history")
+            pop_out.clicked.connect(lambda _checked=False, index=material_index: open_samples_plot(index))
+            header.addWidget(pop_out)
+            column.addLayout(header)
             grid = QGridLayout()
             grid.setHorizontalSpacing(6)
             grid.setVerticalSpacing(4)
@@ -119,6 +132,7 @@ class DashboardPage(QWidget):
             column.addLayout(grid)
             plot = PlotWidget("Volts (V)", "No data", hover_label="Volts", interactive=False, legend=False)
             plot.setFixedHeight(_PLOT_HEIGHT)
+            plot.on_double_click = lambda index=material_index: open_samples_plot(index)
             column.addWidget(plot)
             self.sample_plots.append((plot, channels))
             columns.addLayout(column, 1)

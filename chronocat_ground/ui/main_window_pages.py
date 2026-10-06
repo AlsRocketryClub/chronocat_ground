@@ -243,6 +243,7 @@ class MainWindowPagesMixin:
         self.dashboard = DashboardPage(
             open_health=lambda: self.switch_view(VIEW_HEALTH),
             open_geiger_plot=lambda: self.show_geiger_dialog(),
+            open_samples_plot=self.show_material_dialog,
         )
         return self.dashboard
 
@@ -404,6 +405,22 @@ class MainWindowPagesMixin:
             )
         except Exception as exc:
             self.log(f"Failed to open ADC graph: {exc}")
+
+    def show_material_dialog(self, material_index: int) -> None:
+        """All six channels of one material, with full database history, in one window."""
+        try:
+            material, channels = SAMPLE_COLUMNS[material_index]
+            self.show_plot_dialog(
+                plot_id=f"samples_{material_index}",
+                title=f"{material} · all channels",
+                y_label="Volts (V)",
+                hover_label="Volts",
+                history_sources=tuple(("adc", channel.slot, False) for channel in channels),
+                series_names=tuple(f"{channel.pair}{channel.device} ({channel.location})" for channel in channels),
+                latest_fn=None,
+            )
+        except Exception as exc:
+            self.log(f"Failed to open {SAMPLE_COLUMNS[material_index][0]} graph: {exc}")
 
     def show_geiger_dialog(self, counter_id: int | None = None) -> None:
         try:
