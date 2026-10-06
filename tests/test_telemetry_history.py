@@ -9,9 +9,7 @@ import tempfile
 import unittest
 
 from chronocat_ground.protocol import (
-    AD7177_BIPOLAR_MIDSCALE,
     AD7177_STATUS_ADC_ERROR,
-    AD7177_VREF_VOLTS,
     TELEMETRY_TEMP_COUNT,
     GeigerReading,
     TelemetryPacket,
@@ -88,7 +86,6 @@ class TelemetryHistoryTests(unittest.TestCase):
         self.assertEqual(snapshot.packet_count, 1)
         self.assertEqual([point[0] for point in snapshot.adc_points[0]], [12.0])
         self.assertEqual([point[0] for point in snapshot.geiger_points[0]], [12.0])
-        self.assertEqual([point[0] for point in snapshot.adc_average_points], [12.0])
         database.close()
 
     def test_global_heater_interlock_requires_all_twelve_safe_sensors(self) -> None:
@@ -103,12 +100,6 @@ class TelemetryHistoryTests(unittest.TestCase):
 
             self.assertEqual(snapshot.packet_count, 1)
             self.assertEqual(snapshot.geiger_points[0][-1], (10.0, 20.0, 2.0))
-            expected_average_volts = (
-                (20 - AD7177_BIPOLAR_MIDSCALE) / AD7177_BIPOLAR_MIDSCALE * AD7177_VREF_VOLTS
-            )
-            self.assertEqual(
-                snapshot.adc_average_points[-1], (10.0, 20.0, expected_average_volts)
-            )
             self.assertEqual(database.query_temperature(0), [(20.0, 25.0)])
             self.assertEqual(database.query_temperature(2), [(20.0, 30.0)])
             self.assertEqual(database.query_temperature(1), [])

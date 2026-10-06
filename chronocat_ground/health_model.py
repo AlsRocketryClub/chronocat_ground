@@ -389,3 +389,32 @@ class HealthEventLog:
         self.events.extend(new_events)
         return new_events
 
+
+class PacketLossTracker:
+    """Counts packets the board sent but the ground never received.
+
+    The board numbers every packet; a jump in the counter means packets were
+    lost. A counter that goes backwards means the board restarted, which is
+    not loss, so counting simply continues from the new value.
+    """
+
+    def __init__(self) -> None:
+        self.received = 0
+        self.lost = 0
+        self._last_counter: int | None = None
+
+    def clear(self) -> None:
+        self.received = 0
+        self.lost = 0
+        self._last_counter = None
+
+    def record(self, counter: int) -> None:
+        if self._last_counter is not None and counter > self._last_counter:
+            self.lost += counter - self._last_counter - 1
+        self.received += 1
+        self._last_counter = counter
+
+    @property
+    def loss_percent(self) -> float:
+        sent = self.received + self.lost
+        return 100.0 * self.lost / sent if sent else 0.0

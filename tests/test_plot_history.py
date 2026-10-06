@@ -168,9 +168,9 @@ class PlotHistoryTest(unittest.TestCase):
                  for i in range(count) for counter in (0, 1)],
             )
             db.conn.commit()
-            panel = host.build_chart_panel()
+            panel = host.build_dashboard_page()
             try:
-                host.monitoring_geiger_plot.on_double_click()
+                host.dashboard.geiger_plot.on_double_click()
                 self.assertNotIn("geiger_0", host.plot_dialogs)
                 refs = host.plot_dialog_refs["geiger_all"]
                 plot = refs["plot"]

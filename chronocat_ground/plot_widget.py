@@ -59,6 +59,9 @@ class WallClockAxis(pg.AxisItem):
         return strings
 
 
+SERIES_COLORS = ("#111111", "#3f6f9f", "#6d8c66", "#9a6f3f", "#8a4f8a", "#b05050")
+
+
 class PlotWidget(pg.PlotWidget):
     """Drop-in replacement for LinePlotWidget using pyqtgraph."""
 
@@ -77,7 +80,9 @@ class PlotWidget(pg.PlotWidget):
         monitor_mode: bool = False,
         hover_label: str | None = None,
         interactive: bool = True,
+        legend: bool = True,
     ) -> None:
+        self._show_legend = legend
         self._wall_clock_axis = WallClockAxis(orientation="bottom")
         super().__init__(axisItems={"bottom": self._wall_clock_axis})
         self.setObjectName("linePlot")
@@ -262,23 +267,24 @@ class PlotWidget(pg.PlotWidget):
         return result
 
     def _update_series_legend(self) -> None:
-        multiple = len(self._series_points) > 1
+        # One curve per series, whether or not a legend is shown.
+        for index, _series in enumerate(self._series_points):
+            if index >= len(self._curves):
+                self._curves.append(self.plot())
+            self._curves[index].setPen(pg.mkPen(color=SERIES_COLORS[index % len(SERIES_COLORS)], width=2))
+        for curve in self._curves[len(self._series_points):]:
+            curve.setData([], [])
+
+        multiple = len(self._series_points) > 1 and self._show_legend
         if multiple and self._legend is None:
             self._legend = self.addLegend(offset=(10, 10))
         if self._legend is None:
             return
         self._legend.clear()
+        self._legend.setColumnCount(3 if len(self._series_points) > 4 else 1)
         self._legend.setVisible(multiple)
-        for index, (label, _points) in enumerate(self._series_points):
-            if index < len(self._curves):
-                curve = self._curves[index]
-            else:
-                curve = self.plot()
-                self._curves.append(curve)
-            curve.setPen(pg.mkPen(color=("#111111", "#3f6f9f", "#6d8c66", "#9a6f3f")[index % 4], width=2))
+        for curve, (label, _points) in zip(self._curves, self._series_points):
             self._legend.addItem(curve, label)
-        for curve in self._curves[len(self._series_points):]:
-            curve.setData([], [])
 
     def _update_empty(self) -> None:
         point_count = sum(sum(math.isfinite(point[2]) for point in points) for _label, points in self._series_points)

@@ -27,7 +27,6 @@ class TelemetryHistorySnapshot:
     packet_count: int
     geiger_points: tuple[Sequence[tuple[float, float, float]], ...]
     adc_points: tuple[Sequence[tuple[float, float, float, int]], ...]
-    adc_average_points: Sequence[tuple[float, float, float]]
 
 
 class TelemetryHistory:
@@ -39,7 +38,6 @@ class TelemetryHistory:
         self.packet_count = 0
         self._geiger_points = [deque(maxlen=history_length), deque(maxlen=history_length)]
         self._adc_points = [deque(maxlen=history_length) for _ in range(TELEMETRY_OS_ADC_COUNT)]
-        self._adc_average_points = deque(maxlen=history_length)
         self.database_error: str | None = None
 
     def record(
@@ -90,18 +88,6 @@ class TelemetryHistory:
             )
             adc_rows.append((packet.timestamp, reading.slot, reading.raw24, received_wall))
 
-        valid_adc_values = [
-            reading.voltage
-            for reading in adc_readings
-            if packet.os_adc_valid(reading.slot) and reading.word != 0 and not reading.has_error
-        ]
-        if valid_adc_values:
-            self._adc_average_points.append(
-                (received_monotonic, received_wall, sum(valid_adc_values) / len(valid_adc_values))
-            )
-        else:
-            self._adc_average_points.append((received_monotonic, received_wall, math.nan))
-
         temperature_rows = [
             (packet.timestamp, received_wall, slot, temperature_c)
             for slot in range(len(packet.temperatures))
@@ -116,13 +102,12 @@ class TelemetryHistory:
             self.packet_count,
             tuple(self._geiger_points),
             tuple(self._adc_points),
-            self._adc_average_points,
         )
 
     def clear(self) -> None:
         """Drop the in-memory history so a new database starts from a clean slate."""
         self.packet_count = 0
-        for points in (*self._geiger_points, *self._adc_points, self._adc_average_points):
+        for points in (*self._geiger_points, *self._adc_points):
             points.clear()
 
     def set_database(self, database: TelemetryDb) -> None:

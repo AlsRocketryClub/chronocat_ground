@@ -8,6 +8,7 @@ from chronocat_ground.health_model import (
     UNKNOWN,
     WARNING,
     HealthEventLog,
+    PacketLossTracker,
     active_issues,
     evaluate_health,
     format_rate,
@@ -102,3 +103,11 @@ class HealthModelTest(unittest.TestCase):
             "H10 (F2_U4) ok (4%)",
         ])
 
+
+class PacketLossTrackerTest(unittest.TestCase):
+    def test_counts_gaps_but_not_board_restarts(self) -> None:
+        tracker = PacketLossTracker()
+        for counter in (10, 11, 14, 15, 2, 3):  # 12, 13 lost; then a restart
+            tracker.record(counter)
+        self.assertEqual((tracker.received, tracker.lost), (6, 2))
+        self.assertAlmostEqual(tracker.loss_percent, 25.0)

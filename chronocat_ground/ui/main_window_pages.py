@@ -45,6 +45,7 @@ from ..protocol import (
 )
 from ..telemetry_db import TelemetryDb, archive_database
 from .board_map import BoardMapWidget
+from .dashboard_page import DashboardPage
 from .health_page import HealthPage
 from .widgets import Panel, SampleCard, StatCard, ValueTable
 from .status_widgets import StatusIndicator
@@ -218,60 +219,11 @@ class MainWindowPagesMixin:
         return scroll
 
     def build_dashboard_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-
-        self.tcp_card = StatCard("SYSTEM HEALTH")
-        self.temperature_summary_card = StatCard("TEMPERATURE SENSORS")
-        self.adc_summary_card = StatCard("SAMPLE CHANNELS")
-        self.geiger_dose_rate_card = StatCard("GEIGER 1 DOSE RATE (CPS)")
-        self.geiger_2_dose_rate_card = StatCard("GEIGER 2 DOSE RATE (CPS)")
-        self.heater_summary_card = StatCard("HEATER / PID")
-        self.board_frame_index_card = StatCard("BOARD FRAME INDEX")
-        self.session_frame_count_card = StatCard("GS FRAMES RECEIVED", value="0")
-
-        cards = QGridLayout()
-        cards.setSpacing(8)
-        cards.addWidget(self.tcp_card, 0, 0)
-        cards.addWidget(self.temperature_summary_card, 0, 1)
-        cards.addWidget(self.adc_summary_card, 0, 2)
-        cards.addWidget(self.board_frame_index_card, 0, 3)
-        cards.addWidget(self.geiger_dose_rate_card, 1, 0)
-        cards.addWidget(self.geiger_2_dose_rate_card, 1, 1)
-        cards.addWidget(self.heater_summary_card, 1, 2)
-        cards.addWidget(self.session_frame_count_card, 1, 3)
-        layout.addLayout(cards)
-
-        layout.addWidget(self.build_chart_panel())
-        layout.addStretch(1)
-        return page
-
-    def build_chart_panel(self) -> Panel:
-        chart_panel = Panel()
-        chart_header = QHBoxLayout()
-        chart_title = QLabel("GEIGER DOSE RATE HISTORY")
-        chart_title.setObjectName("panelTitle")
-        self.timestamp_label = QLabel("Received —")
-        self.timestamp_label.setObjectName("smallNote")
-        chart_header.addWidget(chart_title)
-        chart_header.addStretch(1)
-        chart_header.addWidget(self.timestamp_label)
-        chart_panel.layout.addLayout(chart_header)
-        self.monitoring_geiger_plot = PlotWidget(
-            "Dose rate (CPS)", "No data", hover_label="CPS", interactive=False
+        self.dashboard = DashboardPage(
+            open_health=lambda: self.switch_view(VIEW_HEALTH),
+            open_geiger_plot=lambda: self.show_geiger_dialog(),
         )
-        self.monitoring_geiger_plot.on_double_click = lambda: self.show_geiger_dialog()
-        chart_panel.layout.addWidget(self.monitoring_geiger_plot)
-        average_title = QLabel("ADC CHANNEL AVERAGE")
-        average_title.setObjectName("panelTitle")
-        chart_panel.layout.addWidget(average_title)
-        self.monitoring_adc_average_plot = PlotWidget(
-            "Volts (V)", "No data", hover_label="Volts", interactive=False
-        )
-        chart_panel.layout.addWidget(self.monitoring_adc_average_plot)
-        return chart_panel
+        return self.dashboard
 
     def build_radiation_page(self) -> QWidget:
         page = QWidget()
@@ -298,8 +250,6 @@ class MainWindowPagesMixin:
         cards.addWidget(self.radiation_2_hv_card, 1, 2)
         cards.addWidget(self.radiation_2_errors_card, 1, 3)
         layout.addLayout(cards)
-
-        layout.addWidget(self.build_geiger_controls_panel())
 
         plots = QVBoxLayout()
         plots.setSpacing(12)
@@ -334,6 +284,7 @@ class MainWindowPagesMixin:
         geiger_2_panel.layout.addWidget(self.radiation_geiger_2_plot)
         plots.addWidget(geiger_2_panel)
         layout.addLayout(plots)
+        layout.addWidget(self.build_geiger_controls_panel())
 
         geiger_detail_rows = [
             ("Valid", "—"),
@@ -870,9 +821,9 @@ class MainWindowPagesMixin:
         self.telemetry_history.clear()
         self._last_adc_packet = None
         self._last_adc_history = None
+        self.dashboard.clear()
+        self.packet_loss.clear()
         for plot in (
-            self.monitoring_geiger_plot,
-            self.monitoring_adc_average_plot,
             self.radiation_geiger_plot,
             self.radiation_geiger_2_plot,
             *(card.plot for card in self.sample_cards),
@@ -880,7 +831,6 @@ class MainWindowPagesMixin:
             plot.set_points([])
         self.radiation_plot_status.setText("0/300 points")
         self.radiation_2_plot_status.setText("0/300 points")
-        self.session_frame_count_card.set_value("0")
         self.pid_page.clear_history()
 
     def _on_reset_board(self) -> None:

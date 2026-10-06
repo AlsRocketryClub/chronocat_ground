@@ -58,7 +58,15 @@ from .pid_page import PidPage
 from .pid_profiles import PidProfile, profile_by_name
 from .telemetry_csv import CSV_MODE_FULL, TelemetryCsvLogger
 from .telemetry_db import DEFAULT_DATABASE_PATH, TelemetryDb
-from .health_model import HealthEventLog, active_issues, evaluate_health, link_status
+from .health_model import (
+    HealthEventLog,
+    PacketLossTracker,
+    active_issues,
+    evaluate_health,
+    format_rate,
+    format_uptime,
+    link_status,
+)
 from .sample_layout import SAMPLE_CHANNELS
 from .telemetry_history import TelemetryHistory, adc_point_for_mode
 from .telemetry_receiver import TelemetryReceiver
@@ -132,6 +140,8 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self._health_packet: TelemetryPacket | None = None
         self._health_pid: PidTelemetryPacket | None = None
         self._receiver_error = ""
+        self._health_items: tuple = ()
+        self.packet_loss = PacketLossTracker()
 
         self.telemetry_receiver = TelemetryReceiver(DEFAULT_TELEMETRY_PORT)
         self.telemetry_receiver.packet_received.connect(self.on_telemetry_packet)
@@ -616,19 +626,10 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             errors_card.set_value(state)
             return
 
-        dose_rate_card.set_value(f"{reading.dose_rate_cps:.9g}")
+        dose_rate_card.set_value(format_rate(reading.dose_rate_cps))
         total_dose_card.set_value(f"{reading.total_dose_sv:.9g}")
         hv_card.set_value(str(reading.hv_voltage))
         errors_card.set_value(self.geiger_error_text(reading))
-
-    @staticmethod
-    def update_geiger_rate_card(
-        reading: GeigerReading | None, card: StatCard
-    ) -> None:
-        if reading is None or not reading.valid:
-            card.set_value("unavailable" if reading is None else "invalid")
-            return
-        card.set_value(f"{reading.dose_rate_cps:.9g}")
 
     def update_geiger_detail_table(
         self, table: ValueTable, reading: GeigerReading | None, column: int
@@ -756,20 +757,9 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         temp_summary = self.format_temperature_summary(packet)
         adc_summary = self.format_adc_summary(packet)
 
-        self.tcp_card.set_value(health)
-        self.temperature_summary_card.set_value(temp_summary)
-        valid_adc_count = sum(
-            1 for reading in packet.ad7177_readings if packet.os_adc_valid(reading.slot)
-        )
-        self.adc_summary_card.set_value(
-            f"{valid_adc_count}/{len(packet.ad7177_readings)} valid"
-        )
-        self.board_frame_index_card.set_value(f"{packet.counter:,}")
-        self.session_frame_count_card.set_value(f"{history.packet_count:,}")
+        self.packet_loss.record(packet.counter)
         geiger_1 = packet.geiger_reading(0)
         geiger_2 = packet.geiger_reading(1)
-        self.update_geiger_rate_card(geiger_1, self.geiger_dose_rate_card)
-        self.update_geiger_rate_card(geiger_2, self.geiger_2_dose_rate_card)
         self.update_geiger_cards(
             geiger_1,
             self.radiation_dose_rate_card,
@@ -784,15 +774,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self.radiation_2_hv_card,
             self.radiation_2_errors_card,
         )
-        self.timestamp_label.setText(
-            f"Received {datetime.fromtimestamp(received_wall).strftime('%H:%M:%S')}"
-        )
-
-        geiger_series = (
-            ("Geiger 1", history.geiger_points[0]),
-            ("Geiger 2", history.geiger_points[1]),
-        )
-        self.monitoring_geiger_plot.set_series(geiger_series)
         self.radiation_geiger_plot.set_points(history.geiger_points[0])
         self.radiation_geiger_2_plot.set_points(history.geiger_points[1])
         self.radiation_plot_status.setText(f"{len(history.geiger_points[0])}/300 points")
@@ -802,8 +783,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.board_map.set_temperatures(packet)
         self._last_adc_history = history
         self.refresh_sample_cards()
-        if history.adc_average_points:
-            self.monitoring_adc_average_plot.set_points(history.adc_average_points)
         self.update_plot_dialogs()
 
         self.telemetry_table.set_value("AD7177 Readings", adc_summary)
@@ -812,14 +791,6 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         if combined_packet is not None:
             _, average_duty = heater_pid_averages(combined_packet.pid.heaters)
             heater_duty = "—" if average_duty is None else f"{average_duty / 10.0:.1f}%"
-            enabled_count = sum(
-                1 for reading in combined_packet.pid.heaters if reading.pid_enabled
-            )
-            self.heater_summary_card.set_value(
-                f"{enabled_count}/{len(combined_packet.pid.heaters)} PID"
-            )
-        else:
-            self.heater_summary_card.set_value("no PID data")
         self.telemetry_table.set_value("Average Heater Duty", str(heater_duty))
         self.telemetry_table.set_value("Subsystem Health Indicators", health)
         for number, reading in ((1, geiger_1), (2, geiger_2)):
@@ -875,6 +846,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self._health_pid = combined_packet.pid
         self._receiver_error = ""
         self.refresh_health(uptime_ms=packet.timestamp)
+        self.dashboard.show_packet(packet, self._health_pid, history, self._health_items)
 
         if self.csv_logger is not None and self.csv_logger.active:
             try:
@@ -1022,7 +994,25 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         link = link_status(self.client.connected, age, self._receiver_error)
         items = evaluate_health(self._health_packet, self._health_pid, link)
         events = self.health_events.update(items, datetime.now(), uptime_ms)
-        self.health_page.show_health(items, active_issues(items), events)
+        issues = active_issues(items)
+        self._health_items = items
+        self.health_page.show_health(items, issues, events)
+        self.dashboard.show_status(issues, items, self._link_summary(age))
+
+    def _link_summary(self, packet_age_s: float | None) -> str:
+        """One line on the board and downlink for the Dashboard."""
+        if packet_age_s is None or self._health_packet is None:
+            return "No telemetry yet"
+        parts = [
+            f"Board up {format_uptime(self._health_packet.timestamp)}",
+            f"last packet {packet_age_s:.1f} s ago",
+        ]
+        loss = self.packet_loss
+        if loss.received:
+            parts.append(f"{loss.lost} of {loss.received + loss.lost} packets lost ({loss.loss_percent:.1f}%)")
+        logging = self.csv_logger is not None and self.csv_logger.active
+        parts.append("CSV logging" if logging else "CSV off")
+        return "  ·  ".join(parts)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._closing = True

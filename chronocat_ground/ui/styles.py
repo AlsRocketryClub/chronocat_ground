@@ -200,6 +200,71 @@ QPushButton:disabled {
     font-weight: 700;
     padding: 0 2px 0 8px;
 }
+#dashboardBanner {
+    background: #eeeeee;
+    color: #444444;
+    font-size: 16px;
+    font-weight: 700;
+    padding: 10px 12px;
+}
+#dashboardBanner[state="ok"] {
+    background: #d8ead8;
+    color: #1f4d1f;
+}
+#dashboardBanner[state="warning"] {
+    background: #fff0c7;
+    color: #6b5200;
+}
+#dashboardBanner[state="error"] {
+    background: #f5d8d8;
+    color: #702525;
+}
+#dashboardLabel {
+    color: #444444;
+    font-size: 11px;
+    font-weight: 700;
+}
+#dashboardValue {
+    color: #111111;
+    font-size: 24px;
+    font-weight: 700;
+}
+#dashboardValue[state="warning"] {
+    color: #8a6a00;
+}
+#dashboardValue[state="error"] {
+    color: #a33a3a;
+}
+#dashboardValue[state="unknown"] {
+    color: #888888;
+}
+#dashboardSample {
+    background: #eeeeee;
+    border: 1px solid #b5b5b5;
+    color: #555555;
+    font-family: Menlo, Consolas, monospace;
+    font-size: 12px;
+    padding: 4px 8px;
+}
+#dashboardSample[state="ok"] {
+    background: #d8ead8;
+    border-color: #6e9f6e;
+    color: #1f4d1f;
+}
+#dashboardSample[state="warning"] {
+    background: #fff0c7;
+    border-color: #c49a37;
+    color: #6b5200;
+}
+#dashboardSample[state="error"] {
+    background: #f5d8d8;
+    border-color: #b36a6a;
+    color: #702525;
+}
+#dashboardThermalLine {
+    color: #222222;
+    font-size: 12px;
+}
 #healthIssuesBanner {
     background: #eeeeee;
     color: #444444;
