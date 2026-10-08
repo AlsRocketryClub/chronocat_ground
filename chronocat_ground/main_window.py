@@ -683,7 +683,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self.set_telemetry_status("receiving")
             if self.pid_page is not None:
                 self.pid_page.update_packet(packet.pid, received_monotonic)
-                self.pid_page.update_ambient(packet.standard)
+                self.pid_page.update_ambient(packet.standard, received_monotonic)
             packet = packet.standard
         elif isinstance(packet, PidTelemetryPacket):
             self.last_telemetry_time = received_monotonic
@@ -704,7 +704,10 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             return
 
         self.last_telemetry_time = received_monotonic
-        history = self.telemetry_history.record(packet, received_monotonic, received_wall)
+        history = self.telemetry_history.record(
+            packet, received_monotonic, received_wall,
+            combined_packet.pid if combined_packet is not None else None,
+        )
         if self.telemetry_history.database_error is not None:
             self.log(
                 f"Telemetry database logging failed: "

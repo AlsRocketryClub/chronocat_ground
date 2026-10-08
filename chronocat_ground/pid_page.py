@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .heater_safety import HEATER_COUNT
+from .heater_safety import HEATER_COUNT, HEATER_SENSOR_IDS
 from .pid_profiles import PID_PROFILES
 from .plot_widget import PlotWidget
 from .protocol import (
@@ -76,6 +76,8 @@ class PidPage(QWidget):
     gain_requested = Signal(int, str, float)
     manual_duty_requested = Signal(int, int)
     force_duty_requested = Signal(int, int)
+    # "temperature", "duty", "temperature_avg" or "duty_avg"; the selection decides which sensor.
+    plot_popout_requested = Signal(str)
     return_pid_requested = Signal(int)
     all_off_requested = Signal()
     all_pid_requested = Signal(bool, float, str)
@@ -85,6 +87,10 @@ class PidPage(QWidget):
         self._connected = False
         self._busy = False
         self.selected_heater = 0
+        # An ambient sensor id while one is selected; the heater detail is hidden then.
+        self.selected_ambient: int | None = None
+        self.ambient_history = {sensor_id: deque(maxlen=180) for sensor_id in AMBIENT_SENSOR_IDS}
+        self.ambient_temperatures: dict[int, float | None] = {}
         self.readings: list[HeaterPidReading | None] = [None] * HEATER_COUNT
         self.temperature_history = [deque(maxlen=180) for _ in range(HEATER_COUNT)]
         self.output_history = [deque(maxlen=180) for _ in range(HEATER_COUNT)]
@@ -213,6 +219,7 @@ class PidPage(QWidget):
         self.ambient_rows: list[AmbientSensorRow] = []
         for sensor_id in sorted(AMBIENT_SENSOR_IDS, key=lambda index: TEMP_SENSOR_LABELS[index]):
             ambient = AmbientSensorRow(sensor_id)
+            ambient.clicked.connect(self._select_ambient)
             self.ambient_rows.append(ambient)
             rows_layout.addWidget(ambient)
         rows_layout.addStretch(1)
@@ -265,6 +272,7 @@ class PidPage(QWidget):
         self.output_plot.setMinimumHeight(215)
         plots.addWidget(self.temperature_plot)
         plots.addWidget(self.output_plot)
+        self.detail_plots = plots
         plots.setStretchFactor(0, 1)
         plots.setStretchFactor(1, 1)
         layout.addWidget(plots)
@@ -298,6 +306,15 @@ class PidPage(QWidget):
         average_plots.setStretchFactor(1, 1)
         layout.addWidget(average_plots)
 
+        for plot, name in (
+            (self.temperature_plot, "temperature"),
+            (self.output_plot, "duty"),
+            (self.average_temperature_plot, "temperature_avg"),
+            (self.average_duty_plot, "duty_avg"),
+        ):
+            plot.on_double_click = lambda name=name: self.plot_popout_requested.emit(name)
+            plot.setToolTip("Double-click to open the full history in its own window")
+
         terms_panel = QFrame()
         terms_panel.setObjectName("pidMetrics")
         terms_layout = QHBoxLayout(terms_panel)
@@ -314,8 +331,16 @@ class PidPage(QWidget):
             terms_layout.addLayout(box, 1)
             self.term_labels[name] = value
         layout.addWidget(terms_panel)
+        self.terms_panel = terms_panel
 
-        layout.addWidget(self._build_controls())
+        self.controls_panel = self._build_controls()
+        layout.addWidget(self.controls_panel)
+        # Takes the height the hidden heater controls leave when an ambient
+        # sensor is selected, so the heading and plots keep their size.
+        self.ambient_spacer = QWidget()
+        self.ambient_spacer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.ambient_spacer.setVisible(False)
+        layout.addWidget(self.ambient_spacer, 1)
         return panel
 
     def _build_controls(self) -> QFrame:
@@ -377,8 +402,23 @@ class PidPage(QWidget):
 
     def _select_heater(self, heater_id: int) -> None:
         self.selected_heater = heater_id
+        self.selected_ambient = None
+        self._show_selection()
+
+    def _select_ambient(self, sensor_id: int) -> None:
+        self.selected_ambient = sensor_id
+        self._show_selection()
+
+    def _show_selection(self) -> None:
         for index, row in enumerate(self.rows):
-            row.set_selected(index == heater_id)
+            row.set_selected(self.selected_ambient is None and index == self.selected_heater)
+        for row in self.ambient_rows:
+            row.set_selected(row.sensor_id == self.selected_ambient)
+        heater = self.selected_ambient is None
+        # An ambient sensor has no heater: only its temperature plot applies.
+        for widget in (self.output_plot, self.terms_panel, self.controls_panel):
+            widget.setVisible(heater)
+        self.ambient_spacer.setVisible(not heater)
         self._update_detail()
 
     def _apply_target(self) -> None:
@@ -504,6 +544,7 @@ class PidPage(QWidget):
             *self.output_history,
             self.average_temperature_history,
             self.average_duty_history,
+            *self.ambient_history.values(),
         ):
             points.clear()
         for plot in (
@@ -514,11 +555,18 @@ class PidPage(QWidget):
         ):
             plot.set_points([])
 
-    def update_ambient(self, packet) -> None:
+    def update_ambient(self, packet, received_monotonic: float) -> None:
         """Show the ambient sensors from a standard telemetry packet."""
         for row in self.ambient_rows:
             received = row.sensor_id < len(packet.temperatures)
-            row.set_temperature(packet.temperature_c(row.sensor_id) if received else None, received)
+            temperature = packet.temperature_c(row.sensor_id) if received else None
+            row.set_temperature(temperature, received)
+            self.ambient_temperatures[row.sensor_id] = temperature
+            self.ambient_history[row.sensor_id].append(
+                (received_monotonic, math.nan if temperature is None else temperature)
+            )
+        if self.selected_ambient is not None:
+            self._update_detail()
 
     def update_packet(self, packet: PidTelemetryPacket, received_monotonic: float) -> None:
         valid_count = 0
@@ -572,7 +620,32 @@ class PidPage(QWidget):
         self.global_controls.fit()
         self._update_detail()
 
+    def selected_sensor_id(self) -> int:
+        """The temperature sensor behind the selected row (heater or ambient)."""
+        if self.selected_ambient is not None:
+            return self.selected_ambient
+        return HEATER_SENSOR_IDS[self.selected_heater]
+
+    def _update_ambient_detail(self, sensor_id: int) -> None:
+        temperature = self.ambient_temperatures.get(sensor_id)
+        self.detail_title.setText(TEMP_SENSOR_LABELS[sensor_id])
+        self.detail_mapping.setText("AMBIENT SENSOR, NO HEATER")
+        self.detail_status.setText("NO DATA" if sensor_id not in self.ambient_temperatures
+                                   else "NO READING" if temperature is None else "AMBIENT")
+        self.detail_status.setProperty("state", "blocked")
+        self.detail_status.style().unpolish(self.detail_status)
+        self.detail_status.style().polish(self.detail_status)
+        self.detail_alert.setVisible(True)
+        self.detail_alert.setText(
+            "Ambient temperature only; there is nothing to control here."
+            if temperature is None else f"Ambient temperature {temperature:.2f} C"
+        )
+        self.temperature_plot.set_points(list(self.ambient_history[sensor_id]))
+
     def _update_detail(self) -> None:
+        if self.selected_ambient is not None:
+            self._update_ambient_detail(self.selected_ambient)
+            return
         reading = self.readings[self.selected_heater]
         self.detail_title.setText(f"H{self.selected_heater}")
         if reading is None:

@@ -12,6 +12,19 @@ from .protocol import AD7177_BIPOLAR_MIDSCALE, AD7177_VREF_VOLTS
 
 HISTORY_BATCH_SIZE = 8192
 
+_SERIES = {
+    "adc": ("adc", "slot", "raw24"),
+    "geiger": ("geiger", "counter_id", "dose_rate_cps"),
+    "temperature": ("temperature", "slot", "temperature_c"),
+    "duty": ("heater", "heater_id", "duty_permille"),
+}
+# Averages over the heaters, matching the heating page: valid heater-sensor
+# temperatures (sensors 0-11; missing readings are never stored) and all duties.
+_AVERAGES = {
+    "temperature_avg": ("temperature", "temperature_c", "slot < 12"),
+    "duty_avg": ("heater", "duty_permille", "1"),
+}
+
 
 def read_history_batch(
     database_path: str | Path,
@@ -26,24 +39,33 @@ def read_history_batch(
     samples received at the same wall-clock time. The slot/counter indexes also
     index rowid implicitly, so incremental reads do not scan the old history.
     """
-    table, key, value = {
-        "adc": ("adc", "slot", "raw24"),
-        "geiger": ("geiger", "counter_id", "dose_rate_cps"),
-    }[kind]
     uri = Path(database_path).resolve().as_uri() + "?mode=ro"
     connection = sqlite3.connect(uri, uri=True, timeout=1.0)
     try:
-        rows = connection.execute(
-            f"SELECT rowid, received_wall, {value} FROM {table} "
-            f"WHERE {key} = ? AND rowid > ? AND received_wall IS NOT NULL "
-            "ORDER BY rowid LIMIT ?",
-            (channel, after_rowid, HISTORY_BATCH_SIZE),
-        ).fetchall()
+        if kind in _AVERAGES:
+            # One point per packet: every row of a packet shares its receive time.
+            table, value, where = _AVERAGES[kind]
+            rows = connection.execute(
+                f"SELECT MAX(rowid), received_wall, AVG({value}) FROM {table} "
+                f"WHERE {where} AND rowid > ? AND received_wall IS NOT NULL "
+                "GROUP BY received_wall ORDER BY 1 LIMIT ?",
+                (after_rowid, HISTORY_BATCH_SIZE),
+            ).fetchall()
+        else:
+            table, key, value = _SERIES[kind]
+            rows = connection.execute(
+                f"SELECT rowid, received_wall, {value} FROM {table} "
+                f"WHERE {key} = ? AND rowid > ? AND received_wall IS NOT NULL "
+                "ORDER BY rowid LIMIT ?",
+                (channel, after_rowid, HISTORY_BATCH_SIZE),
+            ).fetchall()
     finally:
         connection.close()
     if not rows:
         return after_rowid, np.empty((0, 2)), False
     points = np.asarray([(wall, value) for _rowid, wall, value in rows], dtype=float)
+    if kind in ("duty", "duty_avg"):
+        points[:, 1] /= 10.0  # per mille to percent
     if kind == "adc" and not raw_mode:
         points[:, 1] = (
             (points[:, 1] - AD7177_BIPOLAR_MIDSCALE)

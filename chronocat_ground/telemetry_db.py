@@ -102,6 +102,12 @@ class TelemetryDb:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_temperature_ts ON temperature(ts_ms)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_temperature_slot ON temperature(slot)")
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS heater ("
+            "ts_ms INT, received_wall REAL, heater_id INT, duty_permille INT"
+            ")"
+        )
+
         # Each detector's dose-rate coefficient; it never changes, so one row each.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS geiger_calibration ("
@@ -122,6 +128,10 @@ class TelemetryDb:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_temperature_slot_received "
             "ON temperature(slot, received_wall, ts_ms)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_heater_id_received "
+            "ON heater(heater_id, received_wall, ts_ms)"
         )
 
     def _migrate(self, connection: sqlite3.Connection | None = None) -> None:
@@ -144,6 +154,7 @@ class TelemetryDb:
         adc_rows: list[tuple[int, int, int, float]],
         geiger_rows: list[tuple[int, float, int, float, float, int, int, float]],
         temperature_rows: list[tuple[int, float, int, float]],
+        heater_rows: list[tuple[int, float, int, int]] = (),
     ) -> None:
         """Persist one packet in a single transaction."""
         if self._async_writes:
@@ -152,11 +163,11 @@ class TelemetryDb:
             if self._writer_error is not None:
                 raise RuntimeError("telemetry database writer failed") from self._writer_error
             try:
-                self._write_queue.put_nowait((adc_rows, geiger_rows, temperature_rows))
+                self._write_queue.put_nowait((adc_rows, geiger_rows, temperature_rows, heater_rows))
             except queue.Full as exc:
                 raise RuntimeError("telemetry database writer queue is full") from exc
             return
-        self._insert_packet_sync(self.conn, adc_rows, geiger_rows, temperature_rows)
+        self._insert_packet_sync(self.conn, adc_rows, geiger_rows, temperature_rows, heater_rows)
 
     @staticmethod
     def _insert_packet_sync(
@@ -164,6 +175,7 @@ class TelemetryDb:
         adc_rows: list[tuple],
         geiger_rows: list[tuple],
         temperature_rows: list[tuple],
+        heater_rows: list[tuple] = (),
     ) -> None:
         connection.executemany(
             "INSERT INTO adc (ts_ms, slot, raw24, received_wall) VALUES (?, ?, ?, ?)",
@@ -179,6 +191,11 @@ class TelemetryDb:
             "INSERT INTO temperature (ts_ms, received_wall, slot, temperature_c) "
             "VALUES (?, ?, ?, ?)",
             temperature_rows,
+        )
+        connection.executemany(
+            "INSERT INTO heater (ts_ms, received_wall, heater_id, duty_permille) "
+            "VALUES (?, ?, ?, ?)",
+            heater_rows,
         )
         connection.commit()
 
@@ -328,4 +345,5 @@ class TelemetryDb:
         self.conn.execute("DELETE FROM adc")
         self.conn.execute("DELETE FROM geiger")
         self.conn.execute("DELETE FROM temperature")
+        self.conn.execute("DELETE FROM heater")
         self.conn.commit()

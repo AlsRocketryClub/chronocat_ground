@@ -41,6 +41,7 @@ from ..protocol import (
     DEFAULT_COMMAND_PORT,
     DEFAULT_DEVICE_HOST,
     DEFAULT_TELEMETRY_PORT,
+    TEMP_SENSOR_LABELS,
     VALUE_OFF,
     VALUE_ON,
 )
@@ -494,6 +495,49 @@ class MainWindowPagesMixin:
         except Exception as exc:
             self.log(f"Failed to open {SAMPLE_COLUMNS[material_index][0]} graph: {exc}")
 
+    def show_heating_dialog(self, name: str) -> None:
+        """A heating-page plot with its full database history, in its own window."""
+        try:
+            page = self.pid_page
+            if name == "temperature":
+                sensor = page.selected_sensor_id()
+                label = TEMP_SENSOR_LABELS[sensor]
+                owner = "ambient" if page.selected_ambient is not None else f"H{page.selected_heater}"
+                self.show_plot_dialog(
+                    plot_id=f"temperature_{sensor}",
+                    title=f"{label} ({owner}) TEMPERATURE",
+                    y_label="Temperature (C)",
+                    hover_label="C",
+                    history_sources=(("temperature", sensor, False),),
+                )
+            elif name == "duty":
+                heater = page.selected_heater
+                self.show_plot_dialog(
+                    plot_id=f"duty_{heater}",
+                    title=f"H{heater} DUTY",
+                    y_label="Duty (%)",
+                    hover_label="%",
+                    history_sources=(("duty", heater, False),),
+                )
+            elif name == "temperature_avg":
+                self.show_plot_dialog(
+                    plot_id="temperature_avg",
+                    title="HEATER AVERAGE TEMPERATURE",
+                    y_label="Temperature (C)",
+                    hover_label="C",
+                    history_sources=(("temperature_avg", 0, False),),
+                )
+            elif name == "duty_avg":
+                self.show_plot_dialog(
+                    plot_id="duty_avg",
+                    title="HEATER AVERAGE DUTY",
+                    y_label="Duty (%)",
+                    hover_label="%",
+                    history_sources=(("duty_avg", 0, False),),
+                )
+        except Exception as exc:
+            self.log(f"Failed to open heating graph: {exc}")
+
     def show_geiger_dialog(self, counter_id: int | None = None) -> None:
         try:
             counters = (0, 1) if counter_id is None else (counter_id,)
@@ -621,6 +665,7 @@ class MainWindowPagesMixin:
         self.pid_page.return_pid_requested.connect(self.return_pid_heater)
         self.pid_page.all_off_requested.connect(self.turn_all_heaters_off)
         self.pid_page.all_pid_requested.connect(self.set_all_pid)
+        self.pid_page.plot_popout_requested.connect(self.show_heating_dialog)
         return self.pid_page
 
     def build_health_page(self) -> QWidget:

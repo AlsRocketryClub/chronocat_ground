@@ -252,3 +252,70 @@ class PlotHistoryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeatingHistoryTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_heating_series_and_averages_come_from_the_database(self) -> None:
+        from chronocat_ground.protocol import parse_telemetry_packet
+        from chronocat_ground.telemetry_history import TelemetryHistory
+        from tests.test_protocol import combined_telemetry_packet_v5
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "heating.db"
+            db = TelemetryDb(path)
+            history = TelemetryHistory(db)
+            decoded = parse_telemetry_packet(combined_telemetry_packet_v5())
+            for second in range(3):
+                history.record(decoded.standard, float(second), 1000.0 + second, decoded.pid)
+            db.close()
+
+            _rowid, ambient, _more = read_history_batch(path, "temperature", 15, 0)
+            self.assertEqual(ambient[:, 1].tolist(), [24.0] * 3)
+            _rowid, duty, _more = read_history_batch(path, "duty", 2, 0)
+            self.assertEqual(duty[:, 0].tolist(), [1000.0, 1001.0, 1002.0])
+            self.assertAlmostEqual(duty[0, 1], decoded.pid.heaters[2].duty_permille / 10.0)
+
+            expected_temperature = np.mean([
+                decoded.standard.temperature_c(slot) for slot in range(12)
+                if decoded.standard.temperature_c(slot) is not None
+            ])
+            last, average, _more = read_history_batch(path, "temperature_avg", 0, 0)
+            self.assertEqual(len(average), 3)
+            self.assertAlmostEqual(average[0, 1], expected_temperature)
+            # Incremental reads continue after the last packet only.
+            self.assertEqual(len(read_history_batch(path, "temperature_avg", 0, last)[1]), 0)
+            _rowid, duty_average, _more = read_history_batch(path, "duty_avg", 0, 0)
+            self.assertAlmostEqual(
+                duty_average[0, 1],
+                np.mean([heater.duty_permille for heater in decoded.pid.heaters]) / 10.0,
+            )
+
+    def test_double_clicking_a_heating_plot_opens_its_history(self) -> None:
+        from chronocat_ground.pid_page import PidPage
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "heating.db"
+            TelemetryDb(path).close()
+            host = DialogHost(path)
+            host.pid_page = PidPage()
+            host.pid_page.plot_popout_requested.connect(host.show_heating_dialog)
+            host.pid_page._select_ambient(15)
+            host.pid_page.temperature_plot.on_double_click()
+            host.pid_page._select_heater(4)
+            host.pid_page.output_plot.on_double_click()
+            host.pid_page.average_temperature_plot.on_double_click()
+            host.pid_page.average_duty_plot.on_double_click()
+            self.assertEqual(
+                sorted(host.plot_dialogs),
+                ["duty_4", "duty_avg", "temperature_15", "temperature_avg"],
+            )
+            self.assertEqual(host.plot_dialogs["temperature_15"].windowTitle(), "F2_U6 (ambient) TEMPERATURE")
+            for dialog in list(host.plot_dialogs.values()):
+                dialog.close()
+            host.pid_page.close()
+            host.close()
+            self.app.sendPostedEvents(None, QEvent.DeferredDelete)

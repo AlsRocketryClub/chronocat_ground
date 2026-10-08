@@ -40,12 +40,34 @@ class ForceOverrideTest(unittest.TestCase):
     def test_ambient_sensors_are_listed_without_a_heater(self) -> None:
         data = bytearray(combined_telemetry_packet_v5())
         struct.pack_into(">H", data, 19, 0x0FFF | (1 << 15))
-        self.page.update_ambient(parse_telemetry_packet(bytes(data)).standard)
+        self.page.update_ambient(parse_telemetry_packet(bytes(data)).standard, 1.0)
         rows = {row.sensor_id: row for row in self.page.ambient_rows}
         self.assertEqual(len(rows), 4)
         self.assertEqual(rows[15].state_label.text(), "AMBIENT")
         self.assertTrue(rows[15].temperature_label.text().endswith(" C"))
         self.assertEqual(rows[12].state_label.text(), "NO READING")
+
+    def test_clicking_an_ambient_sensor_shows_its_plot_without_heater_controls(self) -> None:
+        data = bytearray(combined_telemetry_packet_v5())
+        struct.pack_into(">H", data, 19, 0x0FFF | (1 << 15))
+        standard = parse_telemetry_packet(bytes(data)).standard
+        self.page.update_ambient(standard, 1.0)
+        self.page.update_ambient(standard, 2.0)
+        self.page.show()
+        rows = {row.sensor_id: row for row in self.page.ambient_rows}
+        rows[15].clicked.emit(15)
+        self.assertEqual(self.page.detail_title.text(), "F2_U6")
+        self.assertEqual(self.page.detail_status.text(), "AMBIENT")
+        self.assertEqual(len(self.page.ambient_history[15]), 2)
+        self.assertFalse(self.page.controls_panel.isVisible())
+        self.assertFalse(self.page.output_plot.isVisible())
+        self.assertTrue(rows[15].property("selected"))
+        self.assertFalse(self.page.rows[0].property("selected"))
+
+        self.page.rows[2].clicked.emit(2)
+        self.assertEqual(self.page.detail_title.text(), "H2")
+        self.assertTrue(self.page.controls_panel.isVisible())
+        self.assertFalse(rows[15].property("selected"))
 
     def test_force_is_sent_only_when_confirmed(self) -> None:
         self.page.update_packet(pid_packet(), 0.0)

@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 import math
 
-from .protocol import TELEMETRY_OS_ADC_COUNT, TelemetryPacket
+from .protocol import TELEMETRY_OS_ADC_COUNT, PidTelemetryPacket, TelemetryPacket
 from .telemetry_db import TelemetryDb
 
 
@@ -54,6 +54,7 @@ class TelemetryHistory:
         packet: TelemetryPacket,
         received_monotonic: float,
         received_wall: float,
+        pid: PidTelemetryPacket | None = None,
     ) -> TelemetryHistorySnapshot:
         self.packet_count += 1
 
@@ -113,8 +114,12 @@ class TelemetryHistory:
             for slot in range(len(packet.temperatures))
             if (temperature_c := packet.temperature_c(slot)) is not None
         ]
+        heater_rows = [
+            (packet.timestamp, received_wall, heater_id, heater.duty_permille)
+            for heater_id, heater in enumerate(pid.heaters)
+        ] if pid is not None else []
         try:
-            self._database.insert_packet(adc_rows, geiger_rows, temperature_rows)
+            self._database.insert_packet(adc_rows, geiger_rows, temperature_rows, heater_rows)
         except RuntimeError as exc:
             self.database_error = str(exc)
 

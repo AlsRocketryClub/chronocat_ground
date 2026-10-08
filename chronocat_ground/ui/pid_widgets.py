@@ -122,12 +122,15 @@ class HeaterOverviewRow(QFrame):
 class AmbientSensorRow(QFrame):
     """An ambient sensor in the heater list: a temperature only, no heater."""
 
+    clicked = Signal(int)
+
     def __init__(self, sensor_id: int) -> None:
         super().__init__()
         self.sensor_id = sensor_id
         self.setObjectName("pidRow")
         self.setProperty("state", "waiting")
         self.setMinimumHeight(36)
+        self.setCursor(Qt.PointingHandCursor)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 4, 10, 4)
@@ -158,6 +161,16 @@ class AmbientSensorRow(QFrame):
         self.state_label.setFixedWidth(104)
         layout.addWidget(self.state_label)
         layout.addStretch(1)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.sensor_id)
+        super().mousePressEvent(event)
+
+    def set_selected(self, selected: bool) -> None:
+        self.setProperty("selected", selected)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def set_temperature(self, temperature_c: float | None, received: bool) -> None:
         if not received:
