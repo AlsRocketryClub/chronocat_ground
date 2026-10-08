@@ -56,7 +56,8 @@ class PlotHistoryTest(unittest.TestCase):
             count = 36_000
             wall = 1_700_000_000.0
             db.conn.executemany(
-                "INSERT INTO geiger VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO geiger (ts_ms, received_wall, counter_id, dose_rate_cps, total_dose_sv, "
+                "dose_time_sec, hv_voltage, stat_error_percent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [(i * 1000, wall + i, 0, float(i), 0.0, i, 400, 0.0)
                  for i in range(count)],
             )
@@ -107,7 +108,7 @@ class PlotHistoryTest(unittest.TestCase):
             db = TelemetryDb(path)
             try:
                 db.conn.executemany(
-                    "INSERT INTO adc VALUES (?, ?, ?, ?)",
+                    "INSERT INTO adc (ts_ms, slot, raw24, received_wall) VALUES (?, ?, ?, ?)",
                     [(i * 1000, 0, AD7177_BIPOLAR_MIDSCALE + i, float(i))
                      for i in range(HISTORY_BATCH_SIZE + 5)],
                 )
@@ -163,7 +164,7 @@ class PlotHistoryTest(unittest.TestCase):
             count = 500
             # TIPs-pentacene is ADC2/ADC3, slots 6-11.
             db.conn.executemany(
-                "INSERT INTO adc VALUES (?, ?, ?, ?)",
+                "INSERT INTO adc (ts_ms, slot, raw24, received_wall) VALUES (?, ?, ?, ?)",
                 [(i * 1000, slot, AD7177_BIPOLAR_MIDSCALE + slot * 1000, wall + i)
                  for i in range(count) for slot in range(6, 12)],
             )
@@ -197,7 +198,8 @@ class PlotHistoryTest(unittest.TestCase):
             wall = 1_700_000_000.0
             count = 6000
             db.conn.executemany(
-                "INSERT INTO geiger VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO geiger (ts_ms, received_wall, counter_id, dose_rate_cps, total_dose_sv, "
+                "dose_time_sec, hv_voltage, stat_error_percent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [(i * 1000, wall + i + counter * 10, counter,
                   float(i + counter * 100), 0.0, i, 400, 0.0)
                  for i in range(count) for counter in (0, 1)],

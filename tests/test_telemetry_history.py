@@ -218,3 +218,86 @@ class GeigerCsvDurabilityTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(logger.packet_count, 1)
             logger.stop()
+
+
+class CompleteRecordTest(unittest.TestCase):
+    def test_bad_readings_heater_state_packets_and_events_are_stored(self) -> None:
+        import sqlite3
+        import struct
+        import tempfile
+        from pathlib import Path
+
+        from chronocat_ground.protocol import parse_telemetry_packet
+        from chronocat_ground.telemetry_db import TelemetryDb
+        from chronocat_ground.telemetry_history import TelemetryHistory
+        from tests.test_protocol import combined_telemetry_packet_v5
+
+        data = bytearray(combined_telemetry_packet_v5())
+        struct.pack_into(">H", data, 53, 0x0FFE)  # ADC slot 0 not valid
+        data[103] = 0  # Geiger 1 not answering
+        decoded = parse_telemetry_packet(bytes(data))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "record.db"
+            database = TelemetryDb(path)
+            TelemetryHistory(database).record(decoded.standard, 1.0, 500.0, decoded.pid)
+            database.insert_event(501.0, "log", "Sending heater H0 target command")
+            # The plots still see only good readings.
+            self.assertEqual(database.query_adc(0), [])
+            self.assertEqual(database.query_geiger(0), [])
+            database.close()
+
+            connection = sqlite3.connect(path)
+            try:
+                self.assertEqual(
+                    connection.execute("SELECT valid, status IS NOT NULL FROM adc WHERE slot = 0").fetchall(),
+                    [(0, 1)],
+                )
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM adc").fetchone()[0], 12)
+                self.assertEqual(
+                    connection.execute("SELECT counter_id, valid FROM geiger ORDER BY counter_id").fetchall(),
+                    [(0, 0), (1, 1)],
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT error_flags, event_id IS NOT NULL FROM geiger WHERE counter_id = 1"
+                    ).fetchone(),
+                    (decoded.standard.geiger_reading(1).error_flags, 1),
+                )
+                heater = decoded.pid.heaters[0]
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT target_milli_c, result, pid_enabled, kp FROM heater WHERE heater_id = 0"
+                    ).fetchone(),
+                    (heater.target_milli_c, heater.result, int(heater.pid_enabled), heater.kp),
+                )
+                self.assertEqual(
+                    connection.execute("SELECT counter, flags, adc_valid_mask FROM packet").fetchall(),
+                    [(decoded.standard.counter, decoded.standard.flags, 0x0FFE)],
+                )
+                self.assertEqual(
+                    connection.execute("SELECT kind, message FROM event_log").fetchall(),
+                    [("log", "Sending heater H0 target command")],
+                )
+            finally:
+                connection.close()
+
+    def test_an_old_database_gains_the_new_columns(self) -> None:
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+
+        from chronocat_ground.telemetry_db import TelemetryDb
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old.db"
+            connection = sqlite3.connect(path)
+            connection.execute("CREATE TABLE adc (ts_ms INT, slot INT, raw24 INT, received_wall REAL)")
+            connection.execute("INSERT INTO adc VALUES (1, 0, 42, 2.0)")
+            connection.commit()
+            connection.close()
+            database = TelemetryDb(path)
+            # Rows from before the change have no status and still count as good.
+            self.assertEqual(database.query_adc(0), [(2.0, 42)])
+            columns = {row[1] for row in database.conn.execute("PRAGMA table_info(adc)")}
+            self.assertTrue({"status", "valid"} <= columns)
+            database.close()

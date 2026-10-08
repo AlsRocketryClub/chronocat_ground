@@ -8,6 +8,7 @@ import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from .protocol import AD7177_BIPOLAR_MIDSCALE, AD7177_VREF_VOLTS
+from .telemetry_db import GOOD_ROW
 
 
 HISTORY_BATCH_SIZE = 8192
@@ -53,9 +54,11 @@ def read_history_batch(
             ).fetchall()
         else:
             table, key, value = _SERIES[kind]
+            # ADC and Geiger rows also record bad readings; plots show good ones.
+            good = f" AND {GOOD_ROW}" if table in ("adc", "geiger") else ""
             rows = connection.execute(
                 f"SELECT rowid, received_wall, {value} FROM {table} "
-                f"WHERE {key} = ? AND rowid > ? AND received_wall IS NOT NULL "
+                f"WHERE {key} = ? AND rowid > ? AND received_wall IS NOT NULL{good} "
                 "ORDER BY rowid LIMIT ?",
                 (channel, after_rowid, HISTORY_BATCH_SIZE),
             ).fetchall()

@@ -64,6 +64,12 @@ class TelemetryHistory:
             if reading is None or not reading.valid:
                 for points in (self._geiger_points, self._geiger_error_points, self._geiger_dose_points):
                     points[counter_id].append((received_monotonic, received_wall, math.nan))
+                if reading is not None:
+                    # Kept so a detector that stopped answering shows in the record.
+                    geiger_rows.append(
+                        (packet.timestamp, received_wall, counter_id, None, None, None, None, None,
+                         0, reading.error_flags, None, None, None, None)
+                    )
                 continue
             self._geiger_points[counter_id].append(
                 (received_monotonic, received_wall, reading.dose_rate_cps)
@@ -88,6 +94,12 @@ class TelemetryHistory:
                     reading.dose_time_sec,
                     reading.hv_voltage,
                     reading.stat_error_percent,
+                    1,
+                    reading.error_flags,
+                    reading.event_id,
+                    reading.dose_cps,
+                    reading.stats_time_sec,
+                    reading.stat_cell_count,
                 )
             )
 
@@ -99,6 +111,12 @@ class TelemetryHistory:
                 and reading.word != 0
                 and not reading.has_error
             )
+            # Every reading is stored with its status, so an overrange or a
+            # missing channel can be told apart from a lost packet later.
+            adc_rows.append(
+                (packet.timestamp, reading.slot, reading.raw24, received_wall,
+                 reading.status, 1 if valid else 0)
+            )
             if not valid:
                 self._adc_points[reading.slot].append(
                     (received_monotonic, received_wall, math.nan, math.nan)
@@ -107,7 +125,6 @@ class TelemetryHistory:
             self._adc_points[reading.slot].append(
                 (received_monotonic, received_wall, reading.voltage, reading.raw24)
             )
-            adc_rows.append((packet.timestamp, reading.slot, reading.raw24, received_wall))
 
         temperature_rows = [
             (packet.timestamp, received_wall, slot, temperature_c)
@@ -115,11 +132,25 @@ class TelemetryHistory:
             if (temperature_c := packet.temperature_c(slot)) is not None
         ]
         heater_rows = [
-            (packet.timestamp, received_wall, heater_id, heater.duty_permille)
+            (
+                packet.timestamp, received_wall, heater_id, heater.duty_permille,
+                heater.target_milli_c, heater.result, int(heater.pid_enabled),
+                int(heater.manual), int(heater.sensor_valid), heater.proportional_term,
+                heater.integral_term, heater.derivative_term, heater.output,
+                heater.kp, heater.ki, heater.kd,
+            )
             for heater_id, heater in enumerate(pid.heaters)
         ] if pid is not None else []
+        packet_rows = [(
+            packet.timestamp, received_wall, packet.counter, packet.version, packet.flags,
+            packet.health_code, packet.temperature_valid_mask, packet.os_adc_valid_mask,
+            pid.pid_enabled_mask if pid is not None else None,
+            pid.manual_mask if pid is not None else None,
+        )]
         try:
-            self._database.insert_packet(adc_rows, geiger_rows, temperature_rows, heater_rows)
+            self._database.insert_packet(
+                adc_rows, geiger_rows, temperature_rows, heater_rows, packet_rows
+            )
         except RuntimeError as exc:
             self.database_error = str(exc)
 

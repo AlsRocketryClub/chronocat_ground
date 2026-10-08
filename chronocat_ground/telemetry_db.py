@@ -10,6 +10,51 @@ from typing import List, Tuple
 
 DEFAULT_DATABASE_PATH = Path("chronocat_adc.db")
 
+# Columns added after the first release. Older databases gain them on open;
+# their existing rows read NULL, which the readers treat as a good value
+# (only good values were stored back then).
+_ADDED_COLUMNS = {
+    "adc": (("status", "INT"), ("valid", "INT")),
+    "geiger": (
+        ("valid", "INT"), ("error_flags", "INT"), ("event_id", "INT"),
+        ("user_dose", "REAL"), ("stats_time_sec", "INT"), ("stat_cell_count", "INT"),
+    ),
+    "heater": (
+        ("target_milli_c", "INT"), ("result", "INT"), ("pid_enabled", "INT"),
+        ("manual", "INT"), ("sensor_valid", "INT"), ("proportional", "REAL"),
+        ("integral", "REAL"), ("derivative", "REAL"), ("output", "REAL"),
+        ("kp", "REAL"), ("ki", "REAL"), ("kd", "REAL"),
+    ),
+}
+_ADC_COLUMNS = ("ts_ms", "slot", "raw24", "received_wall", "status", "valid")
+_GEIGER_COLUMNS = (
+    "ts_ms", "received_wall", "counter_id", "dose_rate_cps", "total_dose_sv",
+    "dose_time_sec", "hv_voltage", "stat_error_percent", "valid", "error_flags",
+    "event_id", "user_dose", "stats_time_sec", "stat_cell_count",
+)
+_HEATER_COLUMNS = (
+    "ts_ms", "received_wall", "heater_id", "duty_permille", "target_milli_c",
+    "result", "pid_enabled", "manual", "sensor_valid", "proportional", "integral",
+    "derivative", "output", "kp", "ki", "kd",
+)
+_PACKET_COLUMNS = (
+    "ts_ms", "received_wall", "counter", "version", "flags", "health_code",
+    "temperature_valid_mask", "adc_valid_mask", "pid_enabled_mask", "manual_mask",
+)
+# Rows written before a table grew are padded with NULLs.
+GOOD_ROW = "(valid IS NULL OR valid = 1)"
+
+
+def _insert_sql(table: str, columns: tuple[str, ...]) -> str:
+    return (
+        f"INSERT INTO {table} ({', '.join(columns)}) "
+        f"VALUES ({', '.join('?' for _ in columns)})"
+    )
+
+
+def _padded(rows, width: int) -> list[tuple]:
+    return [tuple(row) + (None,) * (width - len(row)) for row in rows]
+
 
 def archive_database(path: str | Path, timestamp: datetime | None = None) -> Path:
     """Checkpoint and archive a SQLite database without discarding WAL data."""
@@ -108,6 +153,22 @@ class TelemetryDb:
             ")"
         )
 
+        # One row per packet: what the per-sensor tables cannot show
+        # (packet loss via the counter, resets, flags, health).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS packet ("
+            "ts_ms INT, received_wall REAL, counter INT, version INT, flags INT, "
+            "health_code INT, temperature_valid_mask INT, adc_valid_mask INT, "
+            "pid_enabled_mask INT, manual_mask INT"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_packet_received ON packet(received_wall)")
+
+        # The operator's log: commands, replies, health events, resets.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS event_log (wall REAL, kind TEXT, message TEXT)"
+        )
+
         # Each detector's dose-rate coefficient; it never changes, so one row each.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS geiger_calibration ("
@@ -141,6 +202,11 @@ class TelemetryDb:
             columns = {row[1] for row in cursor.fetchall()}
             if "received_wall" not in columns:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN received_wall REAL")
+        for table, added in _ADDED_COLUMNS.items():
+            columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for name, kind in added:
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
     def insert_adc(self, timestamp_ms: int, readings: List[Tuple[int, int]], received_wall: float) -> None:
         data = [(timestamp_ms, slot, raw24, received_wall) for slot, raw24 in readings]
@@ -154,7 +220,8 @@ class TelemetryDb:
         adc_rows: list[tuple[int, int, int, float]],
         geiger_rows: list[tuple[int, float, int, float, float, int, int, float]],
         temperature_rows: list[tuple[int, float, int, float]],
-        heater_rows: list[tuple[int, float, int, int]] = (),
+        heater_rows: list[tuple] = (),
+        packet_rows: list[tuple] = (),
     ) -> None:
         """Persist one packet in a single transaction."""
         if self._async_writes:
@@ -163,11 +230,15 @@ class TelemetryDb:
             if self._writer_error is not None:
                 raise RuntimeError("telemetry database writer failed") from self._writer_error
             try:
-                self._write_queue.put_nowait((adc_rows, geiger_rows, temperature_rows, heater_rows))
+                self._write_queue.put_nowait(
+                    (adc_rows, geiger_rows, temperature_rows, heater_rows, packet_rows)
+                )
             except queue.Full as exc:
                 raise RuntimeError("telemetry database writer queue is full") from exc
             return
-        self._insert_packet_sync(self.conn, adc_rows, geiger_rows, temperature_rows, heater_rows)
+        self._insert_packet_sync(
+            self.conn, adc_rows, geiger_rows, temperature_rows, heater_rows, packet_rows
+        )
 
     @staticmethod
     def _insert_packet_sync(
@@ -176,16 +247,13 @@ class TelemetryDb:
         geiger_rows: list[tuple],
         temperature_rows: list[tuple],
         heater_rows: list[tuple] = (),
+        packet_rows: list[tuple] = (),
     ) -> None:
         connection.executemany(
-            "INSERT INTO adc (ts_ms, slot, raw24, received_wall) VALUES (?, ?, ?, ?)",
-            adc_rows,
+            _insert_sql("adc", _ADC_COLUMNS), _padded(adc_rows, len(_ADC_COLUMNS))
         )
         connection.executemany(
-            "INSERT INTO geiger (ts_ms, received_wall, counter_id, dose_rate_cps, "
-            "total_dose_sv, dose_time_sec, hv_voltage, stat_error_percent) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            geiger_rows,
+            _insert_sql("geiger", _GEIGER_COLUMNS), _padded(geiger_rows, len(_GEIGER_COLUMNS))
         )
         connection.executemany(
             "INSERT INTO temperature (ts_ms, received_wall, slot, temperature_c) "
@@ -193,9 +261,10 @@ class TelemetryDb:
             temperature_rows,
         )
         connection.executemany(
-            "INSERT INTO heater (ts_ms, received_wall, heater_id, duty_permille) "
-            "VALUES (?, ?, ?, ?)",
-            heater_rows,
+            _insert_sql("heater", _HEATER_COLUMNS), _padded(heater_rows, len(_HEATER_COLUMNS))
+        )
+        connection.executemany(
+            _insert_sql("packet", _PACKET_COLUMNS), _padded(packet_rows, len(_PACKET_COLUMNS))
         )
         connection.commit()
 
@@ -262,6 +331,13 @@ class TelemetryDb:
         )
         self.conn.commit()
 
+    def insert_event(self, wall: float, kind: str, message: str) -> None:
+        """One operator-log line; small and rare, so written directly."""
+        self.conn.execute(
+            "INSERT INTO event_log (wall, kind, message) VALUES (?, ?, ?)", (wall, kind, message)
+        )
+        self.conn.commit()
+
     def load_xder(self) -> dict[int, tuple[float, float]]:
         """Stored coefficients as {counter_id: (xder, read_wall)}."""
         rows = self.conn.execute("SELECT counter_id, xder, read_wall FROM geiger_calibration").fetchall()
@@ -272,13 +348,14 @@ class TelemetryDb:
         parameters: tuple[object, ...] = (slot, cutoff_ms) if limit is None else (slot, cutoff_ms, limit)
         query = (
             "SELECT received_wall, raw24 FROM adc WHERE slot = ? AND ts_ms >= "
-            "? AND received_wall IS NOT NULL ORDER BY received_wall, ts_ms"
+            f"? AND received_wall IS NOT NULL AND {GOOD_ROW} ORDER BY received_wall, ts_ms"
         )
         if limit is not None:
             query = (
                 "SELECT received_wall, raw24 FROM ("
                 "SELECT rowid AS row_id, received_wall, raw24 FROM adc WHERE slot = ? AND ts_ms >= ? "
-                "AND received_wall IS NOT NULL ORDER BY received_wall DESC, ts_ms DESC LIMIT ?"
+                f"AND received_wall IS NOT NULL AND {GOOD_ROW} "
+                "ORDER BY received_wall DESC, ts_ms DESC LIMIT ?"
                 ") ORDER BY received_wall, row_id"
             )
         cursor = self.conn.execute(
@@ -292,13 +369,13 @@ class TelemetryDb:
         parameters: tuple[object, ...] = (counter_id, cutoff_ms) if limit is None else (counter_id, cutoff_ms, limit)
         query = (
             "SELECT received_wall, dose_rate_cps FROM geiger WHERE counter_id = ? AND ts_ms >= ? "
-            "ORDER BY received_wall, ts_ms"
+            f"AND {GOOD_ROW} ORDER BY received_wall, ts_ms"
         )
         if limit is not None:
             query = (
                 "SELECT received_wall, dose_rate_cps FROM ("
                 "SELECT rowid AS row_id, received_wall, dose_rate_cps FROM geiger WHERE counter_id = ? AND ts_ms >= ? "
-                "ORDER BY received_wall DESC, ts_ms DESC LIMIT ?"
+                f"AND {GOOD_ROW} ORDER BY received_wall DESC, ts_ms DESC LIMIT ?"
                 ") ORDER BY received_wall, row_id"
             )
         cursor = self.conn.execute(
@@ -346,4 +423,5 @@ class TelemetryDb:
         self.conn.execute("DELETE FROM geiger")
         self.conn.execute("DELETE FROM temperature")
         self.conn.execute("DELETE FROM heater")
+        self.conn.execute("DELETE FROM packet")
         self.conn.commit()

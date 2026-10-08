@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import math
+import sqlite3
 import time
 
 from PySide6.QtCore import QTimer
@@ -770,6 +771,11 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         )
         if reset is None or same_reset(reset.reset_wall, self.dismissed_reset_wall()):
             return
+        self._record_event(
+            "reset",
+            f"{reset.cause} reset at {datetime.fromtimestamp(reset.reset_wall):%Y-%m-%d %H:%M:%S}"
+            + (f", previous uptime {reset.previous_uptime_ms} ms" if reset.previous_uptime_ms is not None else ""),
+        )
         self.log(f"Board reset detected ({reset.cause})")
         self.reset_banner.add_reset(reset)
 
@@ -878,6 +884,17 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
     def log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_view.appendPlainText(f"[{timestamp}] {message}")
+        self._record_event("log", message)
+
+    def _record_event(self, kind: str, message: str) -> None:
+        """Keep the operator's record in the database; the log panel is lost on close."""
+        database = getattr(self, "adc_db", None)
+        if database is None:
+            return
+        try:
+            database.insert_event(time.time(), kind, message)
+        except sqlite3.Error:
+            pass  # closed mid-archive; the panel still shows the line
 
     def on_receiver_error(self, message: str) -> None:
         self.log(message)
@@ -893,6 +910,8 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         link = link_status(self.client.connected, age, self._receiver_error)
         items = evaluate_health(self._health_packet, self._health_pid, link)
         events = self.health_events.update(items, datetime.now(), uptime_ms)
+        for event in events:
+            self._record_event("health", f"{event.state}: {event.text}")
         issues = active_issues(items)
         self._health_items = items
         self.health_page.show_health(items, issues, events)
