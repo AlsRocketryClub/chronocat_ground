@@ -73,6 +73,15 @@ class HealthModelTest(unittest.TestCase):
             ["12346", "123.5", "9.88", "0.0123"],
         )
 
+    def test_forced_heater_is_a_warning_even_with_a_good_sensor(self) -> None:
+        data = bytearray(combined_telemetry_packet_v5())
+        heater_records = 18 + 1 + 2 + 32 + 2 + 48 + 68 + 4
+        struct.pack_into(">H", data, heater_records + 2 * 35 + 4, 120)
+        data[heater_records + 2 * 35 + 6] = 3  # result FORCED
+        heater = items_for(parse_telemetry_packet(bytes(data)))["heater:2"]
+        self.assertEqual(heater.state, WARNING)
+        self.assertEqual(heater.reason, "forced override: sensor protection off")
+
     def test_watchdog_reset_flag_is_reported(self) -> None:
         reset = items_for(packet(flags=0x0007 | (1 << 4)))["reset"]
         self.assertEqual((reset.state, reset.value), (WARNING, "watchdog"))

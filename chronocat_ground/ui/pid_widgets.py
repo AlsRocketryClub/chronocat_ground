@@ -78,7 +78,10 @@ class HeaterOverviewRow(QFrame):
         if reading.sensor_valid:
             temperature = f"{reading.measurement_milli_c / 1000.0:.2f} C"
 
-        if not reading.sensor_mapped:
+        if reading.forced:
+            state = "FORCED"
+            state_class = "forced"
+        elif not reading.sensor_mapped:
             state = "UNMAPPED"
             state_class = "blocked"
         elif reading.result >= 7:

@@ -99,7 +99,7 @@ PID_RESULT_NAMES = {
     0: "disabled",
     1: "ok",
     2: "manual",
-    3: "reserved",
+    3: "forced",
     4: "reserved",
     5: "unmapped sensor",
     6: "invalid sensor",
@@ -135,6 +135,9 @@ COMMAND_HEATER_ALL_ON = 0x1B
 COMMAND_HEATER_ALL_OFF = 0x1C
 COMMAND_HEATER_SET_TARGET_SIGNED = 0x1D
 COMMAND_HEATER_GET_TARGET_SIGNED = 0x1E
+# Emergency override: manual duty with every sensor protection bypassed,
+# including the 65 C cutoff. Duty 0 leaves forced mode.
+COMMAND_HEATER_FORCE_DUTY = 0x1F
 
 COMMAND_SYSTEM_RESET = 0x60
 VALUE_OFF = 0x00
@@ -166,6 +169,7 @@ COMMAND_NAMES = {
     COMMAND_HEATER_SET_KD: "heater set Kd",
     COMMAND_HEATER_GET_KD: "heater get Kd",
     COMMAND_HEATER_SET_MANUAL_DUTY: "heater set manual duty",
+    COMMAND_HEATER_FORCE_DUTY: "heater force duty (override)",
     COMMAND_HEATER_RETURN_TO_PID: "heater return to PID",
     COMMAND_HEATER_GET_MANUAL_MODE: "heater get manual mode",
     COMMAND_HEATER_ALL_ON: "all heaters on",

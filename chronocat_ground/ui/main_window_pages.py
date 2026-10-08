@@ -599,6 +599,7 @@ class MainWindowPagesMixin:
         self.pid_page.target_requested.connect(self.set_pid_target)
         self.pid_page.gain_requested.connect(self.set_pid_gain)
         self.pid_page.manual_duty_requested.connect(self.set_pid_manual_duty)
+        self.pid_page.force_duty_requested.connect(self.set_pid_force_duty)
         self.pid_page.return_pid_requested.connect(self.return_pid_heater)
         self.pid_page.all_off_requested.connect(self.turn_all_heaters_off)
         self.pid_page.all_pid_requested.connect(self.set_all_pid)

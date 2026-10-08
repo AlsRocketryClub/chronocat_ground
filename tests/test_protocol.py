@@ -307,7 +307,8 @@ class TelemetryProtocolTests(unittest.TestCase):
         self.assertEqual(packet.heaters[1].result_name, "disabled")
 
     def test_removed_characterization_values_remain_reserved(self) -> None:
-        self.assertEqual(PID_RESULT_NAMES[3], "reserved")
+        # 3 was reused for the forced manual override.
+        self.assertEqual(PID_RESULT_NAMES[3], "forced")
         self.assertEqual(PID_RESULT_NAMES[4], "reserved")
         self.assertEqual(PID_RESULT_NAMES[5], "unmapped sensor")
 

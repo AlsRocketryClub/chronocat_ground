@@ -27,6 +27,8 @@ from .protocol import (
     COMMAND_HEATER_SET_TARGET,
     COMMAND_HEATER_SET_TARGET_SIGNED,
     COMMAND_HEATER_SET_MANUAL_DUTY,
+    COMMAND_HEATER_FORCE_DUTY,
+    STATUS_BAD_VALUE,
     COMMAND_HEATER_RETURN_TO_PID,
     COMMAND_HEATER_ALL_OFF,
     DEFAULT_TELEMETRY_PORT,
@@ -359,6 +361,10 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                         )
                     else:
                         self.pid_page.set_command_status(f"applied {decoded:.3f}")
+                elif value_kind == "forced_duty" and self.pid_page is not None:
+                    self.pid_page.set_command_status(
+                        f"FORCED duty active: {response.arg2 / 10.0:.1f}%, sensor protection off"
+                    )
                 elif value_kind == "duty" and self.pid_page is not None:
                     self.pid_page.set_command_status(
                         f"manual duty active: {response.arg2 / 10.0:.1f}%"
@@ -370,6 +376,16 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                 if self.pid_page is not None:
                     self.pid_page.set_command_status(f"rejected: {status_name(response.status)}")
                 self.log(f"Heater {param_name} rejected: {status_name(response.status)}")
+                if (
+                    value_kind == "duty"
+                    and encoded_value > 0
+                    and response.status == STATUS_BAD_VALUE
+                    and self.pid_page is not None
+                ):
+                    # Out of the reply handler first, so the dialog never blocks it.
+                    QTimer.singleShot(
+                        0, lambda: self.pid_page.offer_force_override(heater_id, encoded_value)
+                    )
         else:
             self.pending_heater_command = None
             self.log_response(response)
@@ -573,6 +589,18 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             f"H{heater_id} manual duty",
             duty_permille,
             "duty",
+            heater_id,
+        )
+
+    def set_pid_force_duty(self, heater_id: int, duty_permille: int) -> None:
+        if self.pid_page is None:
+            return
+        self.log(f"H{heater_id}: forcing {duty_permille / 10.0:.1f}% with sensor protection bypassed")
+        self.send_heater_parameter(
+            COMMAND_HEATER_FORCE_DUTY,
+            f"H{heater_id} forced duty",
+            duty_permille,
+            "forced_duty",
             heater_id,
         )
 

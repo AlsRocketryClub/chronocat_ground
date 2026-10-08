@@ -309,7 +309,11 @@ def _heater_items(pid: PidTelemetryPacket | None) -> list[HealthItem]:
             continue
         reading = pid.heaters[heater_id]
         value = f"{reading.duty_permille / 10.0:.0f}%"
-        if reading.result >= 7:
+        if reading.forced:
+            items.append(HealthItem(
+                key, group, label, name, WARNING, value, "forced override: sensor protection off"
+            ))
+        elif reading.result >= 7:
             items.append(HealthItem(key, group, label, name, ERROR, value, reading.result_name))
         elif reading.result >= 5 or not reading.sensor_mapped:
             items.append(HealthItem(key, group, label, name, WARNING, value, reading.result_name))

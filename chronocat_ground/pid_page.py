@@ -73,6 +73,7 @@ class PidPage(QWidget):
     target_requested = Signal(int, float)
     gain_requested = Signal(int, str, float)
     manual_duty_requested = Signal(int, int)
+    force_duty_requested = Signal(int, int)
     return_pid_requested = Signal(int)
     all_off_requested = Signal()
     all_pid_requested = Signal(bool, float, str)
@@ -384,6 +385,46 @@ class PidPage(QWidget):
     def _apply_manual(self) -> None:
         self.manual_duty_requested.emit(self.selected_heater, self.manual_spin.value())
 
+    def manual_refusal_reasons(self, heater_id: int) -> list[str]:
+        """Why the board most likely refused a manual duty, from the latest telemetry."""
+        reading = self.readings[heater_id]
+        if reading is None:
+            return ["no heater telemetry received yet"]
+        sensor = SENSOR_NAMES[reading.sensor_id] if reading.sensor_id < len(SENSOR_NAMES) else "UNMAPPED"
+        reasons = []
+        if not reading.sensor_mapped:
+            reasons.append("the heater has no temperature sensor mapped")
+        elif not reading.sensor_valid:
+            reasons.append(f"sensor {sensor} has no valid reading")
+        elif reading.measurement_milli_c >= 65000:
+            reasons.append(f"sensor {sensor} reads {reading.measurement_milli_c / 1000.0:.1f} C, above the 65 C cutoff")
+        if reading.result == 7:
+            reasons.append("the overtemperature latch is set (it clears after 3 readings below 60 C)")
+        return reasons or ["the board refused it; telemetry shows no sensor problem"]
+
+    def offer_force_override(self, heater_id: int, duty_permille: int) -> None:
+        """Warn about a refused manual duty and let the operator force it."""
+        reasons = "\n".join(f"  \u2022 {reason}" for reason in self.manual_refusal_reasons(heater_id))
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(f"H{heater_id} manual duty refused")
+        box.setText(f"The board refused {duty_permille / 10.0:.1f}% on H{heater_id}:\n\n{reasons}")
+        box.setInformativeText(
+            "Forcing runs this duty with every sensor protection off, including the "
+            "65 C cutoff. Nothing will stop the heater except setting it to 0%, "
+            "returning it to PID, or the board resetting.\n\n"
+            "Only force it if you are watching the temperatures yourself."
+        )
+        force = box.addButton("Force anyway", QMessageBox.DestructiveRole)
+        cancel = box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        if box.clickedButton() is force:
+            self.force_duty_requested.emit(heater_id, duty_permille)
+        else:
+            self.set_command_status("manual duty refused; not forced")
+
     def _return_pid(self) -> None:
         self.return_pid_requested.emit(self.selected_heater)
 
@@ -529,11 +570,17 @@ class PidPage(QWidget):
         self.detail_mapping.setText(f"SENSOR {sensor}")
         self.detail_alert.setVisible(True)
         self.detail_status.setText(reading.result_name.upper())
-        self.detail_status.setProperty("state", "fault" if reading.result >= 7 else "active" if reading.pid_enabled else "blocked")
+        self.detail_status.setProperty(
+            "state",
+            "forced" if reading.forced
+            else "fault" if reading.result >= 7
+            else "active" if reading.pid_enabled
+            else "blocked",
+        )
         self.detail_status.style().unpolish(self.detail_status)
         self.detail_status.style().polish(self.detail_status)
         self.detail_alert.setText(
-            f"{'PID' if reading.pid_enabled else 'MANUAL' if reading.manual else 'OFF'}  |  "
+            f"{'FORCED (sensor protection off)' if reading.forced else 'PID' if reading.pid_enabled else 'MANUAL' if reading.manual else 'OFF'}  |  "
             f"Target {reading.target_c:.3f} C  |  Duty {reading.duty_permille / 10.0:.1f}%"
         )
         self.term_labels["P"].setText(f"{reading.proportional_term:.3f}")

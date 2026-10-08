@@ -414,6 +414,12 @@ QPushButton:disabled {
     border-color: #b36a6a;
     color: #702525;
 }
+#pidRow[state="forced"] #pidBadge,
+#pidBadge[state="forced"] {
+    background: #b42318;
+    border-color: #7a1212;
+    color: #ffffff;
+}
 #pidRow[state="off"] #pidBadge,
 #pidRow[state="waiting"] #pidBadge {
     background: #ededed;

@@ -218,6 +218,11 @@ class HeaterPidReading:
         return PID_RESULT_NAMES.get(self.result, f"unknown ({self.result})")
 
     @property
+    def forced(self) -> bool:
+        """Running a forced manual duty with sensor protection bypassed."""
+        return self.result == 3
+
+    @property
     def temperature_c(self) -> float | None:
         if not self.sensor_valid:
             return None
