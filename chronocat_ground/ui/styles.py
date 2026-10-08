@@ -23,6 +23,41 @@ QMessageBox QPushButton {
 #appShell, #pages, #pageScroll, QScrollArea > QWidget > QWidget {
     background: #dcdcdc;
 }
+#resetBanner {
+    background: #fff3cd;
+    border: 1px solid #c49a37;
+}
+#resetBanner[kind="info"] {
+    background: #ededed;
+    border-color: #aaaaaa;
+}
+#resetBannerIcon {
+    color: #8a5a00;
+    font-size: 18px;
+    font-weight: 700;
+}
+#resetBanner[kind="info"] #resetBannerIcon {
+    color: #555555;
+}
+#resetBannerHeadline {
+    color: #4d3500;
+    font-weight: 700;
+}
+#resetBanner[kind="info"] #resetBannerHeadline {
+    color: #333333;
+}
+#resetBannerDetail {
+    color: #4d3500;
+}
+#resetBannerClose {
+    background: transparent;
+    border: none;
+    font-size: 14px;
+    font-weight: 700;
+}
+#resetBannerClose:hover {
+    background: rgba(0, 0, 0, 0.08);
+}
 #topbar {
     background: #f4f4f4;
     border: 1px solid #8f8f8f;

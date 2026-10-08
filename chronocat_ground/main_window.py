@@ -29,6 +29,7 @@ from .protocol import (
     COMMAND_HEATER_SET_MANUAL_DUTY,
     COMMAND_HEATER_FORCE_DUTY,
     STATUS_BAD_VALUE,
+    TELEMETRY_FLAG_PREVIOUS_WATCHDOG_RESET,
     COMMAND_HEATER_RETURN_TO_PID,
     COMMAND_HEATER_ALL_OFF,
     DEFAULT_TELEMETRY_PORT,
@@ -53,6 +54,7 @@ from .protocol import (
     telemetry_value_name,
 )
 from .pid_page import PidPage
+from .reset_monitor import ResetMonitor, same_reset
 from .pid_profiles import PidProfile, profile_by_name
 from .telemetry_csv import CSV_MODE_FULL, TelemetryCsvLogger
 from .telemetry_db import DEFAULT_DATABASE_PATH, TelemetryDb
@@ -138,6 +140,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self._xder_reads_pending: list[int] = []
         self.session_dose = SessionDose()
         self.health_events = HealthEventLog()
+        self.reset_monitor = ResetMonitor()
         self._health_packet: TelemetryPacket | None = None
         self._health_pid: PidTelemetryPacket | None = None
         self._receiver_error = ""
@@ -731,6 +734,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self._health_packet = packet
         if combined_packet is not None:
             self._health_pid = combined_packet.pid
+        self._check_board_reset(packet, received_wall)
         self._receiver_error = ""
         self.refresh_health(uptime_ms=packet.timestamp)
         self.dashboard.show_packet(packet, self._health_pid, history, self._health_items)
@@ -748,6 +752,23 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                 self.stop_csv_logging()
             else:
                 self.csv_log_status.setText(f"CSV on ({self.csv_logger.packet_count})")
+
+    def _check_board_reset(self, packet: TelemetryPacket, received_wall: float) -> None:
+        pid = self._health_pid
+        heaters = (
+            tuple(heater_id for heater_id, reading in enumerate(pid.heaters) if reading.pid_enabled)
+            if pid is not None else None
+        )
+        reset = self.reset_monitor.update(
+            packet.timestamp,
+            bool(packet.flags & TELEMETRY_FLAG_PREVIOUS_WATCHDOG_RESET),
+            received_wall,
+            heaters,
+        )
+        if reset is None or same_reset(reset.reset_wall, self.dismissed_reset_wall()):
+            return
+        self.log(f"Board reset detected ({reset.cause})")
+        self.reset_banner.add_reset(reset)
 
     def update_sd_log_status(self, flags: int) -> None:
         if (flags & TELEMETRY_FLAG_SD_LOG_ERROR) != 0:

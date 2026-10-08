@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import sqlite3
 from functools import partial
 
@@ -49,6 +50,7 @@ from .dashboard_page import DashboardPage
 from .diagnostics_page import DiagnosticsPage
 from .radiation_page import RadiationPage
 from .health_page import HealthPage
+from .reset_banner import ResetBanner
 from .widgets import PAGE_SPACING, Panel, SampleCard
 from .status_widgets import StatusIndicator
 
@@ -84,6 +86,7 @@ TAB_ROWS = (
 NAV_TOP = "top"
 NAV_SIDE = "side"
 _NAV_SETTING = "layout/navigation"
+_DISMISSED_RESET_SETTING = "reset_banner/dismissed_reset_wall"
 _HEALTH_DOT_COLORS = {
     "ok": "#4f9a4f",
     "warning": "#d4a017",
@@ -101,6 +104,10 @@ class MainWindowPagesMixin:
         layout.setSpacing(PAGE_SPACING)
 
         layout.addWidget(self.build_topbar())
+        self.reset_banner = ResetBanner()
+        self.reset_banner.dismissed.connect(self._dismiss_reset_banner)
+        self.reset_banner.clicked.connect(lambda: self.switch_view(VIEW_HEALTH))
+        layout.addWidget(self.reset_banner)
 
         body = QHBoxLayout()
         body.setSpacing(PAGE_SPACING)
@@ -240,6 +247,17 @@ class MainWindowPagesMixin:
             self.side_nav.layout.addWidget(self._add_nav_button(view, "navSide"))
         self.side_nav.layout.addStretch(1)
         return self.side_nav
+
+    def _dismiss_reset_banner(self, reset_wall: float) -> None:
+        # Remembered so a ground station restart does not show the same reset again.
+        self.nav_settings().setValue(_DISMISSED_RESET_SETTING, reset_wall)
+
+    def dismissed_reset_wall(self) -> float | None:
+        value = self.nav_settings().value(_DISMISSED_RESET_SETTING)
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
 
     def nav_settings(self) -> QSettings:
         # INI so tests can point it at a temporary folder.
@@ -787,6 +805,7 @@ class MainWindowPagesMixin:
         )
         if ret == QMessageBox.Yes:
             self.log("Sending reset command")
+            self.reset_monitor.note_reset_command(time.time())
             self.send_command(COMMAND_SYSTEM_RESET, 0)
 
     def switch_view(self, view: str) -> None:
