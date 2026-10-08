@@ -37,6 +37,16 @@ class ForceOverrideTest(unittest.TestCase):
         self.assertIn("sensor F1_U0 has no valid reading", reasons)
         self.assertTrue(any("overtemperature latch" in reason for reason in reasons))
 
+    def test_ambient_sensors_are_listed_without_a_heater(self) -> None:
+        data = bytearray(combined_telemetry_packet_v5())
+        struct.pack_into(">H", data, 19, 0x0FFF | (1 << 15))
+        self.page.update_ambient(parse_telemetry_packet(bytes(data)).standard)
+        rows = {row.sensor_id: row for row in self.page.ambient_rows}
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(rows[15].state_label.text(), "AMBIENT")
+        self.assertTrue(rows[15].temperature_label.text().endswith(" C"))
+        self.assertEqual(rows[12].state_label.text(), "NO READING")
+
     def test_force_is_sent_only_when_confirmed(self) -> None:
         self.page.update_packet(pid_packet(), 0.0)
         for choice, expected in (("cancel", []), ("force", [(0, 150)])):

@@ -22,11 +22,12 @@ LIVE = link_status(uplink_connected=True, packet_age_s=0.5)
 
 def packet(
     temps=None, temp_mask=0xFFFF, adc_mask=0x0FFF, geiger_2_flags=0, flags=0x0007, uptime_ms=1234,
+    health_code=0,
 ):
     data = bytearray(combined_telemetry_packet_v5())
     struct.pack_into(">H", data, 6, flags)
     struct.pack_into(">I", data, 10, uptime_ms)
-    data[18] = 0
+    data[18] = health_code
     struct.pack_into(">H", data, 19, temp_mask)
     struct.pack_into(">16h", data, 21, *(temps or [2500] * 16))
     struct.pack_into(">H", data, 53, adc_mask)
@@ -81,6 +82,25 @@ class HealthModelTest(unittest.TestCase):
         heater = items_for(parse_telemetry_packet(bytes(data)))["heater:2"]
         self.assertEqual(heater.state, WARNING)
         self.assertEqual(heater.reason, "forced override: sensor protection off")
+
+    def test_one_working_ambient_sensor_is_enough(self) -> None:
+        # Only F2_U6 (sensor 15) fitted; the board still reports a sensor error.
+        items = items_for(packet(temp_mask=0x0FFF | (1 << 15), health_code=2))
+        self.assertEqual(items["temp:12"].state, UNKNOWN)
+        self.assertEqual(items["temp:15"].state, OK)
+        self.assertEqual(items["firmware"].state, OK)
+        self.assertEqual(active_issues(tuple(items.values())), [])
+
+    def test_no_working_ambient_sensor_is_one_warning(self) -> None:
+        items = items_for(packet(temp_mask=0x0FFF, health_code=2))
+        texts = [issue.text for issue in active_issues(tuple(items.values()))]
+        self.assertEqual(texts, ["No ambient sensor responding"])
+        self.assertEqual(items["temp:15"].state, WARNING)
+
+    def test_missing_heater_sensor_still_warns_with_ambient_working(self) -> None:
+        items = items_for(packet(temp_mask=0xFFFF & ~(1 << 4), health_code=2))
+        self.assertEqual(items["temp:4"].state, WARNING)
+        self.assertEqual(items["firmware"].state, WARNING)
 
     def test_watchdog_reset_flag_is_reported(self) -> None:
         reset = items_for(packet(flags=0x0007 | (1 << 4)))["reset"]

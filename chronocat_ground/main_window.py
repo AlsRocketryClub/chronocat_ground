@@ -680,6 +680,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self.set_telemetry_status("receiving")
             if self.pid_page is not None:
                 self.pid_page.update_packet(packet.pid, received_monotonic)
+                self.pid_page.update_ambient(packet.standard)
             packet = packet.standard
         elif isinstance(packet, PidTelemetryPacket):
             self.last_telemetry_time = received_monotonic

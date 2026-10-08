@@ -139,6 +139,16 @@ def _link_items(link: LinkStatus) -> list[HealthItem]:
     return [uplink, downlink]
 
 
+def _ambient_working(packet: TelemetryPacket) -> bool:
+    """At least one ambient sensor reads. Not every board has all four fitted,
+    so a missing ambient sensor only matters when none of them work."""
+    return any(packet.temperature_c(sensor_id) is not None for sensor_id in AMBIENT_SENSOR_IDS)
+
+
+def _heater_sensors_working(packet: TelemetryPacket) -> bool:
+    return all(packet.temperature_c(sensor_id) is not None for sensor_id in HEATER_SENSOR_IDS)
+
+
 def _system_items(packet: TelemetryPacket | None) -> list[HealthItem]:
     if packet is None:
         return [
@@ -147,7 +157,12 @@ def _system_items(packet: TelemetryPacket | None) -> list[HealthItem]:
             HealthItem("sd", "SYSTEM", "SD log", "SD log", UNKNOWN),
         ]
     health = telemetry_health_name(packet.health_code)
-    if packet.health_code == 0:
+    # The board flags a sensor error when any of the 16 sensors is missing,
+    # including ambient sensors that are simply not fitted.
+    ambient_only = (
+        packet.health_code == 2 and _heater_sensors_working(packet) and _ambient_working(packet)
+    )
+    if packet.health_code == 0 or ambient_only:
         firmware_state = OK
     elif packet.health_code == _FIRMWARE_TCP_NOT_LISTENING:
         firmware_state = ERROR
@@ -156,7 +171,7 @@ def _system_items(packet: TelemetryPacket | None) -> list[HealthItem]:
         firmware_state = WARNING
     firmware = HealthItem(
         "firmware", "SYSTEM", "Firmware", "Firmware health", firmware_state,
-        _FIRMWARE_SHORT.get(packet.health_code, health),
+        "ok" if ambient_only else _FIRMWARE_SHORT.get(packet.health_code, health),
         "" if firmware_state == OK else f"reports {health}",
         explained_by="TEMP" if packet.health_code == 2 else "",
     )
@@ -222,6 +237,7 @@ def temperature_name(sensor_id: int) -> str:
 
 def _temperature_items(packet: TelemetryPacket | None) -> list[HealthItem]:
     items = []
+    ambient_working = packet is not None and _ambient_working(packet)
     for board in ("F1", "F2"):
         sensors = sorted(
             (index for index, label in enumerate(TEMP_SENSOR_LABELS) if label.startswith(board + "_")),
@@ -234,7 +250,10 @@ def _temperature_items(packet: TelemetryPacket | None) -> list[HealthItem]:
                 items.append(HealthItem(key, group, label, name, UNKNOWN))
                 continue
             temperature = packet.temperature_c(sensor_id)
-            if temperature is None:
+            if temperature is None and sensor_id in AMBIENT_SENSOR_IDS and ambient_working:
+                # Another ambient sensor works, so this one is likely just not fitted.
+                items.append(HealthItem(key, group, label, name, UNKNOWN, "—", "not fitted or no reading"))
+            elif temperature is None:
                 items.append(HealthItem(key, group, label, name, WARNING, "—", "no reading"))
             elif temperature >= MAX_SAFE_TEMPERATURE_C:
                 items.append(HealthItem(
@@ -340,6 +359,12 @@ def active_issues(items: tuple[HealthItem, ...]) -> list[Issue]:
             text = f"{chip} not responding (all {len(channels)} channels)" if reason == "no data" else f"{chip}: {reason} on all {len(channels)} channels"
             issues.append((_SEVERITY[channels[0].state], order[channels[0].key], Issue(channels[0].state, text)))
             handled.update(channel.key for channel in channels)
+
+    ambient = [item for item in items if item.key in {f"temp:{index}" for index in AMBIENT_SENSOR_IDS}]
+    if ambient and all(item.is_problem and item.reason == "no reading" for item in ambient):
+        first = min(ambient, key=lambda item: order[item.key])
+        issues.append((_SEVERITY[first.state], order[first.key], Issue(first.state, "No ambient sensor responding")))
+        handled.update(item.key for item in ambient)
 
     explained = {
         item.key for item in items

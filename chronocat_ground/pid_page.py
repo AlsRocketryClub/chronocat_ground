@@ -26,12 +26,14 @@ from .heater_safety import HEATER_COUNT
 from .pid_profiles import PID_PROFILES
 from .plot_widget import PlotWidget
 from .protocol import (
+    AMBIENT_SENSOR_IDS,
     HEATER_MANUAL_MAX_DUTY_PERMILLE,
+    TEMP_SENSOR_LABELS,
     HeaterPidReading,
     PidTelemetryPacket,
     heater_pid_averages,
 )
-from .ui.pid_widgets import HeaterOverviewRow, SENSOR_NAMES
+from .ui.pid_widgets import AmbientSensorRow, HeaterOverviewRow, SENSOR_NAMES
 from .ui.widgets import PAGE_SPACING
 
 
@@ -204,6 +206,15 @@ class PidPage(QWidget):
             row.clicked.connect(self._select_heater)
             self.rows.append(row)
             rows_layout.addWidget(row)
+        ambient_title = QLabel("AMBIENT (NO HEATER)")
+        ambient_title.setObjectName("pidColumnLabel")
+        ambient_title.setContentsMargins(10, 8, 0, 0)
+        rows_layout.addWidget(ambient_title)
+        self.ambient_rows: list[AmbientSensorRow] = []
+        for sensor_id in sorted(AMBIENT_SENSOR_IDS, key=lambda index: TEMP_SENSOR_LABELS[index]):
+            ambient = AmbientSensorRow(sensor_id)
+            self.ambient_rows.append(ambient)
+            rows_layout.addWidget(ambient)
         rows_layout.addStretch(1)
 
         scroll = QScrollArea()
@@ -502,6 +513,12 @@ class PidPage(QWidget):
             self.average_duty_plot,
         ):
             plot.set_points([])
+
+    def update_ambient(self, packet) -> None:
+        """Show the ambient sensors from a standard telemetry packet."""
+        for row in self.ambient_rows:
+            received = row.sensor_id < len(packet.temperatures)
+            row.set_temperature(packet.temperature_c(row.sensor_id) if received else None, received)
 
     def update_packet(self, packet: PidTelemetryPacket, received_monotonic: float) -> None:
         valid_count = 0

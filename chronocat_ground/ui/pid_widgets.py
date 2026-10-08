@@ -117,3 +117,61 @@ class HeaterOverviewRow(QFrame):
         self.style().polish(self)
         self.state_label.style().unpolish(self.state_label)
         self.state_label.style().polish(self.state_label)
+
+
+class AmbientSensorRow(QFrame):
+    """An ambient sensor in the heater list: a temperature only, no heater."""
+
+    def __init__(self, sensor_id: int) -> None:
+        super().__init__()
+        self.sensor_id = sensor_id
+        self.setObjectName("pidRow")
+        self.setProperty("state", "waiting")
+        self.setMinimumHeight(36)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 4, 10, 4)
+        layout.setSpacing(8)
+
+        label = QLabel("—")
+        label.setObjectName("pidRowHeater")
+        label.setFixedWidth(34)
+        layout.addWidget(label)
+
+        sensor = QLabel(TEMP_SENSOR_LABELS[sensor_id])
+        sensor.setObjectName("pidRowSensor")
+        sensor.setFixedWidth(62)
+        layout.addWidget(sensor)
+
+        self.temperature_label = QLabel("—")
+        self.temperature_label.setObjectName("pidRowTemperature")
+        self.temperature_label.setFixedWidth(72)
+        layout.addWidget(self.temperature_label)
+
+        duty = QLabel("")
+        duty.setFixedWidth(54)
+        layout.addWidget(duty)
+
+        self.state_label = QLabel("—")
+        self.state_label.setObjectName("pidBadge")
+        self.state_label.setAlignment(Qt.AlignCenter)
+        self.state_label.setFixedWidth(104)
+        layout.addWidget(self.state_label)
+        layout.addStretch(1)
+
+    def set_temperature(self, temperature_c: float | None, received: bool) -> None:
+        if not received:
+            text, state, badge = "—", "waiting", "—"
+        elif temperature_c is None:
+            text, state, badge = "—", "off", "NO READING"
+        else:
+            text, state, badge = f"{temperature_c:.2f} C", "off", "AMBIENT"
+        self.temperature_label.setText(text)
+        self.state_label.setText(badge)
+        self.state_label.setToolTip("ambient sensor, not paired with a heater")
+        if self.property("state") != state:
+            self.setProperty("state", state)
+            self.style().unpolish(self)
+            self.style().polish(self)
+            self.state_label.style().unpolish(self.state_label)
+            self.state_label.style().polish(self.state_label)
