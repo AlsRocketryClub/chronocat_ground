@@ -101,18 +101,30 @@ def evaluate_health(
     packet: TelemetryPacket | None,
     pid: PidTelemetryPacket | None,
     link: LinkStatus,
+    database_error: str = "",
 ) -> tuple[HealthItem, ...]:
     """Every monitored item in display order. Without a live downlink the
     packet-derived items are UNKNOWN: their last values can no longer be trusted."""
     live = packet is not None and link.downlink == "receiving"
     items = list(_link_items(link))
     items += _system_items(packet if live else None)
+    items.append(_database_item(database_error))
     items += _board_items(packet if live else None)
     items += _temperature_items(packet if live else None)
     items += _sample_items(packet if live else None)
     items += _geiger_items(packet if live else None)
     items += _heater_items(pid if live else None)
     return tuple(items)
+
+
+def _database_item(error: str) -> HealthItem:
+    """The ground database is the always-on record; a failed writer must be seen."""
+    if error:
+        return HealthItem(
+            "database", "SYSTEM", "Database", "Ground database", ERROR, "not recording",
+            f"not recording ({error}); start CSV logging as a backup",
+        )
+    return HealthItem("database", "SYSTEM", "Database", "Ground database", OK, "recording")
 
 
 def _link_items(link: LinkStatus) -> list[HealthItem]:

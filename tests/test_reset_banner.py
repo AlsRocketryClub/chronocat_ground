@@ -131,3 +131,25 @@ class MainWindowResetTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DatabaseFailureTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = QApplication.instance() or QApplication([])
+        self.directory = tempfile.TemporaryDirectory()
+        QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, self.directory.name)
+
+    def tearDown(self) -> None:
+        self.directory.cleanup()
+
+    def test_a_stopped_writer_is_logged_once_and_shown_in_health(self) -> None:
+        window = MainWindow(Path(self.directory.name) / "a.db")
+        self.addCleanup(window.close)
+        self.addCleanup(setattr, window, "_closing", True)
+        window.adc_db._writer_error = RuntimeError("disk full")
+        for second in range(3):
+            window.on_telemetry_packet(telemetry(60_000 + second * 1000), "test", 1.0 + second, 1000.0 + second)
+        log = window.log_view.toPlainText()
+        self.assertEqual(log.count("Telemetry database logging failed"), 1)
+        database = next(item for item in window._health_items if item.key == "database")
+        self.assertEqual((database.state, database.value), ("error", "not recording"))

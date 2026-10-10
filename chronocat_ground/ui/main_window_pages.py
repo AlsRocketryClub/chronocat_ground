@@ -841,6 +841,7 @@ class MainWindowPagesMixin:
                 return
             self.adc_db = TelemetryDb(self.database_path, async_writes=True)
             self.telemetry_history.set_database(self.adc_db)
+            self._database_error_logged = ""
             # The coefficients never change, so the new database keeps them.
             for detector_id, value in self.geiger_xder_values.items():
                 if value is not None:

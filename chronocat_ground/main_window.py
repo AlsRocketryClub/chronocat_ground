@@ -143,6 +143,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.session_dose = SessionDose()
         self.health_events = HealthEventLog()
         self.reset_monitor = ResetMonitor()
+        self._database_error_logged = ""
         self._health_packet: TelemetryPacket | None = None
         self._health_pid: PidTelemetryPacket | None = None
         self._receiver_error = ""
@@ -729,10 +730,13 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             combined_packet.pid if combined_packet is not None else None,
         )
         if self.telemetry_history.database_error is not None:
-            self.log(
-                f"Telemetry database logging failed: "
-                f"{self.telemetry_history.database_error}"
-            )
+            # Logged once per distinct failure, not once per packet.
+            if self.telemetry_history.database_error != self._database_error_logged:
+                self.log(
+                    f"Telemetry database logging failed: "
+                    f"{self.telemetry_history.database_error}"
+                )
+                self._database_error_logged = self.telemetry_history.database_error
             self.telemetry_history.database_error = None
         self.update_sd_log_status(packet.flags)
         self.set_telemetry_status("receiving")
@@ -927,7 +931,8 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             return
         age = None if self.last_telemetry_time is None else time.monotonic() - self.last_telemetry_time
         link = link_status(self.client.connected, age, self._receiver_error)
-        items = evaluate_health(self._health_packet, self._health_pid, link)
+        database_error = "writer stopped" if self.adc_db.writer_failed else ""
+        items = evaluate_health(self._health_packet, self._health_pid, link, database_error)
         events = self.health_events.update(items, datetime.now(), uptime_ms)
         for event in events:
             self._record_event("health", f"{event.state}: {event.text}")

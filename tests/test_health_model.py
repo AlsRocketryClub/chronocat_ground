@@ -142,3 +142,12 @@ class PacketLossTrackerTest(unittest.TestCase):
             tracker.record(counter)
         self.assertEqual((tracker.received, tracker.lost), (6, 2))
         self.assertAlmostEqual(tracker.loss_percent, 25.0)
+
+
+class DatabaseHealthTest(unittest.TestCase):
+    def test_a_stopped_database_writer_is_an_error(self) -> None:
+        healthy = {item.key: item for item in evaluate_health(None, None, LIVE)}
+        self.assertEqual((healthy["database"].state, healthy["database"].value), (OK, "recording"))
+        items = {item.key: item for item in evaluate_health(None, None, LIVE, "writer stopped")}
+        self.assertEqual(items["database"].state, ERROR)
+        self.assertIn("start CSV logging", items["database"].reason)

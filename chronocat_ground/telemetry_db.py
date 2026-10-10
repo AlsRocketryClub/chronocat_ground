@@ -298,6 +298,11 @@ class TelemetryDb:
         finally:
             connection.close()
 
+    @property
+    def writer_failed(self) -> bool:
+        """The background writer stopped; nothing more is being stored."""
+        return self._writer_error is not None
+
     def flush(self) -> None:
         if self._write_queue is not None:
             self._write_queue.join()

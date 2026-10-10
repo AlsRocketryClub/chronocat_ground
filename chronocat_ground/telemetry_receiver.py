@@ -13,6 +13,9 @@ from .protocol import (
     parse_telemetry_packets,
 )
 
+# How long to wait before reopening the UDP port after a socket error.
+REOPEN_DELAY_S = 1.0
+
 
 class TelemetryReceiver(QThread):
     packet_received = Signal(object, str, float, float)
@@ -37,21 +40,36 @@ class TelemetryReceiver(QThread):
         self._running = True
         super().start(priority)
 
+    def _wait_before_reopening(self) -> None:
+        deadline = time.monotonic() + REOPEN_DELAY_S
+        while self._running and time.monotonic() < deadline:
+            self.msleep(50)
+
     def run(self) -> None:
-        if not self._running:
-            return
+        # A socket error must not end telemetry for the session: report it,
+        # wait, and open the port again until stop() is called.
+        bind_error_reported = False
+        while self._running:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.settimeout(0.25)
+                sock.bind(("0.0.0.0", self.port))
+            except OSError as exc:
+                if not bind_error_reported:
+                    self.receive_error.emit(
+                        f"Could not bind UDP telemetry port {self.port}: {exc}; retrying"
+                    )
+                    bind_error_reported = True
+                self._wait_before_reopening()
+                continue
+            bind_error_reported = False
+            self._socket = sock
+            self._receive(sock)
+            if self._running:
+                self._wait_before_reopening()
+        self._running = False
 
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(0.25)
-            sock.bind(("0.0.0.0", self.port))
-        except OSError as exc:
-            self._running = False
-            self.receive_error.emit(f"Could not bind UDP telemetry port {self.port}: {exc}")
-            return
-
-        self._socket = sock
-
+    def _receive(self, sock: socket.socket) -> None:
         try:
             while self._running:
                 try:
@@ -60,9 +78,9 @@ class TelemetryReceiver(QThread):
                     received_wall = time.time()
                 except TimeoutError:
                     continue
-                except OSError:
+                except OSError as exc:
                     if self._running:
-                        self.receive_error.emit("UDP socket closed unexpectedly")
+                        self.receive_error.emit(f"UDP socket error ({exc}); reopening the port")
                     break
 
                 try:
@@ -84,7 +102,6 @@ class TelemetryReceiver(QThread):
                         received_wall,
                     )
         finally:
-            self._running = False
             self._socket = None
             try:
                 sock.close()
