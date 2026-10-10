@@ -200,6 +200,11 @@ class DashboardPage(QWidget):
         self._show_samples(packet, history, states)
         self._show_thermal(packet, pid, states)
 
+    def show_history(self, history: TelemetryHistorySnapshot) -> None:
+        """Only the plots, e.g. from stored history before any packet arrives."""
+        self._plot_radiation(history)
+        self._plot_samples(history)
+
     def clear(self) -> None:
         self.geiger_plot.set_points([])
         for plot, _channels in self.sample_plots:
@@ -221,6 +226,9 @@ class DashboardPage(QWidget):
                     value.setText(f"{format_dose_rate(dose_rate_usv_h(reading.dose_rate_cps, xder))} µSv/h")
                     detail.setText(f"{cps} · HV {reading.hv_voltage} V")
             _set_state(value, states.get(f"geiger:{counter_id}", UNKNOWN))
+        self._plot_radiation(history)
+
+    def _plot_radiation(self, history: TelemetryHistorySnapshot) -> None:
         rates = list(history.geiger_points)
         if all(value is not None for value in self._xder.values()):
             rates = [points_to_usv_h(points, self._xder[i]) for i, points in enumerate(rates)]
@@ -238,6 +246,9 @@ class DashboardPage(QWidget):
             else:
                 label.setText(f"{swatch}&nbsp;&nbsp;{reading.voltage:+.4f} V")
             _set_state(label, states.get(f"adc:{slot}", UNKNOWN))
+        self._plot_samples(history)
+
+    def _plot_samples(self, history: TelemetryHistorySnapshot) -> None:
         for plot, channels in self.sample_plots:
             plot.set_series(tuple(
                 (

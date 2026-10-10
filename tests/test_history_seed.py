@@ -1,5 +1,6 @@
 import math
 import os
+import struct
 import tempfile
 import time
 import unittest
@@ -19,7 +20,11 @@ from tests.test_protocol import combined_telemetry_packet_v5
 
 
 def record(path: Path, walls) -> None:
-    decoded = parse_telemetry_packet(combined_telemetry_packet_v5())
+    data = bytearray(combined_telemetry_packet_v5())
+    # All twelve ADC channels valid, each reading just above midscale.
+    struct.pack_into(">H", data, 53, 0x0FFF)
+    struct.pack_into(">12I", data, 55, *((0x800100 + slot) << 8 for slot in range(12)))
+    decoded = parse_telemetry_packet(bytes(data))
     database = TelemetryDb(path)
     history = TelemetryHistory(database)
     for wall in walls:
@@ -63,6 +68,12 @@ class HistorySeedTest(unittest.TestCase):
                 self.assertEqual(len(page.ambient_history[15]), 60)
                 self.assertFalse(math.isnan(page.average_temperature_history[-1][1]))
                 self.assertEqual(len(page.average_duty_history), 60)
+                # Board off: no packet arrives, yet the other plots show the stored data.
+                self.assertFalse(window.dashboard.geiger_plot._empty_label.isVisibleTo(window.dashboard.geiger_plot))
+                self.assertFalse(window.radiation.rate_plot._empty_label.isVisibleTo(window.radiation.rate_plot))
+                window.switch_view("SAMPLES")
+                card = window.sample_cards[0]
+                self.assertFalse(card.plot._empty_label.isVisibleTo(card.plot))
             finally:
                 window._closing = True
                 window.close()
@@ -71,3 +82,14 @@ class HistorySeedTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmptyPlotClickTest(unittest.TestCase):
+    def test_the_no_data_label_lets_clicks_reach_the_plot(self) -> None:
+        from PySide6.QtCore import Qt
+        from chronocat_ground.plot_widget import PlotWidget
+
+        QApplication.instance() or QApplication([])
+        plot = PlotWidget("Dose rate", "No data")
+        self.assertTrue(plot._empty_label.testAttribute(Qt.WA_TransparentForMouseEvents))
+        plot.close()

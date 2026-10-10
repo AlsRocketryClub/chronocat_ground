@@ -154,6 +154,9 @@ class TelemetryHistory:
         except RuntimeError as exc:
             self.database_error = str(exc)
 
+        return self.snapshot()
+
+    def snapshot(self) -> TelemetryHistorySnapshot:
         return TelemetryHistorySnapshot(
             self.packet_count,
             tuple(self._geiger_points),

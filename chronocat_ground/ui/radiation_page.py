@@ -189,6 +189,10 @@ class RadiationPage(QWidget):
                 session.dose_usv[counter_id],
                 session.covered_s[counter_id],
             )
+        self.show_history(history)
+
+    def show_history(self, history: TelemetryHistorySnapshot) -> None:
+        """Only the plots, e.g. from stored history before any packet arrives."""
         rates, errors = list(history.geiger_points), list(history.geiger_error_points)
         if self._in_dose_units():
             rates = [points_to_usv_h(points, self._xder[i]) for i, points in enumerate(rates)]

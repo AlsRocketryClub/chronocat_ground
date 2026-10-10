@@ -176,6 +176,8 @@ class PlotWidget(pg.PlotWidget):
         self._empty_label = QLabel(empty_text, self)
         self._empty_label.setAlignment(Qt.AlignCenter)
         self._empty_label.setStyleSheet("color: #888888; font-size: 13px;")
+        # It covers the whole plot; clicks must reach the plot (double-click pops out).
+        self._empty_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._empty_label.setVisible(True)
 
         # Stats sit in the title row above the plot area, part of the layout,

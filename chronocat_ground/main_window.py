@@ -431,8 +431,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
     def _seed_plots_from_database(self) -> None:
         """Resume the live plots with the last hour stored, e.g. after a ground restart.
 
-        Pages that also show current values draw it with the first new packet;
-        the heating page draws its plots straight away.
+        The plots draw straight away; current values wait for the first packet.
         """
         try:
             seed = load_seed_history(self.adc_db.conn, time.time(), time.monotonic())
@@ -440,6 +439,11 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self.log(f"Could not load recent history: {exc}")
             return
         self.telemetry_history.seed(seed)
+        history = self.telemetry_history.snapshot()
+        self._last_adc_history = history
+        self.dashboard.show_history(history)
+        self.radiation.show_history(history)
+        self.refresh_sample_cards()
         if self.pid_page is not None:
             self.pid_page.seed_history(seed.packets)
         if seed.packets:
@@ -836,7 +840,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
     def refresh_sample_cards(self) -> None:
         packet = self._last_adc_packet
         history = self._last_adc_history
-        if packet is None or history is None:
+        if history is None:
             return
         mode = self.samples_display_mode
         axis_label, axis_hover = ("Raw24", "Raw24") if mode == "raw" else ("Volts (V)", "Volts")
@@ -845,7 +849,15 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         if self.pages.currentIndex() != self.samples_page_index:
             return
         values: list[float] = []
-        for reading in packet.ad7177_readings:
+        if packet is None:
+            # Stored history only (startup before any packet): plots, no readings.
+            for slot in SAMPLE_CHANNELS:
+                card = self.sample_cards[slot]
+                card.set_value_axis(axis_label, axis_hover)
+                points = [adc_point_for_mode(entry, mode) for entry in history.adc_points[slot]]
+                values.extend(point[2] for point in points if math.isfinite(point[2]))
+                card.set_points(points)
+        for reading in packet.ad7177_readings if packet is not None else ():
             channel = SAMPLE_CHANNELS.get(reading.slot)
             if channel is None:
                 continue
