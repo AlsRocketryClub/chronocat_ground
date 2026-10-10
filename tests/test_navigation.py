@@ -30,13 +30,26 @@ class NavigationStyleTest(unittest.TestCase):
         window.show()
         self.app.processEvents()
         self.assertEqual(window.navigation_style, NAV_TOP)
-        top_width = window.minimumSizeHint().width()
+
+        # Too narrow for the tabs: the sidebar shows, the preference stays.
+        window.resize(1100, 800)
+        self.app.processEvents()
+        self.assertEqual(window.width(), 1100)
+        self.assertTrue(window.side_nav.isVisibleTo(window))
+        self.assertFalse(window.top_nav.isVisibleTo(window))
+        self.assertEqual(window.navigation_style, NAV_TOP)
+        # Wide again: the tabs come back.
+        window.resize(1800, 800)
+        self.app.processEvents()
+        self.assertTrue(window.top_nav.isVisibleTo(window))
+        self.assertFalse(window.side_nav.isVisibleTo(window))
+        # The tabs never hold the window wider than the sidebar layout needs.
+        self.assertLessEqual(window.minimumSizeHint().width(), 1100)
 
         window.set_navigation_style(NAV_SIDE)
         self.app.processEvents()
         self.assertTrue(window.side_nav.isVisibleTo(window))
         self.assertFalse(window.top_nav.isVisibleTo(window))
-        self.assertLess(window.minimumSizeHint().width(), top_width - 300)
 
         window.switch_view(VIEW_HEALTH)
         self.assertEqual(

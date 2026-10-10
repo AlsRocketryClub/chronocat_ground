@@ -203,6 +203,7 @@ class MainWindowPagesMixin:
 
         topbar_layout.addLayout(title_row)
 
+        self.topbar = topbar
         return topbar
 
     def fit_action_buttons(self) -> None:
@@ -238,6 +239,9 @@ class MainWindowPagesMixin:
         for row, views in enumerate(TAB_ROWS):
             for column, view in enumerate(views):
                 tabs.addWidget(self._add_nav_button(view, "navTab"), row, column)
+        # The tabs must not set the window's minimum width: when they do not
+        # fit, the sidebar takes over instead (see _update_effective_navigation).
+        self.top_nav.setMinimumWidth(1)
         return self.top_nav
 
     def build_side_nav(self) -> Panel:
@@ -270,14 +274,34 @@ class MainWindowPagesMixin:
         self.set_health_dot("unknown")
 
     def set_navigation_style(self, style: str, save: bool = True) -> None:
-        """Show the page tabs in the top bar or as a sidebar; only one is visible."""
+        """Choose tabs in the top bar or a sidebar; the tabs fall back to the
+        sidebar while the window is too narrow for them."""
         self.navigation_style = style
-        self.top_nav.setVisible(style == NAV_TOP)
-        self.side_nav.setVisible(style == NAV_SIDE)
         for button_style, button in self.navigation_style_buttons.items():
             button.setChecked(button_style == style)
         if save:
             self.nav_settings().setValue(_NAV_SETTING, style)
+        self._update_effective_navigation()
+
+    def _top_tabs_fit(self, window_width: int) -> bool:
+        # The top bar's own minimum (the tabs count as 1 px) plus the tabs'
+        # natural width and the row spacing, against the width it gets.
+        # A few spare pixels so the tabs are never squeezed right at the switch.
+        needed = self.topbar.minimumSizeHint().width() + self.top_nav.sizeHint().width() + 12 + 8
+        return window_width - 2 * PAGE_SPACING >= needed
+
+    def _update_effective_navigation(self, window_width: int | None = None) -> None:
+        width = self.width() if window_width is None else window_width
+        top = self.navigation_style == NAV_TOP and self._top_tabs_fit(width)
+        if self.top_nav.isVisibleTo(self) == top and self.side_nav.isVisibleTo(self) != top:
+            return
+        self.top_nav.setVisible(top)
+        self.side_nav.setVisible(not top)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if hasattr(self, "top_nav"):
+            self._update_effective_navigation(event.size().width())
 
     def set_health_dot(self, state: str) -> None:
         """Colour the dot on the HEALTH tab so problems show from any page."""
@@ -725,8 +749,9 @@ class MainWindowPagesMixin:
         layout_row.addStretch(1)
         layout_panel.layout.addLayout(layout_row)
         layout_note = QLabel(
-            "The top-bar tabs need a window at least ~1400 px wide; the sidebar fits "
-            "narrower screens (~1015 px). Remembered between sessions."
+            "The top-bar tabs need a window about 1400 px wide; when the window is "
+            "narrower they switch to the sidebar on their own and come back when it "
+            "is wide enough. Remembered between sessions."
         )
         layout_note.setObjectName("smallNote")
         layout_note.setWordWrap(True)
