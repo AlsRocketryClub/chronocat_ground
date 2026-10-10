@@ -162,6 +162,19 @@ class TelemetryHistory:
             tuple(self._adc_points),
         )
 
+    def seed(self, seed) -> None:
+        """Fill the rolling plots with recent stored rows (see history_seed)."""
+        for counter_id, points in seed.geiger.items():
+            if counter_id >= len(self._geiger_points):
+                continue
+            for monotonic, wall, cps, error, dose in points:
+                self._geiger_points[counter_id].append((monotonic, wall, cps))
+                self._geiger_error_points[counter_id].append((monotonic, wall, error))
+                self._geiger_dose_points[counter_id].append((monotonic, wall, dose))
+        for slot, points in seed.adc.items():
+            if slot < len(self._adc_points):
+                self._adc_points[slot].extend(points)
+
     def clear(self) -> None:
         """Drop the in-memory history so a new database starts from a clean slate."""
         self.packet_count = 0

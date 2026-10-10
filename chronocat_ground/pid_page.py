@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from .heater_safety import HEATER_COUNT, HEATER_SENSOR_IDS
+from .history_seed import heater_averages
 from .pid_profiles import PID_PROFILES
 from .plot_widget import PlotWidget
 from .protocol import (
@@ -554,6 +555,29 @@ class PidPage(QWidget):
             self.average_duty_plot,
         ):
             plot.set_points([])
+
+    def seed_history(self, packets) -> None:
+        """Fill the rolling plots from stored packets: (monotonic, {sensor: C}, {heater: ‰})."""
+        for monotonic, temperatures, duties in packets:
+            for heater_id, sensor in enumerate(HEATER_SENSOR_IDS):
+                self.temperature_history[heater_id].append((monotonic, temperatures.get(sensor, math.nan)))
+                if heater_id in duties:
+                    self.output_history[heater_id].append((monotonic, duties[heater_id] / 10.0))
+            for sensor in AMBIENT_SENSOR_IDS:
+                self.ambient_history[sensor].append((monotonic, temperatures.get(sensor, math.nan)))
+            average_temperature, average_duty = heater_averages(temperatures, duties)
+            self.average_temperature_history.append(
+                (monotonic, math.nan if average_temperature is None else average_temperature)
+            )
+            if average_duty is not None:
+                self.average_duty_history.append((monotonic, average_duty / 10.0))
+        self.average_temperature_plot.set_points(list(self.average_temperature_history))
+        self.average_duty_plot.set_points(list(self.average_duty_history))
+        if self.selected_ambient is not None:
+            self.temperature_plot.set_points(list(self.ambient_history[self.selected_ambient]))
+        else:
+            self.temperature_plot.set_points(list(self.temperature_history[self.selected_heater]))
+            self.output_plot.set_points(list(self.output_history[self.selected_heater]))
 
     def update_ambient(self, packet, received_monotonic: float) -> None:
         """Show the ambient sensors from a standard telemetry packet."""

@@ -55,6 +55,7 @@ from .protocol import (
     telemetry_value_name,
 )
 from .pid_page import PidPage
+from .history_seed import load_seed_history
 from .reset_monitor import ResetMonitor, same_reset
 from .pid_profiles import PidProfile, profile_by_name
 from .telemetry_csv import CSV_MODE_FULL, TelemetryCsvLogger
@@ -161,6 +162,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.fit_action_buttons()
         self.apply_saved_navigation()
         self._load_stored_xder()
+        self._seed_plots_from_database()
 
         self.switch_view(VIEW_DASHBOARD)
         self.update_connection_state()
@@ -424,6 +426,23 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         label = self.geiger_xder_labels.get(detector_id)
         if label is not None:
             label.setText(value)
+
+    def _seed_plots_from_database(self) -> None:
+        """Resume the live plots with the last hour stored, e.g. after a ground restart.
+
+        Pages that also show current values draw it with the first new packet;
+        the heating page draws its plots straight away.
+        """
+        try:
+            seed = load_seed_history(self.adc_db.conn, time.time(), time.monotonic())
+        except sqlite3.Error as exc:
+            self.log(f"Could not load recent history: {exc}")
+            return
+        self.telemetry_history.seed(seed)
+        if self.pid_page is not None:
+            self.pid_page.seed_history(seed.packets)
+        if seed.packets:
+            self.log(f"Loaded the last {len(seed.packets)} stored packets into the plots")
 
     def _load_stored_xder(self) -> None:
         """Use coefficients read in an earlier session; they never change."""
