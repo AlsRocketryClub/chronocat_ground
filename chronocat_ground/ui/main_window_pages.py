@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..pid_page import PidPage
-from ..plot_widget import HistoryPlotWidget
+from ..plot_widget import HistoryPlotWidget, parse_duration
 from ..plot_history import PlotHistoryLoader
 from ..health_model import evaluate_health, link_status
 from ..sample_layout import SAMPLE_CHANNELS, SAMPLE_COLUMNS
@@ -599,8 +599,30 @@ class MainWindowPagesMixin:
 
         history_status = QLabel("Loading full database history…")
         history_status.setObjectName("smallNote")
+        window_input = QLineEdit()
+        window_input.setPlaceholderText("e.g. 1, 0.5, 30 min")
+        window_input.setToolTip(
+            "How far back to show. A plain number is hours; you can also type "
+            "s, min, h or d (e.g. 90 s, 30 min, 2 h). The view keeps following new data."
+        )
+        window_input.setFixedWidth(130)
+
+        def show_window() -> None:
+            seconds = parse_duration(window_input.text())
+            window_input.setProperty("invalid", seconds is None)
+            window_input.style().unpolish(window_input)
+            window_input.style().polish(window_input)
+            if seconds is not None:
+                plot.show_last(seconds)
+
+        window_input.returnPressed.connect(show_window)
+        show_button = QPushButton("Show")
+        show_button.clicked.connect(show_window)
+        top_row.addWidget(QLabel("Last"))
+        top_row.addWidget(window_input)
+        top_row.addWidget(show_button)
         fit_button = QPushButton("Fit full history")
-        fit_button.clicked.connect(lambda: plot.enableAutoRange(x=True, y=True))
+        fit_button.clicked.connect(plot.show_all)
         top_row.addWidget(fit_button)
         loaders = []
         caught_up = set()

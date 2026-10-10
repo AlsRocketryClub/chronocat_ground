@@ -59,6 +59,28 @@ class WallClockAxis(pg.AxisItem):
         return strings
 
 
+_DURATION_UNITS = {
+    "s": 1.0, "sec": 1.0, "secs": 1.0, "second": 1.0, "seconds": 1.0,
+    "m": 60.0, "min": 60.0, "mins": 60.0, "minute": 60.0, "minutes": 60.0,
+    "h": 3600.0, "hr": 3600.0, "hrs": 3600.0, "hour": 3600.0, "hours": 3600.0,
+    "d": 86400.0, "day": 86400.0, "days": 86400.0,
+}
+
+
+def parse_duration(text: str) -> float | None:
+    """Seconds from text like "1", "0.5", "30 min", "2h" or "90s"; a bare number is hours."""
+    cleaned = text.strip().lower().replace(",", ".")
+    number = cleaned.rstrip("abcdefghijklmnopqrstuvwxyz ").strip()
+    unit = cleaned[len(number):].strip() or "h"
+    try:
+        value = float(number)
+    except ValueError:
+        return None
+    if unit not in _DURATION_UNITS or not math.isfinite(value) or value <= 0:
+        return None
+    return value * _DURATION_UNITS[unit]
+
+
 SERIES_COLORS = ("#111111", "#3f6f9f", "#6d8c66", "#9a6f3f", "#8a4f8a", "#b05050")
 
 
@@ -156,14 +178,11 @@ class PlotWidget(pg.PlotWidget):
         self._empty_label.setStyleSheet("color: #888888; font-size: 13px;")
         self._empty_label.setVisible(True)
 
-        # Stats overlay (top-right)
-        self._stats_label = QLabel(self)
-        self._stats_label.setAlignment(Qt.AlignRight | Qt.AlignTop)
-        self._stats_label.setStyleSheet(
-            "color: #333333; font-size: 11px; font-family: Menlo, Consolas, monospace; "
-            "background: rgba(255,255,255,180); padding: 6px 4px;"
-        )
-        self._stats_label.setVisible(False)
+        # Stats sit in the title row above the plot area, part of the layout,
+        # so they never cover a reading and are never clipped. The row is
+        # always reserved so the plot does not jump when stats appear.
+        self.stats_text = ""
+        self._set_stats("")
 
         # Tooltip label
         self._tooltip_label = QLabel(self)
@@ -355,7 +374,8 @@ class PlotWidget(pg.PlotWidget):
         point_count = sum(sum(math.isfinite(point[2]) for point in points) for _label, points in self._series_points)
         visible = point_count < 2
         self._empty_label.setVisible(visible)
-        self._stats_label.setVisible(not visible)
+        if visible:
+            self._set_stats("")
 
     def _redraw(self) -> None:
         finite_points = [point for _label, points in self._series_points for point in points if math.isfinite(point[2])]
@@ -443,17 +463,17 @@ class PlotWidget(pg.PlotWidget):
             return
 
         y = np.array(values)
-        stats = f"min {y.min():.4g}  max {y.max():.4g}  mean {y.mean():.4g}"
-        self._stats_label.setText(stats)
-        self._place_stats_label()
+        self._set_stats(f"min {y.min():.4g}  max {y.max():.4g}  mean {y.mean():.4g}")
 
-    def _place_stats_label(self) -> None:
-        """Pin the stats overlay top-right, sized to its text so nothing is cut off."""
-        self._stats_label.adjustSize()
-        width = min(self._stats_label.width(), max(self.width() - 8, 0))
-        self._stats_label.setGeometry(
-            self.width() - width - 4, 4, width, self._stats_label.height()
+    def _set_stats(self, text: str) -> None:
+        self.stats_text = text
+        # A non-breaking space keeps the row's height while there is nothing to show.
+        html = (
+            f'<span style="font-family: Menlo, Consolas, monospace">'
+            f'{text.replace("  ", "&nbsp;&nbsp;")}</span>'
+            if text else "&nbsp;"
         )
+        self.plotItem.setTitle(html, size="8pt", color="#333333", justify="right")
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -461,7 +481,6 @@ class PlotWidget(pg.PlotWidget):
             return
         w, h = event.size().width(), event.size().height()
         self._empty_label.setGeometry(0, 0, w, h)
-        self._place_stats_label()
         self._tooltip_label.setGeometry(4, 4, 200, 40)
 
     def wheelEvent(self, event) -> None:  # noqa: N802
@@ -540,6 +559,9 @@ class HistoryPlotWidget(PlotWidget):
         self._history_series = [_HistorySeries() for _name in series_names]
         self._history_names = series_names
         self._origin: float | None = None
+        # Seconds back from the newest sample to show; None while free to pan.
+        self._window_seconds: float | None = None
+        self.plotItem.vb.sigRangeChangedManually.connect(self._release_window)
         if len(series_names) > 1:
             self._legend = self.addLegend(offset=(10, 10))
             self._legend.setColumnCount(3 if len(series_names) > 4 else 1)
@@ -556,6 +578,47 @@ class HistoryPlotWidget(PlotWidget):
     @property
     def sample_count(self) -> int:
         return sum(series.count for series in self._history_series)
+
+    @property
+    def window_seconds(self) -> float | None:
+        return self._window_seconds
+
+    def show_last(self, seconds: float) -> None:
+        """Show the latest `seconds` of data, scaled to it, and keep following new data."""
+        self._window_seconds = seconds
+        self._apply_window()
+
+    def show_all(self) -> None:
+        self._window_seconds = None
+        self.enableAutoRange(x=True, y=True)
+
+    def _release_window(self, *_args) -> None:
+        # A manual pan or zoom means the operator wants to look around.
+        self._window_seconds = None
+
+    def _apply_window(self) -> None:
+        if self._window_seconds is None or self._origin is None:
+            return
+        walls = [series.last_wall for series in self._history_series if series.last_wall is not None]
+        if not walls:
+            return
+        end = max(walls) - self._origin
+        start = end - self._window_seconds
+        visible = []
+        for series in self._history_series:
+            data = series.points[:series.length]
+            first = int(np.searchsorted(data[:, 0], start))
+            values = data[first:, 1]
+            visible.append(values[np.isfinite(values)])
+        values = np.concatenate(visible) if visible else np.empty(0)
+        self.disableAutoRange()
+        self.setXRange(start, end, padding=0)
+        if len(values):
+            low, high = float(values.min()), float(values.max())
+            if high - low < 1e-12:
+                margin = max(abs(high) * 0.01, 1e-6)
+                low, high = low - margin, high + margin
+            self.setYRange(low, high, padding=0.05)
 
     def append_history(self, points: np.ndarray, series_index: int = 0) -> None:
         if not len(points):
@@ -596,16 +659,19 @@ class HistoryPlotWidget(PlotWidget):
             series.value_max = max(series.value_max, float(values.max()))
         data = series.points[:series.length]
         self._curves[series_index].setData(data[:, 0], data[:, 1], connect="finite")
+        self._apply_window()
         self._empty_label.setVisible(self.sample_count < 2)
-        self._stats_label.setVisible(self.sample_count >= 2)
+        if self.sample_count < 2:
+            self._set_stats("")
         if self.sample_count:
             minimum = min(item.value_min for item in self._history_series)
             maximum = max(item.value_max for item in self._history_series)
             total = sum(item.value_sum for item in self._history_series)
-            self._stats_label.setText(
-                f"min {minimum:.4g}  max {maximum:.4g}  "
-                f"mean {total / self.sample_count:.4g}"
-            )
+            if self.sample_count >= 2:
+                self._set_stats(
+                    f"min {minimum:.4g}  max {maximum:.4g}  "
+                    f"mean {total / self.sample_count:.4g}"
+                )
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         # Bypass the rolling plot's list-based nearest-point scan.

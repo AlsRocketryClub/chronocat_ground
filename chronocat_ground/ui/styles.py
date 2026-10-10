@@ -23,6 +23,10 @@ QMessageBox QPushButton {
 #appShell, #pages, #pageScroll, QScrollArea > QWidget > QWidget {
     background: #dcdcdc;
 }
+QLineEdit[invalid="true"] {
+    border: 1px solid #b42318;
+    background: #fdecec;
+}
 #resetBanner {
     background: #fff3cd;
     border: 1px solid #c49a37;

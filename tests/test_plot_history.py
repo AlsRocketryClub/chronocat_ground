@@ -321,3 +321,54 @@ class HeatingHistoryTest(unittest.TestCase):
             host.pid_page.close()
             host.close()
             self.app.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+class TimeWindowTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_durations_default_to_hours(self) -> None:
+        from chronocat_ground.plot_widget import parse_duration
+
+        self.assertEqual(parse_duration("1"), 3600.0)
+        self.assertEqual(parse_duration("0.5"), 1800.0)
+        self.assertEqual(parse_duration("0,25 h"), 900.0)
+        self.assertEqual(parse_duration("30 min"), 1800.0)
+        self.assertEqual(parse_duration("90s"), 90.0)
+        self.assertEqual(parse_duration("2 hours"), 7200.0)
+        self.assertEqual(parse_duration("1d"), 86400.0)
+        for bad in ("", "abc", "-1", "0", "5 weeks"):
+            self.assertIsNone(parse_duration(bad), bad)
+
+    def test_window_scales_to_its_data_and_follows_until_panned(self) -> None:
+        plot = HistoryPlotWidget("Temperature (C)", "No data")
+        walls = 1000.0 + np.arange(7200, dtype=float)
+        # A big excursion early on, then a gentle ramp in the last hour.
+        values = np.where(walls < 4500.0, 100.0, (walls - 4500.0) / 3600.0)
+        plot.append_history(np.column_stack((walls, values)))
+        plot.show_last(3600.0)
+        (x_low, x_high), (y_low, y_high) = plot.plotItem.vb.viewRange()
+        self.assertAlmostEqual(x_high - x_low, 3600.0, places=3)
+        self.assertAlmostEqual(x_high, walls[-1] - walls[0], places=3)
+        # Scaled to the last hour, not to the old excursion to 100.
+        self.assertLess(y_high, 2.0)
+        self.assertGreater(y_low, -0.5)
+
+        plot.append_history(np.array([[walls[-1] + 1.0, 1.5]]))
+        x_low, x_high = plot.plotItem.vb.viewRange()[0]
+        self.assertAlmostEqual(x_high, walls[-1] + 1.0 - walls[0], places=3)
+
+        # Stats live in the title row above the plot area, not over the data.
+        self.assertTrue(plot.stats_text.startswith("min "))
+        title = plot.plotItem.titleLabel
+        self.assertLessEqual(
+            title.mapRectToScene(title.boundingRect()).bottom(),
+            plot.plotItem.vb.mapRectToScene(plot.plotItem.vb.boundingRect()).top() + 1,
+        )
+
+        plot.plotItem.vb.sigRangeChangedManually.emit([True, True])
+        self.assertIsNone(plot.window_seconds)
+        plot.append_history(np.array([[walls[-1] + 2.0, 1.6]]))
+        self.assertAlmostEqual(plot.plotItem.vb.viewRange()[0][1], x_high, places=3)
+        plot.close()
