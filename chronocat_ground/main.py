@@ -13,6 +13,7 @@ from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from .display_scale import apply_display_scaling
 from .main_window import MainWindow
 from .telemetry_db import DEFAULT_DATABASE_PATH, archive_database
 from .ui.styles import APPLICATION_STYLE
@@ -71,9 +72,17 @@ def choose_database_action(path: Path) -> Literal["continue", "new"] | None:
     return None
 
 
+# Passed by "Restart ground station" so the relaunch continues the same
+# database without asking.
+CONTINUE_DATABASE_ARGUMENT = "--continue-database"
+
+
 def main() -> int:
     configure_qt_plugin_paths()
-    app = QApplication(sys.argv)
+    # Must run before the QApplication exists: Qt reads its scale factors once.
+    apply_display_scaling()
+    continue_database = CONTINUE_DATABASE_ARGUMENT in sys.argv
+    app = QApplication([argument for argument in sys.argv if argument != CONTINUE_DATABASE_ARGUMENT])
     if sys.platform.startswith("linux"):
         app.setDesktopFileName("chronocat_ground")
     app.setStyleSheet(APPLICATION_STYLE)
@@ -86,7 +95,7 @@ def main() -> int:
     database_path = DEFAULT_DATABASE_PATH
     startup_message = f"Continuing database {database_path}"
     if database_path.exists():
-        action = choose_database_action(database_path)
+        action = "continue" if continue_database else choose_database_action(database_path)
         if action is None:
             return 0
         if action == "new":

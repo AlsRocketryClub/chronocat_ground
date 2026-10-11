@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 import sqlite3
 from functools import partial
 
-from PySide6.QtCore import QSettings, QTimer, Qt
+from PySide6.QtCore import QProcess, QSettings, QTimer, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -18,11 +21,13 @@ from PySide6.QtWidgets import (
     QPushButton,
     QPlainTextEdit,
     QScrollArea,
+    QSlider,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from .. import display_scale
 from ..pid_page import PidPage
 from ..plot_widget import HistoryPlotWidget, parse_duration
 from ..plot_history import PlotHistoryLoader
@@ -757,6 +762,7 @@ class MainWindowPagesMixin:
         layout_note.setWordWrap(True)
         layout_panel.layout.addWidget(layout_note)
         layout.addWidget(layout_panel)
+        layout.addWidget(self.build_display_panel())
 
         connection_panel = Panel("CONNECTION")
         connection_grid = QGridLayout()
@@ -901,8 +907,153 @@ class MainWindowPagesMixin:
             self.reset_monitor.note_reset_command(time.time())
             self.send_command(COMMAND_SYSTEM_RESET, 0)
 
+    def build_display_panel(self) -> Panel:
+        """Interface size per screen; applied by Qt at startup (see display_scale)."""
+        panel = Panel("DISPLAY")
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Interface size"))
+        self.scale_slider = QSlider(Qt.Horizontal)
+        self.scale_slider.setRange(display_scale.MIN_PERCENT, display_scale.MAX_PERCENT)
+        self.scale_slider.setSingleStep(display_scale.STEP_PERCENT)
+        self.scale_slider.setPageStep(25)
+        self.scale_slider.setTickInterval(25)
+        self.scale_slider.setTickPosition(QSlider.TicksBelow)
+        self.scale_slider.setFixedWidth(260)
+        self.scale_slider.valueChanged.connect(self._on_scale_slider)
+        row.addWidget(self.scale_slider)
+        self.scale_value_label = QLabel("100 %")
+        self.scale_value_label.setMinimumWidth(48)
+        row.addWidget(self.scale_value_label)
+        self.scale_reset_button = QPushButton("Reset to 100 %")
+        self.scale_reset_button.clicked.connect(self._on_scale_reset)
+        row.addWidget(self.scale_reset_button)
+        row.addStretch(1)
+        panel.layout.addLayout(row)
+
+        self.scale_auto_checkbox = QCheckBox("Match each screen automatically")
+        self.scale_auto_checkbox.setToolTip(
+            "Sizes each screen so text looks about as large as on the laptop's own "
+            "display. Never smaller than 100 %. The slider adjusts it per screen."
+        )
+        self.scale_auto_checkbox.toggled.connect(self._on_scale_auto)
+        panel.layout.addWidget(self.scale_auto_checkbox)
+
+        self.scale_note = QLabel()
+        self.scale_note.setObjectName("smallNote")
+        self.scale_note.setWordWrap(True)
+        panel.layout.addWidget(self.scale_note)
+
+        restart_row = QHBoxLayout()
+        restart_button = QPushButton("Restart ground station")
+        restart_button.setToolTip("Relaunch now, continuing the same database")
+        restart_button.clicked.connect(self._restart_ground_station)
+        restart_row.addWidget(restart_button)
+        restart_row.addStretch(1)
+        panel.layout.addLayout(restart_row)
+        self._screen_signal_connected = False
+        self.refresh_display_settings()
+        return panel
+
+    @staticmethod
+    def applied_scale_percent(screen_name: str) -> int:
+        """The size Qt is using for a screen in this session."""
+        for part in os.environ.get("QT_SCREEN_SCALE_FACTORS", "").split(";"):
+            name, _, factor = part.rpartition("=")
+            if name == screen_name:
+                try:
+                    return round(float(factor) * 100)
+                except ValueError:
+                    return 100
+        return 100
+
+    def _current_screen_info(self) -> display_scale.ScreenInfo | None:
+        screen = self.screen()
+        if screen is None or not screen.name():
+            return None  # Qt matches sizes by screen name; an unnamed screen cannot have one
+        # Undo this session's factor so the screen is measured as at startup.
+        applied = self.applied_scale_percent(screen.name()) / 100
+        return display_scale.ScreenInfo(
+            screen.name(), round(screen.geometry().width() * applied), screen.physicalSize().width()
+        )
+
+    def refresh_display_settings(self) -> None:
+        if not hasattr(self, "scale_slider"):
+            return
+        handle = self.windowHandle()
+        if handle is not None and not self._screen_signal_connected:
+            handle.screenChanged.connect(lambda _screen: self.refresh_display_settings())
+            self._screen_signal_connected = True
+        store = display_scale.settings()
+        auto = display_scale.auto_enabled(store)
+        self.scale_auto_checkbox.blockSignals(True)
+        self.scale_auto_checkbox.setChecked(auto)
+        self.scale_auto_checkbox.blockSignals(False)
+        info = self._current_screen_info()
+        for widget in (self.scale_slider, self.scale_reset_button):
+            widget.setEnabled(info is not None)
+        if info is None:
+            self.scale_note.setText(
+                "This screen does not report a name, so it stays at 100 %."
+            )
+            return
+        effective = display_scale.effective_percent(store, info)
+        self.scale_slider.blockSignals(True)
+        self.scale_slider.setValue(effective)
+        self.scale_slider.blockSignals(False)
+        self.scale_value_label.setText(f"{effective} %")
+        default = display_scale.default_percent(store, info)
+        self.scale_reset_button.setText(
+            f"Reset to automatic ({default} %)" if auto else "Reset to 100 %"
+        )
+        self.scale_reset_button.setEnabled(display_scale.stored_percent(store, info.name) is not None)
+        applied = self.applied_scale_percent(info.name)
+        after = "" if applied == effective else f"; {effective} % after a restart"
+        self.scale_note.setText(
+            f"This screen: {info.name}, shown at {applied} % now{after}. "
+            "Each screen keeps its own size; a new size applies after a restart."
+        )
+
+    def _on_scale_slider(self, value: int) -> None:
+        snapped = display_scale.snap_percent(value)
+        info = self._current_screen_info()
+        if info is not None:
+            display_scale.set_stored_percent(display_scale.settings(), info.name, snapped)
+        self.refresh_display_settings()
+
+    def _on_scale_auto(self, checked: bool) -> None:
+        display_scale.set_auto_enabled(display_scale.settings(), checked)
+        self.refresh_display_settings()
+
+    def _on_scale_reset(self) -> None:
+        info = self._current_screen_info()
+        if info is not None:
+            display_scale.set_stored_percent(display_scale.settings(), info.name, None)
+        self.refresh_display_settings()
+
+    def _restart_ground_station(self) -> None:
+        answer = QMessageBox.question(
+            self, "Restart ground station",
+            "Restart the ground station now? Telemetry keeps arriving and the plots "
+            "refill from the database; press Connect again for commands.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        result = QProcess.startDetached(
+            sys.executable, ["-m", "chronocat_ground.main", "--continue-database"], os.getcwd()
+        )
+        started = result[0] if isinstance(result, tuple) else bool(result)
+        if not started:
+            QMessageBox.warning(self, "Restart failed", "The ground station could not be relaunched.")
+            return
+        self.log("Restarting the ground station")
+        self.close()
+        QApplication.quit()
+
     def switch_view(self, view: str) -> None:
         self.pages.setCurrentIndex(VIEWS.index(view))
+        if view == VIEW_SETTINGS:
+            self.refresh_display_settings()
         if view == VIEW_SAMPLES:
             # Sample plots are only refreshed while visible; catch up now.
             self.refresh_sample_cards()
