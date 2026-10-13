@@ -258,22 +258,30 @@ class DashboardPage(QWidget):
             plot.set_points([])
 
     def _show_radiation(self, packet: TelemetryPacket, history: TelemetryHistorySnapshot, states: dict) -> None:
-        for counter_id, (value, detail) in enumerate(self.geiger_values):
-            reading = packet.geiger_reading(counter_id)
-            if reading is None or not reading.valid:
-                value.setText("no response")
-                detail.setText("")
-            else:
-                xder = self._xder[counter_id]
-                cps = f"{format_rate(reading.dose_rate_cps)} cps"
-                if xder is None:
-                    value.setText(cps)
-                    detail.setText(f"HV {reading.hv_voltage} V · xDER not read")
-                else:
-                    value.setText(f"{format_dose_rate(dose_rate_usv_h(reading.dose_rate_cps, xder))} µSv/h")
-                    detail.setText(f"{cps} · HV {reading.hv_voltage} V")
-            _set_state(value, states.get(f"geiger:{counter_id}", UNKNOWN))
+        for counter_id in range(len(self.geiger_values)):
+            self._show_geiger(counter_id, packet.geiger_reading(counter_id), states.get(f"geiger:{counter_id}", UNKNOWN))
         self._plot_radiation(history)
+
+    def _show_geiger(self, counter_id: int, reading, state: str, suffix: str = "") -> None:
+        value, detail = self.geiger_values[counter_id]
+        if reading is None or not reading.valid:
+            value.setText("no response")
+            detail.setText(suffix.lstrip(" ·"))
+        else:
+            xder = self._xder[counter_id]
+            cps = f"{format_rate(reading.dose_rate_cps)} cps"
+            if xder is None:
+                value.setText(cps)
+                detail.setText(f"HV {reading.hv_voltage} V · xDER not read{suffix}")
+            else:
+                value.setText(f"{format_dose_rate(dose_rate_usv_h(reading.dose_rate_cps, xder))} µSv/h")
+                detail.setText(f"{cps} · HV {reading.hv_voltage} V{suffix}")
+        _set_state(value, state)
+
+    def show_stored_geiger(self, readings: dict) -> None:
+        """Last stored Geiger readings after a ground restart, greyed until live data."""
+        for counter_id in range(len(self.geiger_values)):
+            self._show_geiger(counter_id, readings.get(counter_id), UNKNOWN, " · last stored value")
 
     def _plot_radiation(self, history: TelemetryHistorySnapshot) -> None:
         rates = list(history.geiger_points)
@@ -294,6 +302,12 @@ class DashboardPage(QWidget):
                 label.setText(f"{swatch}&nbsp;&nbsp;{VOLTS.format(slot, reading.voltage)}")
             _set_state(label, states.get(f"adc:{slot}", UNKNOWN))
         self._plot_samples(history)
+
+    def show_stored_samples(self, volts: dict[int, float | None]) -> None:
+        """Last stored readings after a ground restart, until a live packet arrives."""
+        for slot, (label, swatch) in self.sample_values.items():
+            value = volts.get(slot)
+            label.setText(f"{swatch}&nbsp;&nbsp;{VOLTS.format(slot, value) if value is not None else '—'}")
 
     def plot_signals_only(self, material_index: int) -> bool:
         return self._plot_signals_only[material_index]

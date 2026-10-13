@@ -145,6 +145,8 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.health_events = HealthEventLog()
         self.reset_monitor = ResetMonitor()
         self._acknowledged_run: int | None = None
+        # The newest stored packet's values, shown until live telemetry arrives.
+        self._stored_values = None
         self._database_error_logged = ""
         self._health_packet: TelemetryPacket | None = None
         self._health_pid: PidTelemetryPacket | None = None
@@ -446,7 +448,20 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         except sqlite3.Error:
             last = None
         if last is not None:
+            self._stored_values = last
             self.board_map.show_stored(last.temperatures, last.volts, last.wall)
+            self.dashboard.show_stored_samples(last.volts)
+            self.dashboard.show_stored_geiger(last.geiger)
+            self.radiation.show_stored(last.geiger)
+            for card in self.sample_cards:
+                value = last.volts.get(card.slot)
+                card.set_reading(
+                    VOLTS.format(card.slot, value) if value is not None else "—", "last stored value"
+                )
+                card.set_temperatures([
+                    (TEMP_SENSOR_LABELS[sensor], last.temperatures.get(sensor))
+                    for sensor in SAMPLE_CHANNELS[card.slot].temperature_sensor_ids
+                ])
         history = self.telemetry_history.snapshot()
         self._last_adc_history = history
         self.dashboard.show_history(history)
@@ -776,6 +791,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         )
         self._health_packet = packet
         self._health_packet_wall = received_wall
+        self._stored_values = None  # live data from here on
         if combined_packet is not None:
             self._health_pid = combined_packet.pid
         self._check_board_reset(packet, received_wall)
@@ -996,6 +1012,10 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
     def _link_summary(self, packet_age_s: float | None) -> str:
         """One line on the board and downlink for the Dashboard."""
         if packet_age_s is None or self._health_packet is None:
+            stored = getattr(self, "_stored_values", None)
+            if stored is not None:
+                moment = datetime.fromtimestamp(stored.wall).strftime("%Y-%m-%d %H:%M:%S")
+                return f"No live telemetry yet · readings are the last stored values, from {moment}"
             return "No telemetry yet"
         parts = [
             f"Board up {format_uptime(self._health_packet.timestamp)}",

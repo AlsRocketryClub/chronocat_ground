@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import math
 import sqlite3
 
-from .protocol import AD7177_BIPOLAR_MIDSCALE, AD7177_VREF_VOLTS, HEATER_SENSOR_IDS
+from .protocol import AD7177_BIPOLAR_MIDSCALE, AD7177_VREF_VOLTS, HEATER_SENSOR_IDS, GeigerReading
 from .telemetry_db import GOOD_ROW
 
 SEED_WINDOW_S = 3600.0
@@ -114,6 +114,7 @@ class LastValues:
     wall: float
     temperatures: dict[int, float]  # only sensors with a valid reading
     volts: dict[int, float | None]  # None where the reading was not valid
+    geiger: dict[int, GeigerReading]  # per counter; valid=0 where it did not answer
 
 
 def load_last_values(connection: sqlite3.Connection) -> LastValues | None:
@@ -140,4 +141,23 @@ def load_last_values(connection: sqlite3.Connection) -> LastValues | None:
             (raw24 - AD7177_BIPOLAR_MIDSCALE) / AD7177_BIPOLAR_MIDSCALE * AD7177_VREF_VOLTS
             if good and raw24 is not None else None
         )
-    return LastValues(wall, temperatures, volts)
+    geiger: dict[int, GeigerReading] = {}
+    for row in connection.execute(
+        f"SELECT counter_id, {GOOD_ROW}, error_flags, event_id, user_dose, dose_rate_cps, "
+        "total_dose_sv, dose_time_sec, stats_time_sec, hv_voltage, stat_error_percent, "
+        "stat_cell_count FROM geiger WHERE received_wall = ?",
+        (wall,),
+    ):
+        counter_id, good, *fields = row
+        # A reading needs a stored rate (0 cps is a real reading at background).
+        answered = bool(good) and fields[3] is not None
+        # Rows from before these columns existed read NULL; show them as zero.
+        flags, event, user_dose, rate, total, dose_time, stats_time, hv, error, cells = (
+            value if value is not None else 0 for value in fields
+        )
+        geiger[counter_id] = GeigerReading(
+            int(answered), counter_id, int(flags), int(event), float(user_dose),
+            float(rate), float(total), int(dose_time), int(stats_time), int(hv),
+            int(round(error)), int(cells),
+        )
+    return LastValues(wall, temperatures, volts, geiger)

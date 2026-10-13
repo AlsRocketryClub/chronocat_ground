@@ -168,7 +168,8 @@ class PlotWidget(pg.PlotWidget):
         # Plot curve
         self._curve = self.plot(pen=pg.mkPen(color="#111111", width=2), symbol=None)
         self._curves = [self._curve]
-        self._legend = None
+        self._legend_label: pg.LabelItem | None = None
+        self._legend_html = ""
         self._series_points: list[tuple[str, list[tuple[float, float, float]]]] = []
         self._band_points: list = []
         self._bands: list = []
@@ -354,15 +355,28 @@ class PlotWidget(pg.PlotWidget):
             curve.setData([], [])
 
         multiple = len(self._series_points) > 1 and self._show_legend
-        if multiple and self._legend is None:
-            self._legend = self.addLegend(offset=(10, 10))
-        if self._legend is None:
+        self.set_legend_entries(
+            [(label, SERIES_COLORS[index % len(SERIES_COLORS)])
+             for index, (label, _points) in enumerate(self._series_points)]
+            if multiple else []
+        )
+
+    def set_legend_entries(self, entries: list[tuple[str, str]]) -> None:
+        """The legend as its own row under the time axis, outside the data area:
+        a solid colour square and the name per line. It is plain text, so
+        nothing in it can be clicked on or off."""
+        if not entries and self._legend_label is None:
             return
-        self._legend.clear()
-        self._legend.setColumnCount(3 if len(self._series_points) > 4 else 1)
-        self._legend.setVisible(multiple)
-        for curve, (label, _points) in zip(self._curves, self._series_points):
-            self._legend.addItem(curve, label)
+        if self._legend_label is None:
+            self._legend_label = pg.LabelItem("", size="9pt", parent=self.plotItem)
+            self.plotItem.layout.addItem(self._legend_label, 4, 1)
+        html = "&nbsp;&nbsp;&nbsp;".join(
+            f'<span style="color:{color}; font-size:14pt">■</span>&nbsp;{name}' for name, color in entries
+        )
+        if html != self._legend_html:
+            self._legend_html = html
+            self._legend_label.setText(html or "&nbsp;", color="#333333")
+        self._legend_label.setVisible(bool(entries))
 
     def _draw_bands(self) -> None:
         while len(self._bands) < len(self._band_points):
@@ -584,9 +598,6 @@ class HistoryPlotWidget(PlotWidget):
         # Seconds back from the newest sample to show; None while free to pan.
         self._window_seconds: float | None = None
         self.plotItem.vb.sigRangeChangedManually.connect(self._release_window)
-        if len(series_names) > 1:
-            self._legend = self.addLegend(offset=(10, 10))
-            self._legend.setColumnCount(3 if len(series_names) > 4 else 1)
         for index, name in enumerate(series_names):
             curve = self._curve if index == 0 else self.plot()
             if index:
@@ -594,8 +605,17 @@ class HistoryPlotWidget(PlotWidget):
             curve.setPen(pg.mkPen(color=SERIES_COLORS[index % len(SERIES_COLORS)], width=2))
             curve.setClipToView(True)
             curve.setDownsampling(auto=True, method="peak")
-            if self._legend is not None:
-                self._legend.addItem(curve, name)
+        self._update_history_legend()
+
+    def _update_history_legend(self) -> None:
+        # Hidden series ("Signals only") leave the legend entirely.
+        if len(self._history_names) < 2:
+            return
+        self.set_legend_entries([
+            (name, SERIES_COLORS[index % len(SERIES_COLORS)])
+            for index, (name, shown) in enumerate(zip(self._history_names, self._series_visible))
+            if shown
+        ])
 
     @property
     def sample_count(self) -> int:
@@ -690,6 +710,7 @@ class HistoryPlotWidget(PlotWidget):
         self._series_visible = [bool(flag) for flag in visible]
         for curve, shown in zip(self._curves, self._series_visible):
             curve.setVisible(shown)
+        self._update_history_legend()
         self._update_history_stats()
         if self._window_seconds is not None:
             self._apply_window()

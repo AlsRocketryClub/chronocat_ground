@@ -157,6 +157,12 @@ class RadiationPage(QWidget):
         self.set_time_window(_WINDOWS[0][1])
         self._xder: dict[int, float | None] = {0: None, 1: None}
 
+    def show_stored(self, readings: dict) -> None:
+        """Last stored readings after a ground restart, greyed until live data."""
+        for counter_id, panel in enumerate(self.detectors):
+            panel.show_reading(readings.get(counter_id), None, self._xder[counter_id], 0.0, 0.0)
+            panel.status.setText("last stored value")
+
     def set_xder(self, xder: dict[int, float | None]) -> None:
         self._xder = xder
 

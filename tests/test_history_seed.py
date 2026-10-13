@@ -115,11 +115,48 @@ class BoardsAfterRestartTest(unittest.TestCase):
                 self.assertEqual(board._temperatures[15], 24.0)
                 self.assertAlmostEqual(board._readings[0], (0x100 / 0x800000) * 2.5, places=6)
                 board.grab()  # paints the "last stored values" note without error
+                # The Dashboard and Samples readings show the same stored values.
+                self.assertIn("+76.3 µV", window.dashboard.sample_values[0][0].text())
+                self.assertIn("+76.3 µV", window.sample_cards[0].reading_label.text())
+                self.assertIn("last stored value", window.sample_cards[0].status_label.text())
+                self.assertIn("last stored values", window._link_summary(None))
+                # So do both Geiger counters, on the Dashboard and the Radiation page.
+                value, detail = window.dashboard.geiger_values[0]
+                self.assertIn("cps", value.text() + detail.text())
+                self.assertIn("last stored value", detail.text())
+                self.assertEqual(window.radiation.detectors[1].status.text(), "last stored value")
+                self.assertNotEqual(window.radiation.detectors[1].rate.text(), "no response")
                 from tests.test_flight_mapping import packet_with_adc
 
                 window.on_telemetry_packet(packet_with_adc(), "test", time.monotonic(), time.time())
                 self.assertIsNone(board._stored_wall)
+                self.assertNotIn("stored", window._link_summary(0.5))
             finally:
                 window._closing = True
                 window.close()
                 app.processEvents()
+
+
+class StoredGeigerTest(unittest.TestCase):
+    def test_a_stored_zero_rate_is_a_reading_and_a_silent_counter_is_not(self) -> None:
+        import sqlite3
+
+        from chronocat_ground.history_seed import load_last_values
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "g.db"
+            TelemetryDb(path).close()
+            connection = sqlite3.connect(path)
+            connection.execute("INSERT INTO packet (ts_ms, received_wall, counter) VALUES (1, 50.0, 1)")
+            connection.execute(
+                "INSERT INTO geiger (ts_ms, received_wall, counter_id, dose_rate_cps, valid, hv_voltage) "
+                "VALUES (1, 50.0, 0, 0.0, 1, 450)"
+            )
+            connection.execute(
+                "INSERT INTO geiger (ts_ms, received_wall, counter_id, dose_rate_cps, valid) VALUES (1, 50.0, 1, NULL, 0)"
+            )
+            connection.commit()
+            last = load_last_values(connection)
+            connection.close()
+        self.assertEqual((last.geiger[0].valid, last.geiger[0].dose_rate_cps, last.geiger[0].hv_voltage), (1, 0.0, 450))
+        self.assertEqual(last.geiger[1].valid, 0)

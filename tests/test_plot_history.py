@@ -214,7 +214,10 @@ class PlotHistoryTest(unittest.TestCase):
                 self.wait_until(lambda: plot.sample_count == count * 2)
                 self.assertEqual(len(plot._curves), 2)
                 self.assertEqual(plot._history_names, ("Geiger 1", "Geiger 2"))
-                self.assertEqual(len(plot._legend.items), 2)
+                # The legend row lists both detectors, each with its colour square.
+                self.assertEqual(plot._legend_html.count("■"), 2)
+                self.assertIn("Geiger 1", plot._legend_html)
+                self.assertIn("Geiger 2", plot._legend_html)
                 for counter, curve in enumerate(plot._curves):
                     self.assertEqual(len(curve.yData), count)
                     self.assertEqual(curve.yData[0], counter * 100)

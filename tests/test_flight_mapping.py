@@ -185,3 +185,19 @@ class MaterialHistoryFilterTest(unittest.TestCase):
                 window._closing = True
                 window.close()
                 app.processEvents()
+
+
+class LegendRowTest(unittest.TestCase):
+    def test_legend_sits_outside_the_data_and_drops_hidden_series(self) -> None:
+        from chronocat_ground.plot_widget import HistoryPlotWidget
+
+        QApplication.instance() or QApplication([])
+        plot = HistoryPlotWidget("Volts (V)", "No data", series_names=("1a", "1b", "2a"))
+        layout = plot.plotItem.layout
+        self.assertIs(layout.itemAt(4, 1), plot._legend_label)  # below the time axis
+        self.assertEqual(plot._legend_html.count("■"), 3)
+        plot.set_series_visible([True, False, True])
+        self.assertEqual(plot._legend_html.count("■"), 2)
+        self.assertNotIn("1b", plot._legend_html)
+        self.assertIsNone(plot.plotItem.legend)  # no clickable in-plot legend
+        plot.close()
