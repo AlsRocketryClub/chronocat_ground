@@ -56,13 +56,18 @@ class HistorySeedTest(unittest.TestCase):
             path = Path(directory) / "seed.db"
             now = time.time()
             record(path, [now - 120.0 + second for second in range(60)])
+            started = time.monotonic()
             window = MainWindow(path)
+            startup_s = time.monotonic() - started
             try:
                 history = window.telemetry_history
                 self.assertEqual(len(history._geiger_points[0]), 60)
                 newest = history._geiger_points[0][-1]
-                # The newest stored point sits about a minute before now.
-                self.assertAlmostEqual(time.monotonic() - newest[0], 61.0, delta=2.0)
+                # The newest stored point sits about a minute before the window
+                # opened; allow for however long startup took on a busy machine.
+                age = time.monotonic() - newest[0]
+                self.assertGreaterEqual(age, 61.0 - 1.0)
+                self.assertLessEqual(age, 61.0 + startup_s + 1.0)
                 page = window.pid_page
                 self.assertEqual(len(page.temperature_history[0]), 60)
                 self.assertEqual(len(page.ambient_history[15]), 60)
