@@ -1131,11 +1131,19 @@ class MainWindowPagesMixin:
         self.tab_menu(view).exec(button.mapToGlobal(position))
 
     def _raise_page_window(self, view: str) -> None:
+        """Bring a page's window to the front where it is.
+
+        Only a minimized window is restored; a maximized or full-screen one
+        keeps its state, screen and position (showNormal would undo them).
+        """
         window = self.popped_out_views().get(view)
-        if window is not None:
-            window.showNormal()
-            window.raise_()
-            window.activateWindow()
+        if window is None:
+            return
+        if window.isMinimized():
+            window.setWindowState(window.windowState() & ~Qt.WindowMinimized)
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def _popped_placeholder(self, view: str) -> QWidget:
         placeholder = QWidget()

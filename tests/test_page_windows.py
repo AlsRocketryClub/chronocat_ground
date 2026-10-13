@@ -51,6 +51,25 @@ class PageWindowTest(unittest.TestCase):
         self.assertIs(window.pages.widget(VIEWS.index("HEATING")), heating_page)
         self.assertEqual(window.pages.currentIndex(), VIEWS.index("DASHBOARD"))
 
+    def test_choosing_the_tab_brings_the_window_forward_without_resetting_it(self) -> None:
+        from PySide6.QtCore import Qt
+
+        window = self.window
+        window.pop_out_view("HEATING")
+        popped = window.popped_out_views()["HEATING"]
+        popped.setWindowState(Qt.WindowMaximized)
+        window.switch_view("HEATING")
+        self.assertTrue(popped.windowState() & Qt.WindowMaximized)
+        popped.setWindowState(Qt.WindowFullScreen)
+        window.switch_view("HEATING")
+        self.assertTrue(popped.windowState() & Qt.WindowFullScreen)
+        # A minimized window is restored to whatever it was before.
+        popped.setWindowState(Qt.WindowMaximized | Qt.WindowMinimized)
+        window.switch_view("HEATING")
+        self.assertFalse(popped.windowState() & Qt.WindowMinimized)
+        self.assertTrue(popped.windowState() & Qt.WindowMaximized)
+        self.assertIn("HEATING", window.popped_out_views())
+
     def test_the_tab_menu_offers_the_right_actions(self) -> None:
         window = self.window
         self.assertEqual([a.text() for a in window.tab_menu("HEATING").actions()], ["Open in new window"])
