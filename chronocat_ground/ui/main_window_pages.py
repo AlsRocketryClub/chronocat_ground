@@ -260,8 +260,10 @@ class MainWindowPagesMixin:
         return self.side_nav
 
     def _dismiss_reset_banner(self, reset_wall: float) -> None:
-        # Remembered so a ground station restart does not show the same reset again.
+        # Remembered so a ground station restart does not show the same reset again,
+        # and so Health stops counting it as a warning.
         self.nav_settings().setValue(_DISMISSED_RESET_SETTING, reset_wall)
+        self.refresh_health()
 
     def dismissed_reset_wall(self) -> float | None:
         value = self.nav_settings().value(_DISMISSED_RESET_SETTING)

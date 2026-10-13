@@ -61,6 +61,8 @@ class HealthItem:
     explained_by: str = ""
     # Extra context for the tooltip only; tiles show just the short value.
     detail: str = ""
+    # The channel delivered no reading (used to spot a dead ADC chip).
+    no_data: bool = False
 
     @property
     def is_problem(self) -> bool:
@@ -102,6 +104,7 @@ def evaluate_health(
     pid: PidTelemetryPacket | None,
     link: LinkStatus,
     database_error: str = "",
+    reset_acknowledged: bool = False,
 ) -> tuple[HealthItem, ...]:
     """Every monitored item in display order. Without a live downlink the
     packet-derived items are UNKNOWN: their last values can no longer be trusted."""
@@ -109,7 +112,7 @@ def evaluate_health(
     items = list(_link_items(link))
     items += _system_items(packet if live else None)
     items.append(_database_item(database_error))
-    items += _board_items(packet if live else None)
+    items += _board_items(packet if live else None, reset_acknowledged)
     items += _temperature_items(packet if live else None)
     items += _sample_items(packet if live else None)
     items += _geiger_items(packet if live else None)
@@ -213,7 +216,7 @@ def format_uptime(milliseconds: int) -> str:
     return f"{seconds}s"
 
 
-def _board_items(packet: TelemetryPacket | None) -> list[HealthItem]:
+def _board_items(packet: TelemetryPacket | None, reset_acknowledged: bool = False) -> list[HealthItem]:
     if packet is None:
         return [
             HealthItem("uptime", "BOARD", "Uptime", "Board uptime", UNKNOWN),
@@ -222,11 +225,13 @@ def _board_items(packet: TelemetryPacket | None) -> list[HealthItem]:
     watchdog = bool(packet.flags & TELEMETRY_FLAG_PREVIOUS_WATCHDOG_RESET)
     return [
         HealthItem("uptime", "BOARD", "Uptime", "Board uptime", OK, format_uptime(packet.timestamp)),
+        # The board keeps the watchdog flag for its whole run; once the
+        # operator has closed the reset banner it is no longer a warning.
         HealthItem(
             "reset", "BOARD", "Last reset", "Last board reset",
-            WARNING if watchdog else OK,
-            "watchdog" if watchdog else "normal",
-            "board was restarted by the watchdog" if watchdog else "",
+            WARNING if watchdog and not reset_acknowledged else OK,
+            ("watchdog (seen)" if reset_acknowledged else "watchdog") if watchdog else "normal",
+            "board was restarted by the watchdog" if watchdog and not reset_acknowledged else "",
         ),
     ]
 
@@ -288,13 +293,25 @@ def _sample_items(packet: TelemetryPacket | None) -> list[HealthItem]:
         reading = readings.get(slot)
         if reading is None:
             items.append(HealthItem(key, group, label, name, UNKNOWN, subgroup=subgroup))
+        elif not channel.is_signal:
+            # The ADC channel works, but no sample signal is expected on it
+            # (noise, empty, not connected, noise reference): never a problem.
+            valid = packet.os_adc_valid(slot) and not reading.has_error
+            note = f"{channel.role}; no sample signal expected"
+            if reading.has_error:
+                note += f" ({ad7177_status_names(reading.status)})"
+            items.append(HealthItem(
+                key, group, label, name, UNKNOWN,
+                f"{reading.voltage:.4f} V" if valid else "—", note, subgroup,
+                no_data=not packet.os_adc_valid(slot),
+            ))
         elif reading.has_error:
             items.append(HealthItem(
                 key, group, label, name, ERROR, f"{reading.voltage:.4f} V",
                 ad7177_status_names(reading.status), subgroup,
             ))
         elif not packet.os_adc_valid(slot):
-            items.append(HealthItem(key, group, label, name, WARNING, "—", "no data", subgroup))
+            items.append(HealthItem(key, group, label, name, WARNING, "—", "no data", subgroup, no_data=True))
         else:
             items.append(HealthItem(key, group, label, name, OK, f"{reading.voltage:.4f} V", "", subgroup))
     return items
@@ -366,7 +383,14 @@ def active_issues(items: tuple[HealthItem, ...]) -> list[Issue]:
         if item.group.startswith("SAMPLES"):
             by_chip.setdefault(item.subgroup, []).append(item)
     for chip, channels in by_chip.items():
-        if all(channel.is_problem for channel in channels) and len({c.reason for c in channels}) == 1:
+        if all(channel.no_data for channel in channels):
+            # A chip that delivers nothing on any channel is one issue, whatever
+            # each channel is expected to show.
+            first = channels[0]
+            issues.append((_SEVERITY[WARNING], order[first.key],
+                           Issue(WARNING, f"{chip} not responding (all {len(channels)} channels)")))
+            handled.update(channel.key for channel in channels)
+        elif all(channel.is_problem for channel in channels) and len({c.reason for c in channels}) == 1:
             reason = channels[0].reason
             text = f"{chip} not responding (all {len(channels)} channels)" if reason == "no data" else f"{chip}: {reason} on all {len(channels)} channels"
             issues.append((_SEVERITY[channels[0].state], order[channels[0].key], Issue(channels[0].state, text)))

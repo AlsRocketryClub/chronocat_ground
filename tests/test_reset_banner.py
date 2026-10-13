@@ -1,6 +1,7 @@
 import os
 import struct
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -153,3 +154,29 @@ class DatabaseFailureTest(unittest.TestCase):
         self.assertEqual(log.count("Telemetry database logging failed"), 1)
         database = next(item for item in window._health_items if item.key == "database")
         self.assertEqual((database.state, database.value), ("error", "not recording"))
+
+
+class ResetAcknowledgementTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = QApplication.instance() or QApplication([])
+        self.directory = tempfile.TemporaryDirectory()
+        QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, self.directory.name)
+
+    def tearDown(self) -> None:
+        self.directory.cleanup()
+
+    def test_closing_the_banner_clears_the_watchdog_warning(self) -> None:
+        window = MainWindow(Path(self.directory.name) / "a.db")
+        self.addCleanup(window.close)
+        self.addCleanup(setattr, window, "_closing", True)
+        now = time.time()
+        window.on_telemetry_packet(telemetry(60_000, 0x0007 | WATCHDOG_FLAG), "test", time.monotonic(), now)
+        reset = next(item for item in window._health_items if item.key == "reset")
+        self.assertEqual(reset.state, "warning")
+        window.reset_banner.dismiss()
+        reset = next(item for item in window._health_items if item.key == "reset")
+        self.assertEqual((reset.state, reset.value), ("ok", "watchdog (seen)"))
+        # A later packet from the same board run stays acknowledged.
+        window.on_telemetry_packet(telemetry(61_000, 0x0007 | WATCHDOG_FLAG), "test", time.monotonic(), now + 1)
+        reset = next(item for item in window._health_items if item.key == "reset")
+        self.assertEqual(reset.state, "ok")

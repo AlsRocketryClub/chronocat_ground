@@ -151,3 +151,35 @@ class DatabaseHealthTest(unittest.TestCase):
         items = {item.key: item for item in evaluate_health(None, None, LIVE, "writer stopped")}
         self.assertEqual(items["database"].state, ERROR)
         self.assertIn("start CSV logging", items["database"].reason)
+
+
+class ChannelRoleHealthTest(unittest.TestCase):
+    def with_overrange(self, slot: int):
+        data = bytearray(combined_telemetry_packet_v5())
+        struct.pack_into(">H", data, 53, 0x0FFF)
+        struct.pack_into(">12I", data, 55, *(((0x800100 + s) << 8) | s % 3 for s in range(12)))
+        struct.pack_into(">I", data, 55 + 4 * slot, (0xFFFFFF << 8) | 0x40 | (slot % 3))  # ADC_ERROR
+        data[18] = 0
+        return parse_telemetry_packet(bytes(data))
+
+    def test_a_channel_without_a_sample_signal_never_raises_a_problem(self) -> None:
+        items = items_for(self.with_overrange(7))  # ADC2 CH1: no sample connected
+        self.assertEqual(items["adc:7"].state, UNKNOWN)
+        self.assertIn("not connected", items["adc:7"].reason)
+        self.assertEqual([i for i in active_issues(tuple(items.values())) if "ADC" in i.text], [])
+
+    def test_a_signal_channel_still_reports_its_error(self) -> None:
+        items = items_for(self.with_overrange(6))  # ADC2 CH0: a signal channel
+        self.assertEqual(items["adc:6"].state, ERROR)
+        adc_issues = [i.text for i in active_issues(tuple(items.values())) if "ADC" in i.text]
+        self.assertEqual(len(adc_issues), 1)
+        self.assertTrue(adc_issues[0].startswith("ADC2 CH0"))
+
+    def test_a_dead_adc_is_one_issue_whatever_its_channels_carry(self) -> None:
+        issues = [issue.text for issue in active_issues(tuple(items_for(packet(adc_mask=0x0FC7)).values()))]
+        self.assertEqual(issues, ["ADC1 not responding (all 3 channels)"])
+
+    def test_a_watchdog_reset_stops_warning_once_acknowledged(self) -> None:
+        decoded = packet(flags=0x0007 | (1 << 4))
+        items = {item.key: item for item in evaluate_health(decoded.standard, decoded.pid, LIVE, "", True)}
+        self.assertEqual((items["reset"].state, items["reset"].value), (OK, "watchdog (seen)"))

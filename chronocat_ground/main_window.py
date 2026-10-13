@@ -767,6 +767,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             packet, combined_packet.pid if combined_packet is not None else None, source
         )
         self._health_packet = packet
+        self._health_packet_wall = received_wall
         if combined_packet is not None:
             self._health_pid = combined_packet.pid
         self._check_board_reset(packet, received_wall)
@@ -951,7 +952,9 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         age = None if self.last_telemetry_time is None else time.monotonic() - self.last_telemetry_time
         link = link_status(self.client.connected, age, self._receiver_error)
         database_error = "writer stopped" if self.adc_db.writer_failed else ""
-        items = evaluate_health(self._health_packet, self._health_pid, link, database_error)
+        items = evaluate_health(
+            self._health_packet, self._health_pid, link, database_error, self._reset_acknowledged()
+        )
         events = self.health_events.update(items, datetime.now(), uptime_ms)
         for event in events:
             self._record_event("health", f"{event.state}: {event.text}")
@@ -965,6 +968,14 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         else:
             self.set_health_dot("ok" if link.downlink == "receiving" else "unknown")
         self.dashboard.show_status(issues, items, self._link_summary(age))
+
+    def _reset_acknowledged(self) -> bool:
+        """Whether the operator closed the banner for the reset this board run began with."""
+        packet = self._health_packet
+        wall = getattr(self, "_health_packet_wall", None)
+        if packet is None or wall is None or not packet.flags & TELEMETRY_FLAG_PREVIOUS_WATCHDOG_RESET:
+            return False
+        return same_reset(wall - packet.timestamp / 1000.0, self.dismissed_reset_wall())
 
     def _link_summary(self, packet_age_s: float | None) -> str:
         """One line on the board and downlink for the Dashboard."""
