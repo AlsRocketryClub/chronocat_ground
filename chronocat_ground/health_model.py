@@ -29,6 +29,7 @@ from .protocol import (
     telemetry_health_name,
 )
 from .sample_layout import SAMPLE_CHANNELS
+from .units import VOLTS
 
 OK = "ok"
 WARNING = "warning"
@@ -302,18 +303,18 @@ def _sample_items(packet: TelemetryPacket | None) -> list[HealthItem]:
                 note += f" ({ad7177_status_names(reading.status)})"
             items.append(HealthItem(
                 key, group, label, name, UNKNOWN,
-                f"{reading.voltage:.4f} V" if valid else "—", note, subgroup,
+                VOLTS.format(slot, reading.voltage) if valid else "—", note, subgroup,
                 no_data=not packet.os_adc_valid(slot),
             ))
         elif reading.has_error:
             items.append(HealthItem(
-                key, group, label, name, ERROR, f"{reading.voltage:.4f} V",
+                key, group, label, name, ERROR, VOLTS.format(slot, reading.voltage),
                 ad7177_status_names(reading.status), subgroup,
             ))
         elif not packet.os_adc_valid(slot):
             items.append(HealthItem(key, group, label, name, WARNING, "—", "no data", subgroup, no_data=True))
         else:
-            items.append(HealthItem(key, group, label, name, OK, f"{reading.voltage:.4f} V", "", subgroup))
+            items.append(HealthItem(key, group, label, name, OK, VOLTS.format(slot, reading.voltage), "", subgroup))
     return items
 
 

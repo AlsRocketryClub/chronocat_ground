@@ -52,7 +52,8 @@ class FlightMappingTest(unittest.TestCase):
         self.assertEqual(tuple(visible), SHOWN_WITH_SIGNALS)
         self.assertIn(10, visible)  # ADC3 CH1, the noise reference kept for comparison
         self.assertNotIn(11, visible)  # the second noise reference can be hidden
-        self.assertEqual(window.sample_cards[0].role_label.text(), "Connected, noise only")
+        self.assertEqual(window.sample_cards[0].role_label.text(), "Not connected")
+        self.assertEqual(window.sample_cards[4].role_label.text(), "No sample")
         self.assertIn("F1_U4 (H4): AT-01-5, outer device, connection BC80", window.sample_cards[0].meta_label.text())
         # The Dashboard always lists every channel, whatever the Samples page shows.
         hidden_labels = [slot for slot, (label, _) in window.dashboard.sample_values.items() if label.isHidden()]
@@ -131,3 +132,56 @@ class BoardMapReadingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadableUnitsTest(unittest.TestCase):
+    def test_volts_pick_a_readable_unit_and_hold_it_near_the_boundary(self) -> None:
+        from chronocat_ground.units import VoltFormatter, format_volts
+
+        self.assertEqual(format_volts(0.000238), "+238.0 µV")
+        self.assertEqual(format_volts(0.001192), "+1.192 mV")
+        self.assertEqual(format_volts(-1.5), "-1.5000 V")
+        units = VoltFormatter()
+        self.assertEqual(units.format(0, 0.0012), "+1.200 mV")
+        self.assertEqual(units.format(0, 0.00098), "+0.980 mV")  # stays in mV near 1 mV
+        self.assertEqual(units.format(0, 0.0005), "+500.0 µV")  # clearly below: switches
+        self.assertEqual(units.format(0, 0.0011), "+1100.0 µV")  # holds µV just above
+        self.assertEqual(units.format(0, 0.002), "+2.000 mV")
+
+    def test_volt_plots_label_their_axis_and_stats_with_si_prefixes(self) -> None:
+        from chronocat_ground.plot_widget import PlotWidget
+
+        QApplication.instance() or QApplication([])
+        plot = PlotWidget("Volts (V)", "No data")
+        self.assertEqual(plot.format_value(7.659e-05), "76.59 µV")
+        plot.set_y_label("Raw24", "Raw24")
+        self.assertEqual(plot.format_value(8388608.0), "8.389e+06")
+        plot.close()
+
+
+class MaterialHistoryFilterTest(unittest.TestCase):
+    def test_the_history_window_opens_with_the_dashboard_filter_and_can_change_it(self) -> None:
+        from chronocat_ground.main_window import MainWindow
+        from PySide6.QtWidgets import QPushButton
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, directory)
+            window = MainWindow(Path(directory) / "a.db")
+            try:
+                window.dashboard.plot_filter_buttons[1].setChecked(True)
+                window.dashboard.sample_plots[1][0].clicked.emit()
+                plot = window.plot_dialog_refs["samples_1"]["plot"]
+                # diF-TES-ADT: ADC2 CH0, ADC3 CH0 measure; ADC3 CH1 is the kept reference.
+                self.assertEqual(plot._series_visible, [True, False, False, True, True, False])
+                button = next(b for b in window.plot_dialogs["samples_1"].findChildren(QPushButton)
+                              if b.text() == "Signals only")
+                self.assertTrue(button.isChecked())
+                button.setChecked(False)
+                self.assertEqual(plot._series_visible, [True] * 6)
+            finally:
+                for dialog in list(window.plot_dialogs.values()):
+                    dialog.close()
+                window._closing = True
+                window.close()
+                app.processEvents()

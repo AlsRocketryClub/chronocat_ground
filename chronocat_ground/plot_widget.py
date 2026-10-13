@@ -13,6 +13,8 @@ from PySide6.QtWidgets import QLabel, QWidget
 
 
 PLOT_GAP_SECONDS = 2.5
+# Plots with this y label show volts with automatic µV/mV/V prefixes.
+VOLTS_LABEL = "Volts (V)"
 
 
 class WallClockAxis(pg.AxisItem):
@@ -135,7 +137,7 @@ class PlotWidget(pg.PlotWidget):
         # Plot configuration
         self.setBackground("#ffffff")
         self.showGrid(x=True, y=True, alpha=0.15)
-        self.setLabel("left", y_label)
+        self._apply_y_label(y_label)
         self.getAxis("left").setWidth(55)
         self.getAxis("bottom").setHeight(35)
 
@@ -216,7 +218,21 @@ class PlotWidget(pg.PlotWidget):
         # setLabel relayouts the plot, so only touch it when the label changes.
         if y_label != self.y_label:
             self.y_label = y_label
+            self._apply_y_label(y_label)
+
+    def _apply_y_label(self, y_label: str) -> None:
+        """Volt plots get an SI-prefixed axis (µV, mV, V) for the range shown,
+        rather than a bare 'V' with a x1e-06 multiplier."""
+        self._si_units = "V" if y_label == VOLTS_LABEL else None
+        if self._si_units:
+            self.setLabel("left", "Voltage", units=self._si_units)
+        else:
             self.setLabel("left", y_label)
+
+    def format_value(self, value: float, precision: int = 4) -> str:
+        if getattr(self, "_si_units", None):
+            return pg.siFormat(value, precision=precision, suffix=self._si_units)
+        return f"{value:.{precision}g}"
 
     def set_points(self, points: Sequence[tuple]) -> None:
         self.set_series((('', points),))
@@ -465,7 +481,10 @@ class PlotWidget(pg.PlotWidget):
             return
 
         y = np.array(values)
-        self._set_stats(f"min {y.min():.4g}  max {y.max():.4g}  mean {y.mean():.4g}")
+        self._set_stats(
+            f"min {self.format_value(y.min())}  max {self.format_value(y.max())}  "
+            f"mean {self.format_value(y.mean())}"
+        )
 
     def _set_stats(self, text: str) -> None:
         self.stats_text = text
@@ -532,7 +551,7 @@ class PlotWidget(pg.PlotWidget):
             elapsed = mono - max_mono
             ts = "now" if abs(elapsed) < 0.01 else f"{elapsed:.1f}s ago"
 
-        self._tooltip_label.setText(f"{ts}  {self.hover_label}: {val:.6g}")
+        self._tooltip_label.setText(f"{ts}  {self.hover_label}: {self.format_value(val, 6)}")
         self._tooltip_label.setVisible(True)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
@@ -560,6 +579,7 @@ class HistoryPlotWidget(PlotWidget):
         super().__init__(*args, absolute_time=True, **kwargs)
         self._history_series = [_HistorySeries() for _name in series_names]
         self._history_names = series_names
+        self._series_visible = [True] * len(series_names)
         self._origin: float | None = None
         # Seconds back from the newest sample to show; None while free to pan.
         self._window_seconds: float | None = None
@@ -601,13 +621,13 @@ class HistoryPlotWidget(PlotWidget):
     def _apply_window(self) -> None:
         if self._window_seconds is None or self._origin is None:
             return
-        walls = [series.last_wall for series in self._history_series if series.last_wall is not None]
+        walls = [series.last_wall for series in self._shown_series() if series.last_wall is not None]
         if not walls:
             return
         end = max(walls) - self._origin
         start = end - self._window_seconds
         visible = []
-        for series in self._history_series:
+        for series in self._shown_series():
             data = series.points[:series.length]
             first = int(np.searchsorted(data[:, 0], start))
             values = data[first:, 1]
@@ -663,17 +683,35 @@ class HistoryPlotWidget(PlotWidget):
         self._curves[series_index].setData(data[:, 0], data[:, 1], connect="finite")
         self._apply_window()
         self._empty_label.setVisible(self.sample_count < 2)
-        if self.sample_count < 2:
+        self._update_history_stats()
+
+    def set_series_visible(self, visible) -> None:
+        """Show or hide whole series; stats and the y-range follow the shown ones."""
+        self._series_visible = [bool(flag) for flag in visible]
+        for curve, shown in zip(self._curves, self._series_visible):
+            curve.setVisible(shown)
+        self._update_history_stats()
+        if self._window_seconds is not None:
+            self._apply_window()
+        else:
+            self.enableAutoRange(x=True, y=True)
+
+    def _shown_series(self) -> list[_HistorySeries]:
+        return [series for series, shown in zip(self._history_series, self._series_visible) if shown]
+
+    def _update_history_stats(self) -> None:
+        shown = [series for series in self._shown_series() if series.count]
+        count = sum(series.count for series in shown)
+        if count < 2:
             self._set_stats("")
-        if self.sample_count:
-            minimum = min(item.value_min for item in self._history_series)
-            maximum = max(item.value_max for item in self._history_series)
-            total = sum(item.value_sum for item in self._history_series)
-            if self.sample_count >= 2:
-                self._set_stats(
-                    f"min {minimum:.4g}  max {maximum:.4g}  "
-                    f"mean {total / self.sample_count:.4g}"
-                )
+            return
+        minimum = min(series.value_min for series in shown)
+        maximum = max(series.value_max for series in shown)
+        total = sum(series.value_sum for series in shown)
+        self._set_stats(
+            f"min {self.format_value(minimum)}  max {self.format_value(maximum)}  "
+            f"mean {self.format_value(total / count)}"
+        )
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         # Bypass the rolling plot's list-based nearest-point scan.
@@ -682,8 +720,8 @@ class HistoryPlotWidget(PlotWidget):
             return
         mouse = self.plotItem.vb.mapSceneToView(event.position())
         readings = []
-        for name, series in zip(self._history_names, self._history_series):
-            if not series.length:
+        for name, series, shown in zip(self._history_names, self._history_series, self._series_visible):
+            if not series.length or not shown:
                 continue
             data = series.points[:series.length]
             index = min(int(np.searchsorted(data[:, 0], mouse.x())), len(data) - 1)
@@ -692,7 +730,7 @@ class HistoryPlotWidget(PlotWidget):
             x, value = data[index]
             if math.isfinite(value):
                 stamp = datetime.fromtimestamp(self._origin + x).strftime("%Y-%m-%d %H:%M:%S")
-                readings.append(f"{stamp}  {name or self.hover_label}: {value:.6g}")
+                readings.append(f"{stamp}  {name or self.hover_label}: {self.format_value(value, 6)}")
         if not readings:
             self._tooltip_label.setVisible(False)
             return

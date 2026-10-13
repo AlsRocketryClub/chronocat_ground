@@ -171,7 +171,7 @@ class PlotHistoryTest(unittest.TestCase):
             db.conn.commit()
             panel = host.build_dashboard_page()
             try:
-                host.dashboard.sample_plots[1][0].on_double_click()
+                host.dashboard.sample_plots[1][0].clicked.emit()  # one click opens it
                 plot = host.plot_dialog_refs["samples_1"]["plot"]
                 self.wait_until(lambda: plot.sample_count == count * 6)
                 self.assertEqual(len(plot._curves), 6)
@@ -207,7 +207,7 @@ class PlotHistoryTest(unittest.TestCase):
             db.conn.commit()
             panel = host.build_dashboard_page()
             try:
-                host.dashboard.geiger_plot.on_double_click()
+                host.dashboard.geiger_plot.clicked.emit()
                 self.assertNotIn("geiger_0", host.plot_dialogs)
                 refs = host.plot_dialog_refs["geiger_all"]
                 plot = refs["plot"]

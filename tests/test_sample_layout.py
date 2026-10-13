@@ -45,7 +45,7 @@ class SampleLayoutTest(unittest.TestCase):
             ["ADC0 CH1", "ADC0 CH2", "ADC1 CH0", "ADC2 CH0", "ADC3 CH0"],
         )
         roles = {SAMPLE_CHANNELS[slot].location: SAMPLE_CHANNELS[slot].role for slot in range(12)}
-        self.assertEqual(roles["ADC0 CH0"], "noise")
+        self.assertEqual(roles["ADC0 CH0"], "not connected")
         self.assertEqual((roles["ADC1 CH1"], roles["ADC1 CH2"]), ("empty", "empty"))
         self.assertEqual((roles["ADC2 CH1"], roles["ADC2 CH2"]), ("not connected", "not connected"))
         self.assertEqual((roles["ADC3 CH1"], roles["ADC3 CH2"]), ("noise reference", "noise reference"))

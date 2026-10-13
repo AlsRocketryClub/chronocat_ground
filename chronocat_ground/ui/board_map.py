@@ -24,6 +24,7 @@ from ..protocol import (
     TelemetryPacket,
 )
 from ..sample_layout import SAMPLE_COLUMNS, SAMPLES, SampleChannel
+from ..units import VOLTS
 
 # Spot centres as fractions of the drawn board, keyed by label without the
 # F1_/F2_ board prefix.
@@ -276,7 +277,7 @@ class BoardMapWidget(QWidget):
             painter.setPen(_LINK if channel.is_signal else _MUTED)
             painter.drawText(
                 value_rect, Qt.AlignCenter,
-                f"{volts * 1000:+.3f} mV" if volts is not None else "— mV",
+                VOLTS.format(channel.slot, volts) if volts is not None else "—",
             )
             self._reading_rects.append((value_rect, channel.slot))
             if not channel.is_signal:

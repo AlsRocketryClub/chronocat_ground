@@ -137,14 +137,11 @@ class RadiationPage(QWidget):
             button.clicked.connect(lambda _checked=False, seconds=seconds: self.set_time_window(seconds))
             header.addWidget(button)
             self.window_buttons[seconds] = button
-        flight = QPushButton("Whole flight ↗")
-        flight.setObjectName("segmentButton")
-        flight.setToolTip("Open the full history from the database")
-        flight.clicked.connect(open_flight_history)
-        header.addWidget(flight)
         rate_panel.layout.addLayout(header)
         self.rate_plot = PlotWidget("Dose rate (CPS)", "No data", hover_label="CPS", interactive=False)
-        self.rate_plot.on_double_click = open_flight_history
+        # One click opens the whole flight from the database.
+        self.rate_plot.clicked.connect(open_flight_history)
+        self.rate_plot.setToolTip("Click for the whole flight")
         self.rate_plot.setFixedHeight(260)
         rate_panel.layout.addWidget(self.rate_plot)
         layout.addWidget(rate_panel)

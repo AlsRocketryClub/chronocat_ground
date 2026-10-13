@@ -13,6 +13,7 @@ from ..plot_widget import SERIES_COLORS, PlotWidget
 from ..protocol import HEATER_SENSOR_IDS, TEMP_SENSOR_LABELS, AMBIENT_SENSOR_IDS, PidTelemetryPacket, TelemetryPacket
 from ..sample_layout import SAMPLE_COLUMNS
 from ..telemetry_history import TelemetryHistorySnapshot, adc_point_for_mode
+from ..units import VOLTS
 from .widgets import PAGE_SPACING, Panel
 
 _PLOT_FILTER_SETTING = "dashboard/plot_signals_only"
@@ -95,7 +96,9 @@ class DashboardPage(QWidget):
         numbers.addStretch(1)
         row.addLayout(numbers)
         self.geiger_plot = PlotWidget("Dose rate (CPS)", "No data", hover_label="CPS", interactive=False)
-        self.geiger_plot.on_double_click = open_geiger_plot
+        # One click opens the full history, as on the Samples cards.
+        self.geiger_plot.clicked.connect(open_geiger_plot)
+        self.geiger_plot.setToolTip("Click for the full history")
         self.geiger_plot.setFixedHeight(_PLOT_HEIGHT)
         # History holds an hour for the Radiation page; the summary shows 5 min.
         self.geiger_plot.set_time_window(300)
@@ -136,11 +139,6 @@ class DashboardPage(QWidget):
             only.toggled.connect(lambda checked, index=material_index: self.set_plot_signals_only(index, checked))
             header.addWidget(only)
             self.plot_filter_buttons.append(only)
-            pop_out = QPushButton("Pop out ↗")
-            pop_out.setObjectName("segmentButton")
-            pop_out.setToolTip("Open all six channels with their full history")
-            pop_out.clicked.connect(lambda _checked=False, index=material_index: open_samples_plot(index))
-            header.addWidget(pop_out)
             column.addLayout(header)
             grid = QGridLayout()
             grid.setHorizontalSpacing(6)
@@ -180,7 +178,8 @@ class DashboardPage(QWidget):
             column.addWidget(legend)
             plot = PlotWidget("Volts (V)", "No data", hover_label="Volts", interactive=False, legend=False)
             plot.setFixedHeight(_PLOT_HEIGHT)
-            plot.on_double_click = lambda index=material_index: open_samples_plot(index)
+            plot.clicked.connect(lambda index=material_index: open_samples_plot(index))
+            plot.setToolTip("Click for the full history")
             column.addWidget(plot)
             self.sample_plots.append((plot, channels))
             columns.addLayout(column, 1)
@@ -292,10 +291,12 @@ class DashboardPage(QWidget):
             if reading is None or not packet.os_adc_valid(slot) or reading.has_error:
                 label.setText(f"{swatch}&nbsp;&nbsp;—")
             else:
-                # Millivolts, as on the Boards page: the samples read well under a volt.
-                label.setText(f"{swatch}&nbsp;&nbsp;{reading.voltage * 1000:+.3f} mV")
+                label.setText(f"{swatch}&nbsp;&nbsp;{VOLTS.format(slot, reading.voltage)}")
             _set_state(label, states.get(f"adc:{slot}", UNKNOWN))
         self._plot_samples(history)
+
+    def plot_signals_only(self, material_index: int) -> bool:
+        return self._plot_signals_only[material_index]
 
     def set_plot_signals_only(self, material_index: int, signals_only: bool) -> None:
         """Plot only the measuring channels and the kept noise reference for one material."""

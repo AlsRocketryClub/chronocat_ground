@@ -578,6 +578,8 @@ class MainWindowPagesMixin:
                 history_sources=tuple(("adc", channel.slot, False) for channel in channels),
                 series_names=tuple(f"{channel.pair}{channel.device} ({channel.location})" for channel in channels),
                 latest_fn=None,
+                signal_series=tuple(channel.shown_with_signals for channel in channels),
+                signals_only=self.dashboard.plot_signals_only(material_index),
             )
         except Exception as exc:
             self.log(f"Failed to open {SAMPLE_COLUMNS[material_index][0]} graph: {exc}")
@@ -650,6 +652,8 @@ class MainWindowPagesMixin:
         latest_fn=None,
         hover_label: str | None = None,
         series_names: tuple[str, ...] = ("",),
+        signal_series: tuple[bool, ...] | None = None,
+        signals_only: bool = False,
     ) -> None:
         if plot_id in self.plot_dialogs:
             self.plot_dialogs[plot_id].raise_()
@@ -705,6 +709,20 @@ class MainWindowPagesMixin:
         window_input.returnPressed.connect(show_window)
         show_button = QPushButton("Show")
         show_button.clicked.connect(show_window)
+        if signal_series is not None:
+            # Same filter as the Dashboard plot this window was opened from.
+            only = QPushButton("Signals only")
+            only.setObjectName("segmentButton")
+            only.setCheckable(True)
+            only.setToolTip("Show only the measuring channels and the ADC3 CH1 noise reference")
+
+            def apply_filter(checked: bool) -> None:
+                plot.set_series_visible([shown or not checked for shown in signal_series])
+
+            only.toggled.connect(apply_filter)
+            only.setChecked(signals_only)
+            apply_filter(signals_only)
+            top_row.addWidget(only)
         top_row.addWidget(QLabel("Last"))
         top_row.addWidget(window_input)
         top_row.addWidget(show_button)

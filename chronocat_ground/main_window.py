@@ -56,6 +56,7 @@ from .protocol import (
 )
 from .pid_page import PidPage
 from .history_seed import load_seed_history
+from .units import VOLTS
 from .reset_monitor import ResetMonitor, same_reset
 from .pid_profiles import PidProfile, profile_by_name
 from .telemetry_csv import CSV_MODE_FULL, TelemetryCsvLogger
@@ -875,7 +876,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                 continue
             valid = packet.os_adc_valid(reading.slot)
             value_text = (
-                f"0x{reading.raw24:06x}" if mode == "raw" else f"{reading.voltage:.6f} V"
+                f"0x{reading.raw24:06x}" if mode == "raw" else VOLTS.format(reading.slot, reading.voltage)
             )
             card = self.sample_cards[reading.slot]
             card.set_value_axis(axis_label, axis_hover)
