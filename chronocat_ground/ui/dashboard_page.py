@@ -255,7 +255,7 @@ class DashboardPage(QWidget):
         self._signals_only = signals_only
         for _material, channels in SAMPLE_COLUMNS:
             for channel in channels:
-                self.sample_values[channel.slot][0].setVisible(channel.is_signal or not signals_only)
+                self.sample_values[channel.slot][0].setVisible(channel.shown_with_signals or not signals_only)
         if self._last_history is not None:
             self._plot_samples(self._last_history)
 
@@ -266,7 +266,7 @@ class DashboardPage(QWidget):
                 (
                     f"{channel.pair}{channel.device}",
                     [adc_point_for_mode(entry, "voltage") for entry in history.adc_points[channel.slot]]
-                    if channel.is_signal or not self._signals_only else [],
+                    if channel.shown_with_signals or not self._signals_only else [],
                 )
                 for channel in channels
             ))

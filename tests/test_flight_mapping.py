@@ -13,7 +13,7 @@ from PySide6.QtCore import QPointF, QSettings
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from chronocat_ground.protocol import parse_telemetry_packet
-from chronocat_ground.sample_layout import HEATERS_WITH_SAMPLES, SIGNAL_SLOTS
+from chronocat_ground.sample_layout import HEATERS_WITH_SAMPLES, SHOWN_WITH_SIGNALS
 from chronocat_ground.ui.board_map import BoardMapWidget
 from tests.test_protocol import combined_telemetry_packet_v5
 
@@ -45,17 +45,21 @@ class FlightMappingTest(unittest.TestCase):
     def test_heaters_under_samples_skip_the_u5_and_u2_spots(self) -> None:
         self.assertEqual(HEATERS_WITH_SAMPLES, (0, 1, 3, 4, 6, 7, 9, 10))
 
-    def test_signals_only_hides_seven_channels_and_is_remembered(self) -> None:
+    def test_signals_only_keeps_one_noise_reference_and_is_remembered(self) -> None:
         window = self.window()
         window.samples_signals_only_button.setChecked(True)
         visible = [card.slot for card in window.sample_cards if not card.isHidden()]
-        self.assertEqual(tuple(visible), SIGNAL_SLOTS)
-        self.assertTrue(window.sample_cards[0].role_label.text() == "NOISE")
+        self.assertEqual(tuple(visible), SHOWN_WITH_SIGNALS)
+        self.assertIn(10, visible)  # ADC3 CH1, the noise reference kept for comparison
+        self.assertNotIn(11, visible)  # the second noise reference can be hidden
+        self.assertEqual(window.sample_cards[0].role_label.text(), "Connected, noise only")
+        self.assertIn("F1_U4 (H4): AT-01-5, outer device, connection BC80", window.sample_cards[0].meta_label.text())
         hidden_labels = [slot for slot, (label, _) in window.dashboard.sample_values.items() if label.isHidden()]
-        self.assertEqual(sorted(hidden_labels), sorted(set(range(12)) - set(SIGNAL_SLOTS)))
+        self.assertEqual(sorted(hidden_labels), sorted(set(range(12)) - set(SHOWN_WITH_SIGNALS)))
         later = self.window("b.db")
         self.assertTrue(later.samples_signals_only_button.isChecked())
-        self.assertTrue(later.sample_cards[10].isHidden())
+        self.assertTrue(later.sample_cards[11].isHidden())
+        self.assertFalse(later.sample_cards[10].isHidden())
 
     def test_enable_pid_offers_the_eight_or_all_and_sends_only_the_choice(self) -> None:
         window = self.window()
@@ -84,14 +88,14 @@ class FlightMappingTest(unittest.TestCase):
 
 
 class BoardMapReadingTest(unittest.TestCase):
-    def test_signal_readings_are_shown_and_open_their_channel(self) -> None:
+    def test_every_reading_is_shown_and_opens_its_channel(self) -> None:
         app = QApplication.instance() or QApplication([])
         widget = BoardMapWidget()
         widget.resize(1300, widget.heightForWidth(1300))
         widget.set_readings(packet_with_adc().standard)
         widget.grab()  # paint, which records where each reading sits
         slots = [slot for _rect, slot in widget._reading_rects]
-        self.assertEqual(sorted(slots), list(SIGNAL_SLOTS))
+        self.assertEqual(sorted(slots), list(range(12)))
         requested = []
         widget.channel_requested.connect(requested.append)
         rect, slot = widget._reading_rects[0]

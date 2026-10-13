@@ -260,31 +260,34 @@ class BoardMapWidget(QWidget):
         painter.setFont(_font(10, bold=True))
         painter.drawText(QRectF(strip.left(), strip.top(), strip.width(), 18), Qt.AlignCenter, f"PAIR {pair.number}")
         for row, channel in enumerate((pair.device_a, pair.device_b)):
-            top = strip.top() + 22 + row * 40
-            painter.setFont(_font(9))
+            top = strip.top() + 19 + row * 43
+            painter.setFont(_font(8))
             painter.setPen(_MUTED)
             painter.drawText(
-                QRectF(strip.left(), top, strip.width(), 16), Qt.AlignCenter,
+                QRectF(strip.left(), top, strip.width(), 13), Qt.AlignCenter,
                 f"{channel.device}  ADC{channel.adc_index} CH{channel.channel_index}",
             )
-            value_rect = QRectF(strip.left(), top + 16, strip.width(), 18)
-            if not channel.is_signal:
-                painter.setFont(_font(9))
-                text = channel.role
-                if painter.fontMetrics().horizontalAdvance(text) > strip.width() - 4:
-                    text = {"noise reference": "noise ref.", "not connected": "not conn."}.get(text, text)
-                painter.drawText(value_rect, Qt.AlignCenter, text)
-                continue
+            # Every channel's reading opens its plot; measuring ones stand out.
+            value_rect = QRectF(strip.left(), top + 13, strip.width(), 17)
             volts = self._readings.get(channel.slot)
-            font = _font(10, bold=True)
+            font = _font(10 if channel.is_signal else 9, bold=channel.is_signal)
             font.setUnderline(True)
             painter.setFont(font)
-            painter.setPen(_LINK)
+            painter.setPen(_LINK if channel.is_signal else _MUTED)
             painter.drawText(
                 value_rect, Qt.AlignCenter,
                 f"{volts * 1000:+.3f} mV" if volts is not None else "— mV",
             )
             self._reading_rects.append((value_rect, channel.slot))
+            if not channel.is_signal:
+                painter.setFont(_font(8))
+                painter.setPen(_MUTED)
+                text = channel.role_short
+                # Shorten well before the text would reach the sensor boxes.
+                if painter.fontMetrics().horizontalAdvance(text) > strip.width() - 16:
+                    text = {"noise reference": "noise ref.", "not connected": "not conn.",
+                            "connected, noise": "conn., noise"}.get(text, text)
+                painter.drawText(QRectF(strip.left(), top + 29, strip.width(), 13), Qt.AlignCenter, text)
 
     def _paint_spot(self, painter: QPainter, sensor: int, rect: QRectF) -> None:
         temperature = self._temperatures.get(sensor)
@@ -370,7 +373,7 @@ class BoardMapWidget(QWidget):
         notes = (
             "Hn = heater · 0x.. · Bn = I2C address, mux side · a/b = the two devices of a pair, one ADC channel each",
             "Device a (PAIR1 in-amp, pin 5) reads right − left; device b (PAIR2, pin 6) left − right: opposite sign.",
-            "Underlined: channels expected to measure; click one for its plot. Grey: no signal expected.",
+            "Click any reading for its plot. Blue: measuring channels; grey: no sample signal expected (role below).",
         )
         painter.drawText(
             QRectF(rect.left(), rect.top() + 24, rect.width(), rect.height() - 24),

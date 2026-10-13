@@ -30,6 +30,18 @@ class Sample:
     def description(self) -> str:
         return f"{self.sample_id} ({self.device}{', shielded' if self.shielded else ''})"
 
+    @property
+    def device_text(self) -> str:
+        return "inner device" if self.device == "IN" else "outer device"
+
+    @property
+    def long_description(self) -> str:
+        """E.g. 'AT-07-1, outer device, connection BC10, shielded'."""
+        parts = [self.sample_id, self.device_text, f"connection {self.connection}"]
+        if self.shielded:
+            parts.append("shielded")
+        return ", ".join(parts)
+
 
 # What a channel is expected to show. Only "signal" channels carry a reading.
 ROLE_SIGNAL = "signal"
@@ -37,6 +49,23 @@ ROLE_NOISE = "noise"
 ROLE_EMPTY = "empty"
 ROLE_NOT_CONNECTED = "not connected"
 ROLE_NOISE_REFERENCE = "noise reference"
+
+# Plain-language wording for each role: on cards and in Health, and the short
+# form that fits between the sensor spots on the Boards page.
+ROLE_DESCRIPTIONS = {
+    ROLE_SIGNAL: "Measuring",
+    ROLE_NOISE: "Connected, noise only",
+    ROLE_EMPTY: "No sample fitted",
+    ROLE_NOT_CONNECTED: "Sample not connected",
+    ROLE_NOISE_REFERENCE: "Noise reference (inputs shorted)",
+}
+ROLE_SHORT = {
+    ROLE_SIGNAL: "measuring",
+    ROLE_NOISE: "connected, noise",
+    ROLE_EMPTY: "no sample",
+    ROLE_NOT_CONNECTED: "not connected",
+    ROLE_NOISE_REFERENCE: "noise reference",
+}
 
 
 @dataclass(frozen=True)
@@ -69,6 +98,27 @@ class SampleChannel:
     @property
     def is_signal(self) -> bool:
         return self.role == ROLE_SIGNAL
+
+    @property
+    def role_text(self) -> str:
+        return ROLE_DESCRIPTIONS[self.role]
+
+    @property
+    def role_short(self) -> str:
+        return ROLE_SHORT[self.role]
+
+    @property
+    def shown_with_signals(self) -> bool:
+        """Kept visible by "Signals only": the measuring channels and one noise reference."""
+        return self.slot in SHOWN_WITH_SIGNALS
+
+    def sample_lines(self) -> tuple[str, str]:
+        """One line per side of the pair, e.g. 'F1_U0 (H0): AT-07-1, outer device, connection BC10'."""
+        lines = []
+        for sensor, sample in zip(self.temperature_sensor_ids, self.samples):
+            spot = f"{TEMP_SENSOR_LABELS[sensor]} (H{HEATER_SENSOR_IDS.index(sensor)})"
+            lines.append(f"{spot}: {sample.long_description if sample is not None else 'no sample fitted'}")
+        return tuple(lines)
 
     @property
     def pair_text(self) -> str:
@@ -105,20 +155,21 @@ SAMPLES: dict[str, Sample | None] = {
     "F2_U2": None,
 }
 
-# Expected content per ADC slot (ADC n, channel c is slot 3n + c).
+# Expected content per ADC slot (ADC n, channel c is slot 3n + c), with a note
+# only where it adds to the role.
 CHANNEL_ROLES: dict[int, tuple[str, str]] = {
-    0: (ROLE_NOISE, "only ADC0 CH1 gives data for this pair"),
+    0: (ROLE_NOISE, "Only ADC0 CH1 gives data for this pair."),
     1: (ROLE_SIGNAL, ""),
-    2: (ROLE_SIGNAL, "should read the same as ADC1 CH0"),
-    3: (ROLE_SIGNAL, "should read the same as ADC0 CH2"),
-    4: (ROLE_EMPTY, "no sample fitted"),
-    5: (ROLE_EMPTY, "no sample fitted"),
+    2: (ROLE_SIGNAL, "Should read the same as ADC1 CH0."),
+    3: (ROLE_SIGNAL, "Should read the same as ADC0 CH2."),
+    4: (ROLE_EMPTY, ""),
+    5: (ROLE_EMPTY, ""),
     6: (ROLE_SIGNAL, ""),
-    7: (ROLE_NOT_CONNECTED, "not connected"),
-    8: (ROLE_NOT_CONNECTED, "not connected"),
+    7: (ROLE_NOT_CONNECTED, ""),
+    8: (ROLE_NOT_CONNECTED, ""),
     9: (ROLE_SIGNAL, ""),
-    10: (ROLE_NOISE_REFERENCE, "inputs shorted; noise reference"),
-    11: (ROLE_NOISE_REFERENCE, "inputs shorted; noise reference"),
+    10: (ROLE_NOISE_REFERENCE, "Kept visible with 'Signals only' as the noise baseline."),
+    11: (ROLE_NOISE_REFERENCE, ""),
 }
 
 
@@ -153,6 +204,10 @@ SAMPLE_CHANNELS = {
     channel.slot: channel for _material, channels in SAMPLE_COLUMNS for channel in channels
 }
 SIGNAL_SLOTS = tuple(slot for slot, channel in sorted(SAMPLE_CHANNELS.items()) if channel.is_signal)
+# "Signals only" keeps one noise reference (ADC3 CH1) to compare the signals
+# against; the second one (ADC3 CH2) can be hidden with the rest.
+ALWAYS_SHOWN_NOISE_REFERENCE = 10
+SHOWN_WITH_SIGNALS = tuple(sorted(SIGNAL_SLOTS + (ALWAYS_SHOWN_NOISE_REFERENCE,)))
 
 # Heaters under a fitted sample: the U5 and U2 spots (H2, H5, H8, H11) are empty.
 HEATERS_WITH_SAMPLES = tuple(

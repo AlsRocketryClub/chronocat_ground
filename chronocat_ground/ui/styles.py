@@ -170,6 +170,23 @@ QPushButton:disabled {
     font-weight: 700;
     border-bottom-color: #3f6f9f;
 }
+#sampleRole {
+    border: 1px solid #aaaaaa;
+    background: #ededed;
+    color: #555555;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+}
+#sampleRole[role="signal"] {
+    border-color: #6e9f6e;
+    background: #d8ead8;
+    color: #245824;
+}
+#sampleSamples {
+    color: #222222;
+    font-size: 12px;
+}
 #sampleToggle {
     text-align: left;
     background: #ffffff;

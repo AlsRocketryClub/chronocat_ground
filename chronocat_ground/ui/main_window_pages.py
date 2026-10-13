@@ -525,8 +525,9 @@ class MainWindowPagesMixin:
         self.samples_signals_only_button.setObjectName("segmentButton")
         self.samples_signals_only_button.setCheckable(True)
         self.samples_signals_only_button.setToolTip(
-            "Hide channels not expected to give a reading: noise, empty, "
-            "not connected and the shorted noise reference"
+            "Show only the measuring channels plus one noise reference (ADC3 CH1) "
+            "to compare them against; hides the noise, empty, unconnected and "
+            "second noise-reference channels"
         )
         self.samples_signals_only_button.setChecked(
             str(self.nav_settings().value(_SIGNALS_ONLY_SETTING, False)).lower() == "true"
@@ -539,7 +540,7 @@ class MainWindowPagesMixin:
         """Show only the channels expected to carry a reading, here and on the Dashboard."""
         self.nav_settings().setValue(_SIGNALS_ONLY_SETTING, signals_only)
         for card in self.sample_cards:
-            card.setVisible(card.is_signal or not signals_only)
+            card.setVisible(card.shown_with_signals or not signals_only)
         self.dashboard.set_signals_only(signals_only)
         self.refresh_sample_cards()
 
@@ -548,7 +549,7 @@ class MainWindowPagesMixin:
             if not 0 <= slot < len(self.sample_cards):
                 return
             channel = SAMPLE_CHANNELS[slot]
-            title = f"{channel.name} / {channel.location}"
+            title = f"{channel.location} · {channel.name} · {channel.role_text}"
             raw_mode = self.samples_display_mode == "raw"
 
             self.show_plot_dialog(

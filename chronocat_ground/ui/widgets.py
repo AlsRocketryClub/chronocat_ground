@@ -152,7 +152,8 @@ class SampleCard(QFrame):
         self.setObjectName("sampleCard")
         self.slot = channel.slot
 
-        self.toggle_button = QPushButton(channel.name)
+        self.toggle_button = QPushButton(f"Pair {channel.pair}{channel.device}  ·  {channel.location}")
+        self.toggle_button.setToolTip(f"{channel.name} · click for the full history")
         self.toggle_button.setObjectName("sampleToggle")
         self.toggle_button.clicked.connect(lambda: self.graph_requested.emit(self.slot))
         self.toggle_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -163,15 +164,20 @@ class SampleCard(QFrame):
         self.status_label.setObjectName("sampleMetric")
         self.temperatures_label = QLabel("Temperatures: —")
         self.temperatures_label.setObjectName("sampleMetric")
-        # Which two samples this channel compares, and what it is expected to show.
-        self.meta_label = QLabel(f"{channel.location} · {channel.pair_text}")
-        self.meta_label.setObjectName("smallNote")
-        self.meta_label.setWordWrap(True)
-        self.role_label = QLabel(channel.role.upper())
+        # What the channel is expected to show, and the two samples it compares.
+        self.role_label = QLabel(channel.role_text)
         self.role_label.setObjectName("sampleRole")
-        self.role_label.setToolTip(channel.role_note or channel.role)
-        self.role_label.setVisible(not channel.is_signal)
+        self.role_label.setProperty("role", "signal" if channel.is_signal else "other")
+        self.role_label.setToolTip(channel.role_note or channel.role_text)
+        left, right = channel.sample_lines()
+        self.meta_label = QLabel(f"Left:  {left}\nRight: {right}")
+        self.meta_label.setObjectName("sampleSamples")
+        self.meta_label.setWordWrap(True)
+        self.note_label = QLabel(channel.role_note)
+        self.note_label.setObjectName("smallNote")
+        self.note_label.setVisible(bool(channel.role_note))
         self.is_signal = channel.is_signal
+        self.shown_with_signals = channel.shown_with_signals
 
         self.plot = PlotWidget(
             "Volts (V)",
@@ -191,10 +197,11 @@ class SampleCard(QFrame):
         title_row.addWidget(self.toggle_button, 1)
         title_row.addWidget(self.role_label)
         layout.addLayout(title_row)
+        layout.addWidget(self.meta_label)
+        layout.addWidget(self.note_label)
         layout.addWidget(self.reading_label)
         layout.addWidget(self.status_label)
         layout.addWidget(self.temperatures_label)
-        layout.addWidget(self.meta_label)
         layout.addWidget(self.plot)
 
     def set_reading(self, reading: str, status: str, valid: bool = True) -> None:

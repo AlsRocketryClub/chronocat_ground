@@ -297,7 +297,7 @@ def _sample_items(packet: TelemetryPacket | None) -> list[HealthItem]:
             # The ADC channel works, but no sample signal is expected on it
             # (noise, empty, not connected, noise reference): never a problem.
             valid = packet.os_adc_valid(slot) and not reading.has_error
-            note = f"{channel.role}; no sample signal expected"
+            note = f"{channel.role_text.lower()}; no sample signal expected"
             if reading.has_error:
                 note += f" ({ad7177_status_names(reading.status)})"
             items.append(HealthItem(
