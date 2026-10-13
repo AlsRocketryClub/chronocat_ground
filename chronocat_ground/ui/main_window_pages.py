@@ -538,11 +538,13 @@ class MainWindowPagesMixin:
         return switch
 
     def set_samples_signals_only(self, signals_only: bool) -> None:
-        """Show only the channels expected to carry a reading, here and on the Dashboard."""
+        """Show only the channels expected to carry a reading on the Samples page.
+
+        The Dashboard always lists every channel; its plots have their own filter.
+        """
         self.nav_settings().setValue(_SIGNALS_ONLY_SETTING, signals_only)
         for card in self.sample_cards:
             card.setVisible(card.shown_with_signals or not signals_only)
-        self.dashboard.set_signals_only(signals_only)
         self.refresh_sample_cards()
 
     def show_adc_graph_dialog(self, slot: int) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from ..dosimetry import dose_rate_usv_h, format_dose_rate, points_to_usv_h
@@ -14,6 +14,13 @@ from ..protocol import HEATER_SENSOR_IDS, TEMP_SENSOR_LABELS, AMBIENT_SENSOR_IDS
 from ..sample_layout import SAMPLE_COLUMNS
 from ..telemetry_history import TelemetryHistorySnapshot, adc_point_for_mode
 from .widgets import PAGE_SPACING, Panel
+
+_PLOT_FILTER_SETTING = "dashboard/plot_signals_only"
+
+
+def _settings() -> QSettings:
+    # The ground station's settings file (as nav_settings in main_window_pages).
+    return QSettings(QSettings.IniFormat, QSettings.UserScope, "Chronocat", "Ground Station")
 
 _BOARDS = (("F1", range(0, 6)), ("F2", range(6, 12)))
 # Compact so the whole summary fits one screen; double-click opens the full plot.
@@ -101,7 +108,13 @@ class DashboardPage(QWidget):
         columns = QHBoxLayout()
         columns.setSpacing(PAGE_SPACING)
         self.sample_values: dict[int, tuple[QLabel, str]] = {}
-        self._signals_only = False
+        # Per material plot: show only the measuring channels and the kept
+        # noise reference. The labels above always list all six channels.
+        self._plot_signals_only = [
+            str(_settings().value(f"{_PLOT_FILTER_SETTING}/{index}", False)).lower() == "true"
+            for index in range(len(SAMPLE_COLUMNS))
+        ]
+        self.plot_filter_buttons: list[QPushButton] = []
         self._last_history: TelemetryHistorySnapshot | None = None
         self.sample_plots: list[tuple[PlotWidget, tuple]] = []
         for material_index, (material, channels) in enumerate(SAMPLE_COLUMNS):
@@ -112,6 +125,17 @@ class DashboardPage(QWidget):
             title.setObjectName("dashboardLabel")
             header.addWidget(title)
             header.addStretch(1)
+            only = QPushButton("Signals only")
+            only.setObjectName("segmentButton")
+            only.setCheckable(True)
+            only.setChecked(self._plot_signals_only[material_index])
+            only.setToolTip(
+                "Plot only the measuring channels and the ADC3 CH1 noise reference; "
+                "the readings above still list all six"
+            )
+            only.toggled.connect(lambda checked, index=material_index: self.set_plot_signals_only(index, checked))
+            header.addWidget(only)
+            self.plot_filter_buttons.append(only)
             pop_out = QPushButton("Pop out ↗")
             pop_out.setObjectName("segmentButton")
             pop_out.setToolTip("Open all six channels with their full history")
@@ -122,16 +146,38 @@ class DashboardPage(QWidget):
             grid.setHorizontalSpacing(6)
             grid.setVerticalSpacing(4)
             for index, channel in enumerate(channels):
-                # The swatch matches the channel's line in the plot below.
-                swatch = f'<span style="color:{SERIES_COLORS[index]}">■</span> {channel.pair}{channel.device}'
+                # The swatch matches the channel's line in the plot below; the
+                # dot says whether a sample signal is expected on the channel.
+                dot = (
+                    '<span style="color:#2e7d32">●</span>' if channel.is_signal
+                    else '<span style="color:#9e9e9e">○</span>'
+                )
+                samples = " ↔ ".join(
+                    sample.sample_id if sample is not None else "no sample" for sample in channel.samples
+                )
+                swatch = (
+                    f'<span style="color:{SERIES_COLORS[index]}">■</span> '
+                    f"<b>{channel.pair}{channel.device}</b> {dot} {samples}"
+                )
                 value = QLabel()
                 value.setObjectName("dashboardSample")
                 value.setTextFormat(Qt.RichText)
-                value.setToolTip(f"{channel.name} · {channel.location}")
+                value.setToolTip(
+                    f"{channel.location} · {channel.role_text}\n"
+                    + "\n".join(channel.sample_lines())
+                    + (f"\n{channel.role_note}" if channel.role_note else "")
+                )
                 grid.addWidget(value, index // 2, index % 2)
                 self.sample_values[channel.slot] = (value, swatch)
                 value.setText(f"{swatch}&nbsp;&nbsp;—")
             column.addLayout(grid)
+            legend = QLabel(
+                '<span style="color:#2e7d32">●</span> measuring &nbsp; '
+                '<span style="color:#9e9e9e">○</span> no sample signal expected (hover for details)'
+            )
+            legend.setObjectName("smallNote")
+            legend.setTextFormat(Qt.RichText)
+            column.addWidget(legend)
             plot = PlotWidget("Volts (V)", "No data", hover_label="Volts", interactive=False, legend=False)
             plot.setFixedHeight(_PLOT_HEIGHT)
             plot.on_double_click = lambda index=material_index: open_samples_plot(index)
@@ -246,27 +292,27 @@ class DashboardPage(QWidget):
             if reading is None or not packet.os_adc_valid(slot) or reading.has_error:
                 label.setText(f"{swatch}&nbsp;&nbsp;—")
             else:
-                label.setText(f"{swatch}&nbsp;&nbsp;{reading.voltage:+.4f} V")
+                # Millivolts, as on the Boards page: the samples read well under a volt.
+                label.setText(f"{swatch}&nbsp;&nbsp;{reading.voltage * 1000:+.3f} mV")
             _set_state(label, states.get(f"adc:{slot}", UNKNOWN))
         self._plot_samples(history)
 
-    def set_signals_only(self, signals_only: bool) -> None:
-        """Hide the channels not expected to carry a reading (see sample_layout)."""
-        self._signals_only = signals_only
-        for _material, channels in SAMPLE_COLUMNS:
-            for channel in channels:
-                self.sample_values[channel.slot][0].setVisible(channel.shown_with_signals or not signals_only)
+    def set_plot_signals_only(self, material_index: int, signals_only: bool) -> None:
+        """Plot only the measuring channels and the kept noise reference for one material."""
+        self._plot_signals_only[material_index] = signals_only
+        _settings().setValue(f"{_PLOT_FILTER_SETTING}/{material_index}", signals_only)
         if self._last_history is not None:
             self._plot_samples(self._last_history)
 
     def _plot_samples(self, history: TelemetryHistorySnapshot) -> None:
         self._last_history = history
-        for plot, channels in self.sample_plots:
+        for index, (plot, channels) in enumerate(self.sample_plots):
+            signals_only = self._plot_signals_only[index]
             plot.set_series(tuple(
                 (
                     f"{channel.pair}{channel.device}",
                     [adc_point_for_mode(entry, "voltage") for entry in history.adc_points[channel.slot]]
-                    if channel.shown_with_signals or not self._signals_only else [],
+                    if channel.shown_with_signals or not signals_only else [],
                 )
                 for channel in channels
             ))

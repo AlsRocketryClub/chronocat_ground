@@ -54,12 +54,34 @@ class FlightMappingTest(unittest.TestCase):
         self.assertNotIn(11, visible)  # the second noise reference can be hidden
         self.assertEqual(window.sample_cards[0].role_label.text(), "Connected, noise only")
         self.assertIn("F1_U4 (H4): AT-01-5, outer device, connection BC80", window.sample_cards[0].meta_label.text())
+        # The Dashboard always lists every channel, whatever the Samples page shows.
         hidden_labels = [slot for slot, (label, _) in window.dashboard.sample_values.items() if label.isHidden()]
-        self.assertEqual(sorted(hidden_labels), sorted(set(range(12)) - set(SHOWN_WITH_SIGNALS)))
+        self.assertEqual(hidden_labels, [])
         later = self.window("b.db")
         self.assertTrue(later.samples_signals_only_button.isChecked())
         self.assertTrue(later.sample_cards[11].isHidden())
         self.assertFalse(later.sample_cards[10].isHidden())
+
+    def test_dashboard_lists_all_channels_and_each_plot_has_its_own_filter(self) -> None:
+        import time
+
+        window = self.window()
+        dashboard = window.dashboard
+        window.on_telemetry_packet(packet_with_adc(), "test", time.monotonic(), time.time())
+        first = dashboard.sample_values[0][0].text()
+        self.assertIn("AT-01-5 ↔ AT-02-3", first)
+        self.assertIn("○", first)  # ADC0 CH0: no sample signal expected
+        self.assertIn("●", dashboard.sample_values[1][0].text())  # ADC0 CH1: measuring
+        plot, channels = dashboard.sample_plots[1]  # diF-TES-ADT, ADC2/ADC3
+        plotted = lambda: [label for label, points in plot._series_points if points]
+        self.assertEqual(len(plotted()), 6)
+        dashboard.plot_filter_buttons[1].setChecked(True)
+        self.assertEqual(plotted(), ["1a", "2b", "3a"])  # ADC2 CH0, ADC3 CH0, noise ref ADC3 CH1
+        self.assertEqual(len([label for label, points in dashboard.sample_plots[0][0]._series_points if points]), 6)
+        self.assertTrue(all(not label.isHidden() for label, _ in dashboard.sample_values.values()))
+        later = self.window("b.db")
+        self.assertTrue(later.dashboard.plot_filter_buttons[1].isChecked())
+        self.assertFalse(later.dashboard.plot_filter_buttons[0].isChecked())
 
     def test_enable_pid_offers_the_eight_or_all_and_sends_only_the_choice(self) -> None:
         window = self.window()
