@@ -290,6 +290,7 @@ class MainWindowPagesMixin:
         # Remembered so a ground station restart does not show the same reset again,
         # and so Health stops counting it as a warning.
         self.nav_settings().setValue(_DISMISSED_RESET_SETTING, reset_wall)
+        self._acknowledged_run = self.reset_monitor.run
         self.refresh_health()
 
     def dismissed_reset_wall(self) -> float | None:

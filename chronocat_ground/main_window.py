@@ -143,6 +143,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.session_dose = SessionDose()
         self.health_events = HealthEventLog()
         self.reset_monitor = ResetMonitor()
+        self._acknowledged_run: int | None = None
         self._database_error_logged = ""
         self._health_packet: TelemetryPacket | None = None
         self._health_pid: PidTelemetryPacket | None = None
@@ -801,7 +802,11 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             received_wall,
             heaters,
         )
-        if reset is None or same_reset(reset.reset_wall, self.dismissed_reset_wall()):
+        if reset is None:
+            return
+        if same_reset(reset.reset_wall, self.dismissed_reset_wall(), packet.timestamp / 1000.0):
+            # Already closed in an earlier session: this run stays acknowledged.
+            self._acknowledged_run = self.reset_monitor.run
             return
         self._record_event(
             "reset",
@@ -971,12 +976,15 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.dashboard.show_status(issues, items, self._link_summary(age))
 
     def _reset_acknowledged(self) -> bool:
-        """Whether the operator closed the banner for the reset this board run began with."""
+        """Whether the operator closed the banner for the reset this board run began with.
+
+        Tracked by board run rather than by time: the board clock drifts, so a
+        time comparison would expire after a while.
+        """
         packet = self._health_packet
-        wall = getattr(self, "_health_packet_wall", None)
-        if packet is None or wall is None or not packet.flags & TELEMETRY_FLAG_PREVIOUS_WATCHDOG_RESET:
+        if packet is None or not packet.flags & TELEMETRY_FLAG_PREVIOUS_WATCHDOG_RESET:
             return False
-        return same_reset(wall - packet.timestamp / 1000.0, self.dismissed_reset_wall())
+        return self._acknowledged_run == self.reset_monitor.run
 
     def _link_summary(self, packet_age_s: float | None) -> str:
         """One line on the board and downlink for the Dashboard."""

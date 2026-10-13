@@ -180,3 +180,51 @@ class ResetAcknowledgementTest(unittest.TestCase):
         window.on_telemetry_packet(telemetry(61_000, 0x0007 | WATCHDOG_FLAG), "test", time.monotonic(), now + 1)
         reset = next(item for item in window._health_items if item.key == "reset")
         self.assertEqual(reset.state, "ok")
+
+
+class ResetDriftTest(unittest.TestCase):
+    """The board clock runs ~1.4 % fast, so 'now minus uptime' drifts during a run."""
+
+    def setUp(self) -> None:
+        self.app = QApplication.instance() or QApplication([])
+        self.directory = tempfile.TemporaryDirectory()
+        QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, self.directory.name)
+
+    def tearDown(self) -> None:
+        self.directory.cleanup()
+
+    def window(self, name):
+        window = MainWindow(Path(self.directory.name) / name)
+        self.addCleanup(window.close)
+        self.addCleanup(setattr, window, "_closing", True)
+        return window
+
+    @staticmethod
+    def reset_item(window):
+        return next(item for item in window._health_items if item.key == "reset")
+
+    def test_acknowledgement_survives_hours_of_drift_and_a_ground_restart(self) -> None:
+        start = 100_000.0
+        fast = 1.0138
+        window = self.window("a.db")
+        window.on_telemetry_packet(telemetry(60_000, 0x0007 | WATCHDOG_FLAG), "test", time.monotonic(), start)
+        window.reset_banner.dismiss()
+        # Three hours later the board's uptime has run 1.38 % ahead of the wall clock.
+        later = start + 3 * 3600
+        uptime = int((60 + 3 * 3600 * fast) * 1000)
+        window.on_telemetry_packet(telemetry(uptime, 0x0007 | WATCHDOG_FLAG), "test", time.monotonic(), later)
+        self.assertEqual(self.reset_item(window).state, "ok")
+
+        # A ground restart then: the banner stays closed and Health stays quiet.
+        restarted = self.window("b.db")
+        restarted.on_telemetry_packet(telemetry(uptime, 0x0007 | WATCHDOG_FLAG), "test", time.monotonic(), later)
+        self.assertTrue(restarted.reset_banner.isHidden())
+        self.assertEqual(self.reset_item(restarted).state, "ok")
+
+    def test_a_new_reset_after_acknowledging_warns_again(self) -> None:
+        window = self.window("a.db")
+        window.on_telemetry_packet(telemetry(60_000, 0x0007 | WATCHDOG_FLAG), "test", time.monotonic(), 100_000.0)
+        window.reset_banner.dismiss()
+        window.on_telemetry_packet(telemetry(3_000, 0x0007 | WATCHDOG_FLAG), "test", time.monotonic(), 100_600.0)
+        self.assertEqual(self.reset_item(window).state, "warning")
+        self.assertFalse(window.reset_banner.isHidden())

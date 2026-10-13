@@ -18,8 +18,11 @@ CAUSE_COMMAND = "command"
 # How far the estimated reset time may sit from the reset command and still
 # count as caused by it (the board resets about 0.4 s after replying).
 COMMAND_WINDOW_S = 20.0
-# Two estimates of one reset's time differ only by packet jitter.
+# Two estimates of one reset's time differ by packet jitter, plus the board
+# clock's error times its uptime: it runs on its internal oscillator (1.4 %
+# fast in the interference test), so "now minus uptime" drifts as it runs.
 SAME_RESET_TOLERANCE_S = 30.0
+BOARD_CLOCK_TOLERANCE = 0.05
 
 
 @dataclass(frozen=True)
@@ -30,11 +33,13 @@ class BoardReset:
     pid_heaters: tuple[int, ...] | None
 
 
-def same_reset(first_wall: float | None, second_wall: float | None) -> bool:
+def same_reset(first_wall: float | None, second_wall: float | None, uptime_s: float = 0.0) -> bool:
+    """Whether two reset-time estimates belong to one board run, `uptime_s` into it."""
     return (
         first_wall is not None
         and second_wall is not None
-        and abs(first_wall - second_wall) <= SAME_RESET_TOLERANCE_S
+        and abs(first_wall - second_wall)
+        <= SAME_RESET_TOLERANCE_S + BOARD_CLOCK_TOLERANCE * max(0.0, uptime_s)
     )
 
 
@@ -42,6 +47,9 @@ class ResetMonitor:
     def __init__(self) -> None:
         self._last_uptime_ms: int | None = None
         self._command_wall: float | None = None
+        # Counts board runs seen this session: a new one starts when uptime
+        # drops (or with the first packet), so a run is known without clocks.
+        self.run = 0
 
     def clear(self) -> None:
         self._last_uptime_ms = None
@@ -60,6 +68,8 @@ class ResetMonitor:
         reset_wall = wall - uptime_ms / 1000.0
         previous = self._last_uptime_ms
         self._last_uptime_ms = uptime_ms
+        if previous is None or uptime_ms < previous:
+            self.run += 1
         if previous is None:
             # First packet: an older watchdog reset is still worth knowing about.
             if not watchdog_flag:
