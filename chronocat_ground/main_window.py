@@ -850,8 +850,9 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         mode = self.samples_display_mode
         axis_label, axis_hover = ("Raw24", "Raw24") if mode == "raw" else ("Volts (V)", "Volts")
         # Rebuilding twelve plots is the expensive part, so it waits until the
-        # Samples page is shown; switch_view refreshes it on arrival.
-        if self.pages.currentIndex() != self.samples_page_index:
+        # Samples page is shown (as a tab or in its own window); switch_view
+        # refreshes it on arrival.
+        if not self.view_is_visible(VIEW_SAMPLES):
             return
         values: list[float] = []
         if packet is None:
@@ -994,6 +995,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._closing = True
+        self.close_page_windows()
         self.setEnabled(False)
         self.telemetry_receiver.stop()
         self.telemetry_receiver.wait(1000)

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
@@ -100,6 +101,28 @@ _HEALTH_DOT_COLORS = {
     "error": "#c0392b",
     "unknown": "#b5b5b5",
 }
+
+
+class _PageWindow(QWidget):
+    """A page shown in its own window; closing it puts the page back."""
+
+    def __init__(self, view: str, page: QWidget, on_close) -> None:
+        super().__init__(None, Qt.Window)
+        self.setObjectName("appShell")
+        self.setWindowTitle(f"CHRONO-CAT · {view}")
+        self.view = view
+        self.page = page
+        self._on_close = on_close
+        self.closing_quietly = False
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(PAGE_SPACING, PAGE_SPACING, PAGE_SPACING, PAGE_SPACING)
+        layout.addWidget(page)
+        page.show()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if not self.closing_quietly:
+            self._on_close(self.view)
+        super().closeEvent(event)
 
 
 class MainWindowPagesMixin:
@@ -232,6 +255,10 @@ class MainWindowPagesMixin:
         button = QPushButton(view)
         button.setObjectName(object_name)
         button.clicked.connect(lambda _checked=False, selected=view: self.switch_view(selected))
+        button.setContextMenuPolicy(Qt.CustomContextMenu)
+        button.customContextMenuRequested.connect(
+            lambda position, selected=view, source=button: self._show_tab_menu(selected, source, position)
+        )
         self.view_buttons.setdefault(view, []).append(button)
         return button
 
@@ -1078,8 +1105,103 @@ class MainWindowPagesMixin:
         self.close()
         QApplication.quit()
 
+    # --- Pages in their own windows -------------------------------------
+    # A popped-out page is the same widget moved into a separate window, so
+    # it keeps updating exactly as before; its tab shows a placeholder.
+
+    def popped_out_views(self) -> dict[str, _PageWindow]:
+        if not hasattr(self, "_popped_windows"):
+            self._popped_windows: dict[str, _PageWindow] = {}
+        return self._popped_windows
+
+    def view_is_visible(self, view: str) -> bool:
+        return view in self.popped_out_views() or self.pages.currentIndex() == VIEWS.index(view)
+
+    def tab_menu(self, view: str) -> QMenu:
+        menu = QMenu(self)
+        if view in self.popped_out_views():
+            menu.addAction("Show its window", lambda: self._raise_page_window(view))
+            menu.addAction("Bring back into the main window", lambda: self.dock_view(view))
+        else:
+            menu.addAction("Open in new window", lambda: self.pop_out_view(view))
+        return menu
+
+    def _show_tab_menu(self, view: str, button: QPushButton, position) -> None:
+        self.tab_menu(view).exec(button.mapToGlobal(position))
+
+    def _raise_page_window(self, view: str) -> None:
+        window = self.popped_out_views().get(view)
+        if window is not None:
+            window.showNormal()
+            window.raise_()
+            window.activateWindow()
+
+    def _popped_placeholder(self, view: str) -> QWidget:
+        placeholder = QWidget()
+        layout = QVBoxLayout(placeholder)
+        layout.setContentsMargins(0, 0, 0, 0)
+        panel = Panel(view)
+        note = QLabel(f"{view} is open in its own window.")
+        panel.layout.addWidget(note)
+        row = QHBoxLayout()
+        show = QPushButton("Show window")
+        show.clicked.connect(lambda: self._raise_page_window(view))
+        back = QPushButton("Bring back")
+        back.clicked.connect(lambda: self.dock_view(view))
+        row.addWidget(show)
+        row.addWidget(back)
+        row.addStretch(1)
+        panel.layout.addLayout(row)
+        layout.addWidget(panel)
+        layout.addStretch(1)
+        return placeholder
+
+    def pop_out_view(self, view: str) -> None:
+        windows = self.popped_out_views()
+        if view in windows:
+            self._raise_page_window(view)
+            return
+        index = VIEWS.index(view)
+        current = getattr(self, "current_view", VIEWS[0])
+        page = self.pages.widget(index)
+        size = self.pages.size()
+        self.pages.insertWidget(index, self._popped_placeholder(view))
+        self.pages.removeWidget(page)
+        window = _PageWindow(view, page, self.dock_view)
+        windows[view] = window
+        window.resize(size)
+        window.show()
+        self.pages.setCurrentIndex(VIEWS.index(current))
+        if view == VIEW_SAMPLES:
+            self.refresh_sample_cards()
+
+    def dock_view(self, view: str) -> None:
+        window = self.popped_out_views().pop(view, None)
+        if window is None:
+            return
+        index = VIEWS.index(view)
+        current = getattr(self, "current_view", VIEWS[0])
+        placeholder = self.pages.widget(index)
+        self.pages.insertWidget(index, window.page)
+        self.pages.removeWidget(placeholder)
+        placeholder.deleteLater()
+        window.closing_quietly = True
+        window.close()
+        window.deleteLater()
+        self.pages.setCurrentIndex(VIEWS.index(current))
+
+    def close_page_windows(self) -> None:
+        """On shutdown: close every page window without moving pages back."""
+        for window in list(self.popped_out_views().values()):
+            window.closing_quietly = True
+            window.close()
+        self.popped_out_views().clear()
+
     def switch_view(self, view: str) -> None:
+        self.current_view = view
         self.pages.setCurrentIndex(VIEWS.index(view))
+        if view in self.popped_out_views():
+            self._raise_page_window(view)
         if view == VIEW_SETTINGS:
             self.refresh_display_settings()
         if view == VIEW_SAMPLES:
