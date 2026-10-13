@@ -105,3 +105,39 @@ def heater_averages(temperatures: dict[int, float], duties: dict[int, int]) -> t
     )
     average_duty = sum(duties.values()) / len(duties) if duties else None
     return average_temperature, average_duty
+
+
+@dataclass
+class LastValues:
+    """The newest stored packet's temperatures and ADC readings, whatever its age."""
+
+    wall: float
+    temperatures: dict[int, float]  # only sensors with a valid reading
+    volts: dict[int, float | None]  # None where the reading was not valid
+
+
+def load_last_values(connection: sqlite3.Connection) -> LastValues | None:
+    """For pages that show only current values (the Boards page) after a restart."""
+    row = connection.execute("SELECT MAX(received_wall) FROM packet").fetchone()
+    wall = row[0] if row else None
+    if wall is None:
+        # Databases from before the packet table: use the newest temperature row.
+        row = connection.execute("SELECT MAX(received_wall) FROM temperature").fetchone()
+        wall = row[0] if row else None
+    if wall is None:
+        return None
+    temperatures = {
+        slot: value
+        for slot, value in connection.execute(
+            "SELECT slot, temperature_c FROM temperature WHERE received_wall = ?", (wall,)
+        )
+    }
+    volts: dict[int, float | None] = {}
+    for slot, raw24, good in connection.execute(
+        f"SELECT slot, raw24, {GOOD_ROW} FROM adc WHERE received_wall = ?", (wall,)
+    ):
+        volts[slot] = (
+            (raw24 - AD7177_BIPOLAR_MIDSCALE) / AD7177_BIPOLAR_MIDSCALE * AD7177_VREF_VOLTS
+            if good and raw24 is not None else None
+        )
+    return LastValues(wall, temperatures, volts)

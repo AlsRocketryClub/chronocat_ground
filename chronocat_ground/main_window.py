@@ -55,7 +55,7 @@ from .protocol import (
     telemetry_value_name,
 )
 from .pid_page import PidPage
-from .history_seed import load_seed_history
+from .history_seed import load_last_values, load_seed_history
 from .units import VOLTS
 from .reset_monitor import ResetMonitor, same_reset
 from .pid_profiles import PidProfile, profile_by_name
@@ -441,6 +441,12 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             self.log(f"Could not load recent history: {exc}")
             return
         self.telemetry_history.seed(seed)
+        try:
+            last = load_last_values(self.adc_db.conn)
+        except sqlite3.Error:
+            last = None
+        if last is not None:
+            self.board_map.show_stored(last.temperatures, last.volts, last.wall)
         history = self.telemetry_history.snapshot()
         self._last_adc_history = history
         self.dashboard.show_history(history)

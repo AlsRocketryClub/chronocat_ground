@@ -98,3 +98,28 @@ class EmptyPlotClickTest(unittest.TestCase):
         plot = PlotWidget("Dose rate", "No data")
         self.assertTrue(plot._empty_label.testAttribute(Qt.WA_TransparentForMouseEvents))
         plot.close()
+
+
+class BoardsAfterRestartTest(unittest.TestCase):
+    def test_boards_show_the_last_stored_values_until_live_data(self) -> None:
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, directory)
+            path = Path(directory) / "seed.db"
+            # Older than the hour the plots reload: the Boards page still shows it.
+            record(path, [time.time() - 3 * 3600 + second for second in range(5)])
+            window = MainWindow(path)
+            try:
+                board = window.board_map
+                self.assertIsNotNone(board._stored_wall)
+                self.assertEqual(board._temperatures[15], 24.0)
+                self.assertAlmostEqual(board._readings[0], (0x100 / 0x800000) * 2.5, places=6)
+                board.grab()  # paints the "last stored values" note without error
+                from tests.test_flight_mapping import packet_with_adc
+
+                window.on_telemetry_packet(packet_with_adc(), "test", time.monotonic(), time.time())
+                self.assertIsNone(board._stored_wall)
+            finally:
+                window._closing = True
+                window.close()
+                app.processEvents()

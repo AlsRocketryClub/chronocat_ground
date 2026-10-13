@@ -9,6 +9,7 @@ bottom right); the ambient sensors are nudged just enough not to overlap.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
@@ -44,7 +45,7 @@ _BOARD_BUSES = ("I2C4", "I2C1")
 # because the space between sensor rows carries no information.
 _BOARD_ASPECT = 1.6
 _HEADER_HEIGHT = 46.0
-_FOOTER_HEIGHT = 120.0
+_FOOTER_HEIGHT = 140.0
 _SPOT_WIDTH = 0.34
 _SPOT_HEIGHT = 74.0
 # Sample spots carry two more lines: the sample and how it is connected.
@@ -130,7 +131,16 @@ class BoardMapWidget(QWidget):
         self.setMouseTracking(True)
         self._temperatures: dict[int, float | None] = {}
         self._readings: dict[int, float | None] = {}
+        # Set while showing stored values from before a ground restart.
+        self._stored_wall: float | None = None
         self._reading_rects: list[tuple[QRectF, int]] = []
+
+    def show_stored(self, temperatures: dict[int, float], volts: dict[int, float | None], wall: float) -> None:
+        """Last stored values after a ground restart, marked as such until live data arrives."""
+        self._temperatures = {sensor: temperatures.get(sensor) for sensor in range(len(TEMP_SENSOR_LABELS))}
+        self._readings = dict(volts)
+        self._stored_wall = wall
+        self.update()
 
     def set_readings(self, packet: TelemetryPacket) -> None:
         """Latest volts per ADC slot; None when the reading is invalid or flagged."""
@@ -162,6 +172,7 @@ class BoardMapWidget(QWidget):
         super().mouseMoveEvent(event)
 
     def set_temperatures(self, packet: TelemetryPacket) -> None:
+        self._stored_wall = None
         self._temperatures = {
             sensor_id: packet.temperature_c(sensor_id) for sensor_id in range(len(TEMP_SENSOR_LABELS))
         }
@@ -355,6 +366,15 @@ class BoardMapWidget(QWidget):
         )
 
     def _paint_footer(self, painter: QPainter, rect: QRectF) -> None:
+        if self._stored_wall is not None:
+            # Its own line at the bottom: these are not live readings.
+            moment = datetime.fromtimestamp(self._stored_wall).strftime("%Y-%m-%d %H:%M:%S")
+            painter.setFont(_font(9, bold=True))
+            painter.setPen(QColor("#8a5a00"))
+            painter.drawText(
+                QRectF(rect.left(), rect.bottom() - 18, rect.width(), 18), Qt.AlignLeft | Qt.AlignVCenter,
+                f"Showing the last stored values, from {moment}; no live telemetry yet.",
+            )
         painter.setFont(_font(9))
         x = rect.left()
         for state, text in (("valid", "valid"), ("hot", f"≥ {MAX_SAFE_TEMPERATURE_C:.0f} °C"), ("invalid", "no reading")):
