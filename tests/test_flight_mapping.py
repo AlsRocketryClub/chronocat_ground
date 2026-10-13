@@ -52,7 +52,7 @@ class FlightMappingTest(unittest.TestCase):
         self.assertEqual(tuple(visible), SHOWN_WITH_SIGNALS)
         self.assertIn(10, visible)  # ADC3 CH1, the noise reference kept for comparison
         self.assertNotIn(11, visible)  # the second noise reference can be hidden
-        self.assertEqual(window.sample_cards[0].role_label.text(), "Not connected")
+        self.assertEqual(window.sample_cards[0].role_label.text(), "BAD DEVICES")
         self.assertEqual(window.sample_cards[4].role_label.text(), "No sample")
         self.assertIn("F1_U4 (H4): AT-01-5, outer device, connection BC80", window.sample_cards[0].meta_label.text())
         # The Dashboard always lists every channel, whatever the Samples page shows.

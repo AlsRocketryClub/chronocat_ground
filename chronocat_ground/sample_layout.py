@@ -46,7 +46,7 @@ class Sample:
 # What a channel is expected to show. Only "signal" channels carry a reading.
 ROLE_SIGNAL = "signal"
 ROLE_EMPTY = "empty"
-ROLE_NOT_CONNECTED = "not connected"
+ROLE_BAD_DEVICES = "bad devices"
 ROLE_NOISE_REFERENCE = "noise reference"
 
 # Plain-language wording for each role: on cards and in Health, and the short
@@ -54,13 +54,13 @@ ROLE_NOISE_REFERENCE = "noise reference"
 ROLE_DESCRIPTIONS = {
     ROLE_SIGNAL: "Measuring",
     ROLE_EMPTY: "No sample",
-    ROLE_NOT_CONNECTED: "Not connected",
+    ROLE_BAD_DEVICES: "BAD DEVICES",
     ROLE_NOISE_REFERENCE: "Noise reference (inputs shorted)",
 }
 ROLE_SHORT = {
     ROLE_SIGNAL: "measuring",
     ROLE_EMPTY: "no sample",
-    ROLE_NOT_CONNECTED: "not connected",
+    ROLE_BAD_DEVICES: "BAD DEVICES",
     ROLE_NOISE_REFERENCE: "noise reference",
 }
 
@@ -155,16 +155,16 @@ SAMPLES: dict[str, Sample | None] = {
 # Expected content per ADC slot (ADC n, channel c is slot 3n + c), with a note
 # only where it adds to the role.
 CHANNEL_ROLES: dict[int, tuple[str, str]] = {
-    # Called "not connected" like ADC2 CH1/CH2: no usable signal on this one.
-    0: (ROLE_NOT_CONNECTED, "Only ADC0 CH1 gives data for this pair."),
+    # Grouped with ADC2 CH1/CH2: no usable signal on this one.
+    0: (ROLE_BAD_DEVICES, "Only ADC0 CH1 gives data for this pair."),
     1: (ROLE_SIGNAL, ""),
     2: (ROLE_SIGNAL, "Should read the same as ADC1 CH0."),
     3: (ROLE_SIGNAL, "Should read the same as ADC0 CH2."),
     4: (ROLE_EMPTY, ""),
     5: (ROLE_EMPTY, ""),
     6: (ROLE_SIGNAL, ""),
-    7: (ROLE_NOT_CONNECTED, ""),
-    8: (ROLE_NOT_CONNECTED, ""),
+    7: (ROLE_BAD_DEVICES, ""),
+    8: (ROLE_BAD_DEVICES, ""),
     9: (ROLE_SIGNAL, ""),
     10: (ROLE_NOISE_REFERENCE, "Kept visible with 'Signals only' as the noise baseline."),
     11: (ROLE_NOISE_REFERENCE, ""),

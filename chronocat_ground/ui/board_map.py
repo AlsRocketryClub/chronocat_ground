@@ -296,9 +296,8 @@ class BoardMapWidget(QWidget):
                 painter.setPen(_MUTED)
                 text = channel.role_short
                 # Shorten well before the text would reach the sensor boxes.
-                if painter.fontMetrics().horizontalAdvance(text) > strip.width() - 16:
-                    text = {"noise reference": "noise ref.", "not connected": "not conn.",
-                            "connected, noise": "conn., noise"}.get(text, text)
+                if painter.fontMetrics().horizontalAdvance(text) > strip.width() - 8:
+                    text = {"noise reference": "noise ref.", "BAD DEVICES": "BAD DEV."}.get(text, text)
                 painter.drawText(QRectF(strip.left(), top + 29, strip.width(), 13), Qt.AlignCenter, text)
 
     def _paint_spot(self, painter: QPainter, sensor: int, rect: QRectF) -> None:

@@ -165,7 +165,7 @@ class ChannelRoleHealthTest(unittest.TestCase):
     def test_a_channel_without_a_sample_signal_never_raises_a_problem(self) -> None:
         items = items_for(self.with_overrange(7))  # ADC2 CH1: no sample connected
         self.assertEqual(items["adc:7"].state, UNKNOWN)
-        self.assertIn("not connected", items["adc:7"].reason)
+        self.assertIn("BAD DEVICES", items["adc:7"].reason)
         self.assertEqual([i for i in active_issues(tuple(items.values())) if "ADC" in i.text], [])
 
     def test_a_signal_channel_still_reports_its_error(self) -> None:
