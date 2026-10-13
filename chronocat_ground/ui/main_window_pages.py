@@ -93,6 +93,7 @@ NAV_TOP = "top"
 NAV_SIDE = "side"
 _NAV_SETTING = "layout/navigation"
 _DISMISSED_RESET_SETTING = "reset_banner/dismissed_reset_wall"
+_SIGNALS_ONLY_SETTING = "samples/signals_only"
 _HEALTH_DOT_COLORS = {
     "ok": "#4f9a4f",
     "warning": "#d4a017",
@@ -458,10 +459,14 @@ class MainWindowPagesMixin:
             material_panel.layout.addWidget(header_widget)
             for channel in channels:
                 material_panel.layout.addWidget(self.sample_cards[channel.slot])
+            # Cards keep their own height when "Signals only" leaves a column shorter.
+            material_panel.layout.addStretch(1)
             columns.addWidget(material_panel, 1)
         layout.addLayout(columns)
 
         layout.addStretch(1)
+        # Apply the remembered "Signals only" choice to the cards and the Dashboard.
+        self.set_samples_signals_only(self.samples_signals_only_button.isChecked())
         return page
 
     def _build_samples_unit_switch(self) -> QWidget:
@@ -487,7 +492,27 @@ class MainWindowPagesMixin:
         )
         self.samples_same_scale_button.toggled.connect(lambda _checked: self.refresh_sample_cards())
         row.addWidget(self.samples_same_scale_button)
+        self.samples_signals_only_button = QPushButton("Signals only")
+        self.samples_signals_only_button.setObjectName("segmentButton")
+        self.samples_signals_only_button.setCheckable(True)
+        self.samples_signals_only_button.setToolTip(
+            "Hide channels not expected to give a reading: noise, empty, "
+            "not connected and the shorted noise reference"
+        )
+        self.samples_signals_only_button.setChecked(
+            str(self.nav_settings().value(_SIGNALS_ONLY_SETTING, False)).lower() == "true"
+        )
+        self.samples_signals_only_button.toggled.connect(self.set_samples_signals_only)
+        row.addWidget(self.samples_signals_only_button)
         return switch
+
+    def set_samples_signals_only(self, signals_only: bool) -> None:
+        """Show only the channels expected to carry a reading, here and on the Dashboard."""
+        self.nav_settings().setValue(_SIGNALS_ONLY_SETTING, signals_only)
+        for card in self.sample_cards:
+            card.setVisible(card.is_signal or not signals_only)
+        self.dashboard.set_signals_only(signals_only)
+        self.refresh_sample_cards()
 
     def show_adc_graph_dialog(self, slot: int) -> None:
         try:
@@ -729,6 +754,7 @@ class MainWindowPagesMixin:
         layout.setContentsMargins(0, 0, 0, 0)
         panel = Panel("BOARD MAP")
         self.board_map = BoardMapWidget()
+        self.board_map.channel_requested.connect(self.show_adc_graph_dialog)
         panel.layout.addWidget(self.board_map)
         layout.addWidget(panel)
         layout.addStretch(1)

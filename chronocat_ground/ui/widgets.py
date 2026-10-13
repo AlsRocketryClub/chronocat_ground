@@ -7,6 +7,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
@@ -162,8 +163,15 @@ class SampleCard(QFrame):
         self.status_label.setObjectName("sampleMetric")
         self.temperatures_label = QLabel("Temperatures: —")
         self.temperatures_label.setObjectName("sampleMetric")
-        self.meta_label = QLabel(channel.location)
+        # Which two samples this channel compares, and what it is expected to show.
+        self.meta_label = QLabel(f"{channel.location} · {channel.pair_text}")
         self.meta_label.setObjectName("smallNote")
+        self.meta_label.setWordWrap(True)
+        self.role_label = QLabel(channel.role.upper())
+        self.role_label.setObjectName("sampleRole")
+        self.role_label.setToolTip(channel.role_note or channel.role)
+        self.role_label.setVisible(not channel.is_signal)
+        self.is_signal = channel.is_signal
 
         self.plot = PlotWidget(
             "Volts (V)",
@@ -178,7 +186,11 @@ class SampleCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
-        layout.addWidget(self.toggle_button)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(6)
+        title_row.addWidget(self.toggle_button, 1)
+        title_row.addWidget(self.role_label)
+        layout.addLayout(title_row)
         layout.addWidget(self.reading_label)
         layout.addWidget(self.status_label)
         layout.addWidget(self.temperatures_label)

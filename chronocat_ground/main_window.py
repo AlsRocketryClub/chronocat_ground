@@ -496,16 +496,17 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.log("Turning all heaters off")
         self.send_command(COMMAND_HEATER_ALL_OFF, 0, 0)
 
-    def set_all_pid(self, activate: bool, target: float, profile_name: str) -> None:
+    def set_all_pid(self, activate: bool, target: float, profile_name: str, heater_ids=None) -> None:
         if not self.client.connected or self.command_dispatcher.busy or self.pid_page is None:
             return
         if not activate:
             self.turn_all_heaters_off()
             return
 
-        heater_ids = self.pid_page.mapped_heater_ids()
+        if heater_ids is None:
+            heater_ids = self.pid_page.mapped_heater_ids()
         if not heater_ids:
-            self.pid_page.set_command_status("cannot activate PID: no mapped heaters")
+            self.pid_page.set_command_status("cannot activate PID: no heaters selected")
             return
         operation = PendingPidOperation(
             heater_ids=tuple(heater_ids),
@@ -515,7 +516,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         self.pending_pid_operation = operation
         self.pid_page.set_global_operation_busy(True)
         self.pid_page.set_command_status(
-            f"applying {operation.profile.name} to {len(operation.heater_ids)} mapped heater(s)..."
+            f"applying {operation.profile.name} to {len(operation.heater_ids)} heater(s)..."
         )
         self._send_next_pid_operation_step()
 
@@ -526,7 +527,9 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
         if operation.heater_index >= len(operation.heater_ids):
             self.pending_pid_operation = None
             self.pid_page.set_global_operation_busy(False)
-            self.pid_page.set_command_status("all mapped heaters PID active")
+            self.pid_page.set_command_status(
+                f"PID active on {', '.join(f'H{h}' for h in operation.heater_ids)}"
+            )
             return
 
         heater_id = operation.heater_ids[operation.heater_index]
@@ -756,6 +759,7 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             )
         self._last_adc_packet = packet
         self.board_map.set_temperatures(packet)
+        self.board_map.set_readings(packet)
         self._last_adc_history = history
         self.refresh_sample_cards()
         self.update_plot_dialogs()
@@ -855,7 +859,8 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
                 card = self.sample_cards[slot]
                 card.set_value_axis(axis_label, axis_hover)
                 points = [adc_point_for_mode(entry, mode) for entry in history.adc_points[slot]]
-                values.extend(point[2] for point in points if math.isfinite(point[2]))
+                if not card.isHidden():
+                    values.extend(point[2] for point in points if math.isfinite(point[2]))
                 card.set_points(points)
         for reading in packet.ad7177_readings if packet is not None else ():
             channel = SAMPLE_CHANNELS.get(reading.slot)
@@ -868,7 +873,9 @@ class MainWindow(MainWindowPagesMixin, QMainWindow):
             card = self.sample_cards[reading.slot]
             card.set_value_axis(axis_label, axis_hover)
             points = [adc_point_for_mode(entry, mode) for entry in history.adc_points[reading.slot]]
-            values.extend(point[2] for point in points if math.isfinite(point[2]))
+            if not card.isHidden():
+                # Hidden channels (Signals only) must not stretch the shared scale.
+                values.extend(point[2] for point in points if math.isfinite(point[2]))
             card.set_points(points)
             card.set_reading(
                 value_text,

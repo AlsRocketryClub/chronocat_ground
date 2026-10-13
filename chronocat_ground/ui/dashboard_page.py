@@ -101,6 +101,8 @@ class DashboardPage(QWidget):
         columns = QHBoxLayout()
         columns.setSpacing(PAGE_SPACING)
         self.sample_values: dict[int, tuple[QLabel, str]] = {}
+        self._signals_only = False
+        self._last_history: TelemetryHistorySnapshot | None = None
         self.sample_plots: list[tuple[PlotWidget, tuple]] = []
         for material_index, (material, channels) in enumerate(SAMPLE_COLUMNS):
             column = QVBoxLayout()
@@ -248,12 +250,23 @@ class DashboardPage(QWidget):
             _set_state(label, states.get(f"adc:{slot}", UNKNOWN))
         self._plot_samples(history)
 
+    def set_signals_only(self, signals_only: bool) -> None:
+        """Hide the channels not expected to carry a reading (see sample_layout)."""
+        self._signals_only = signals_only
+        for _material, channels in SAMPLE_COLUMNS:
+            for channel in channels:
+                self.sample_values[channel.slot][0].setVisible(channel.is_signal or not signals_only)
+        if self._last_history is not None:
+            self._plot_samples(self._last_history)
+
     def _plot_samples(self, history: TelemetryHistorySnapshot) -> None:
+        self._last_history = history
         for plot, channels in self.sample_plots:
             plot.set_series(tuple(
                 (
                     f"{channel.pair}{channel.device}",
-                    [adc_point_for_mode(entry, "voltage") for entry in history.adc_points[channel.slot]],
+                    [adc_point_for_mode(entry, "voltage") for entry in history.adc_points[channel.slot]]
+                    if channel.is_signal or not self._signals_only else [],
                 )
                 for channel in channels
             ))

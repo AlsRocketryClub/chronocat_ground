@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from .heater_safety import HEATER_COUNT, HEATER_SENSOR_IDS
 from .history_seed import heater_averages
+from .sample_layout import HEATERS_WITH_SAMPLES
 from .pid_profiles import PID_PROFILES
 from .plot_widget import PlotWidget
 from .protocol import (
@@ -81,7 +82,8 @@ class PidPage(QWidget):
     plot_popout_requested = Signal(str)
     return_pid_requested = Signal(int)
     all_off_requested = Signal()
-    all_pid_requested = Signal(bool, float, str)
+    # activate, setpoint, profile name, heater ids
+    all_pid_requested = Signal(bool, float, str, object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -480,33 +482,57 @@ class PidPage(QWidget):
     def _return_pid(self) -> None:
         self.return_pid_requested.emit(self.selected_heater)
 
+    def choose_pid_heaters(self) -> list[int] | None:
+        """Ask which heaters get PID: only those under a sample (default) or all."""
+        mapped = self.mapped_heater_ids()
+        with_samples = [heater_id for heater_id in mapped if heater_id in HEATERS_WITH_SAMPLES]
+        empty = [heater_id for heater_id in mapped if heater_id not in HEATERS_WITH_SAMPLES]
+        names = lambda ids: ", ".join(f"H{heater_id}" for heater_id in ids) or "none"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Enable PID")
+        box.setText(
+            f"Apply the {self.profile_combo.currentText()} profile and "
+            f"{self.global_target_spin.value():.1f} C to which heaters?"
+        )
+        box.setInformativeText(
+            f"With samples ({len(with_samples)}): {names(with_samples)}\n"
+            f"Empty U5/U2 spots ({len(empty)}): {names(empty)}"
+        )
+        samples_button = box.addButton(f"Heaters with samples ({len(with_samples)})", QMessageBox.AcceptRole)
+        all_button = box.addButton(f"All heaters ({len(mapped)})", QMessageBox.AcceptRole)
+        cancel = box.addButton(QMessageBox.Cancel)
+        samples_button.setEnabled(bool(with_samples))
+        box.setDefaultButton(samples_button if with_samples else cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is samples_button:
+            return with_samples
+        if clicked is all_button:
+            return mapped
+        return None
+
     def _toggle_all_pid(self) -> None:
         activate = not self._all_pid_active()
+        heater_ids: list[int] = []
         if activate:
-            heater_ids = self.mapped_heater_ids()
-            if not heater_ids:
+            if not self.mapped_heater_ids():
                 self.set_command_status("cannot activate PID: no mapped heaters")
                 return
-            answer = QMessageBox.question(
-                self,
-                "Activate mapped heaters",
-                f"Apply the selected PID profile and common setpoint to "
-                f"{len(heater_ids)} mapped heater(s)?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if answer != QMessageBox.Yes:
+            heater_ids = self.choose_pid_heaters()
+            if heater_ids is None:
                 return
         self.all_pid_requested.emit(
             activate,
             self.global_target_spin.value(),
             self.profile_combo.currentText(),
+            heater_ids,
         )
 
     def _all_pid_active(self) -> bool:
-        return self._mapped_mask != 0 and (
-            self._latest_pid_enabled_mask & self._mapped_mask
-        ) == self._mapped_mask
+        # Any heater in PID counts: the usual run enables only the 8 with samples.
+        return (self._latest_pid_enabled_mask & self._mapped_mask) != 0
 
     def set_connected(self, connected: bool) -> None:
         self._connected = connected
@@ -638,7 +664,8 @@ class PidPage(QWidget):
         )
         if self._all_pid_active():
             self.all_pid_button.setText("Disable PID")
-            self.global_status.setText("PID enabled on all mapped heaters")
+            active = [heater_id for heater_id in range(HEATER_COUNT) if self._latest_pid_enabled_mask & (1 << heater_id)]
+            self.global_status.setText(f"PID on {len(active)} heater(s): " + ", ".join(f"H{h}" for h in active))
         else:
             self.all_pid_button.setText("Enable PID")
         self.global_controls.fit()

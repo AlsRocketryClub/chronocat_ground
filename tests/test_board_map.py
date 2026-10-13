@@ -14,9 +14,9 @@ class BoardMapTest(unittest.TestCase):
     def test_boards_follow_material_adc_and_sensor_bindings(self) -> None:
         first, second = BOARDS
         self.assertEqual((first.material, first.bus, first.adc_text, first.heater_text),
-                         ("diF-TES-ADT", "I2C4", "ADC0 + ADC1", "H0–H5"))
+                         ("TIPs-pentacene", "I2C4", "ADC0 + ADC1", "H0–H5"))
         self.assertEqual((second.material, second.bus, second.adc_text, second.heater_text),
-                         ("TIPs-pentacene", "I2C1", "ADC2 + ADC3", "H6–H11"))
+                         ("diF-TES-ADT", "I2C1", "ADC2 + ADC3", "H6–H11"))
         self.assertEqual(sorted(labels(first.sensor_ids)), [f"F1_U{index}" for index in range(8)])
         self.assertTrue(all(label.startswith("F2_") for label in labels(second.sensor_ids)))
 
